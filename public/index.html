@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#142a43">
+  <meta name="theme-color" content="#fbfbfa">
   <title>LexFlow — Outlook assignment</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -26,6 +26,8 @@
     <symbol id="icon-building" viewBox="0 0 24 24"><path d="M4 21V7l8-4 8 4v14M8 10h2M14 10h2M8 14h2M14 14h2M9 21v-3h6v3"/></symbol>
     <symbol id="icon-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M9 3h6"/></symbol>
     <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></symbol>
+    <symbol id="icon-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/></symbol>
+    <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></symbol>
   </svg>
 
   <a class="skip-link" id="skip-link" href="#main-content" hidden>Skip to main content</a>
@@ -72,7 +74,7 @@
   </section>
 
   <section class="app-shell" id="app-view" aria-label="LexFlow workspace" hidden>
-    <button class="nav-backdrop" id="nav-backdrop" type="button" aria-label="Close navigation" tabindex="-1"></button>
+    <button class="nav-backdrop" id="nav-backdrop" type="button" aria-hidden="true" tabindex="-1" hidden></button>
 
     <aside class="side" id="sidebar" aria-label="Workspace navigation">
       <div class="brand side-brand">
@@ -172,16 +174,27 @@
       </div>
     </aside>
 
-    <div class="main-column">
-      <header class="topbar">
+    <div class="main-column" id="main-column">
+      <header class="topbar" role="banner">
         <div class="topbar-title">
           <button class="icon-button mobile-menu" id="nav-open" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
             <svg class="icon" aria-hidden="true"><use href="#icon-menu"></use></svg>
           </button>
-          <div>
-            <p class="topbar-kicker">Operations workspace</p>
-            <h1 id="page-title">Unified intake</h1>
+          <div class="topbar-brand">
+            <span class="logo" aria-hidden="true">L</span>
+            <div>
+              <p class="topbar-kicker">LexFlow</p>
+              <h1 id="page-title" tabindex="-1">Unified intake</h1>
+            </div>
           </div>
+        </div>
+
+        <div class="topbar-identity" aria-label="Signed-in account">
+          <span class="avatar" id="topbar-avatar" aria-hidden="true"></span>
+          <span class="user-copy">
+            <strong id="topbar-user"></strong>
+            <small id="topbar-role"></small>
+          </span>
         </div>
 
         <div class="top-actions">
@@ -198,6 +211,7 @@
             <svg class="icon" aria-hidden="true"><use href="#icon-bell"></use></svg>
             <span class="notification-count" id="notification-count" aria-hidden="true">0</span>
           </button>
+          <span class="visually-hidden" id="notification-announcement" role="status" aria-live="polite" aria-atomic="true"></span>
           <button class="button logout-button" id="logout-button" type="button">
             <svg class="icon" aria-hidden="true"><use href="#icon-logout"></use></svg>
             <span class="button-label" data-button-label>Sign out</span>
@@ -208,16 +222,45 @@
       <main class="content" id="main-content" tabindex="-1">
         <div class="status-banner" id="status-banner" role="alert" hidden></div>
 
-        <div class="workspace-toolbar">
+        <section class="dashboard-hero" id="dashboard-hero" aria-labelledby="hero-title">
+          <div class="hero-actions">
+            <time class="hero-date" id="hero-date">
+              <strong id="hero-day"></strong>
+              <span>
+                <span id="hero-weekday"></span>
+                <span id="hero-month"></span>
+              </span>
+            </time>
+            <button class="hero-primary" id="hero-action" type="button">
+              <span id="hero-action-label">Review inbox</span>
+              <svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg>
+            </button>
+            <span class="hero-calendar" aria-hidden="true">
+              <svg class="icon"><use href="#icon-calendar"></use></svg>
+            </span>
+          </div>
+
+          <div class="hero-copy">
+            <span class="mode-chip" id="mode-chip">Demo mailbox</span>
+            <p class="eyebrow" id="hero-eyebrow">Today’s workflow</p>
+            <h2 id="hero-title">Keep every email moving.</h2>
+            <p id="hero-summary">Loading the latest mailbox activity…</p>
+          </div>
+
+          <span class="hero-orb" aria-hidden="true">
+            <svg class="icon"><use href="#icon-mail"></use></svg>
+          </span>
+        </section>
+
+        <div class="workspace-toolbar" id="workspace-toolbar">
           <div class="department-switch" id="department-switch" aria-label="Filter by department">
             <button type="button" data-department="All">All</button>
           </div>
-          <span class="mode-chip" id="mode-chip">Demo mailbox</span>
         </div>
 
-        <section class="metrics" id="metrics" aria-label="Mailbox summary"></section>
-
         <div class="dashboard-layout" id="dashboard-layout">
+          <section class="metrics" id="metrics" aria-label="Mailbox summary"></section>
+
           <section class="card queue-panel" id="queue-panel" aria-labelledby="queue-title">
             <div class="card-head">
               <div>

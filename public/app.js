@@ -6,7 +6,9 @@ const state = {
   selectedEmailId: null,
   sidebarOpen: false,
   pollTimer: null,
-  settingsDirty: false
+  settingsDirty: false,
+  lastUnreadCount: null,
+  emailDialogOpener: null
 };
 
 const elements = {
@@ -15,11 +17,15 @@ const elements = {
   loginForm: document.querySelector('#login-form'),
   loginError: document.querySelector('#login-error'),
   appView: document.querySelector('#app-view'),
+  navBackdrop: document.querySelector('#nav-backdrop'),
   sidebar: document.querySelector('#sidebar'),
-  mainContent: document.querySelector('#main-content'),
+  mainColumn: document.querySelector('#main-column'),
   navOpen: document.querySelector('#nav-open'),
   navClose: document.querySelector('#nav-close'),
   pageTitle: document.querySelector('#page-title'),
+  topbarAvatar: document.querySelector('#topbar-avatar'),
+  topbarUser: document.querySelector('#topbar-user'),
+  topbarRole: document.querySelector('#topbar-role'),
   modeChip: document.querySelector('#mode-chip'),
   adminNavigation: document.querySelector('#admin-navigation'),
   memberNavigation: document.querySelector('#member-navigation'),
@@ -33,6 +39,8 @@ const elements = {
   syncButton: document.querySelector('#sync-button'),
   notificationButton: document.querySelector('#notification-button'),
   notificationCount: document.querySelector('#notification-count'),
+  notificationAnnouncement: document.querySelector('#notification-announcement'),
+  workspaceToolbar: document.querySelector('#workspace-toolbar'),
   departmentSwitch: document.querySelector('#department-switch'),
   metrics: document.querySelector('#metrics'),
   dashboardLayout: document.querySelector('#dashboard-layout'),
@@ -56,6 +64,16 @@ const elements = {
   departmentError: document.querySelector('#department-error'),
   teamDepartmentList: document.querySelector('#team-department-list'),
   statusBanner: document.querySelector('#status-banner'),
+  dashboardHero: document.querySelector('#dashboard-hero'),
+  heroDate: document.querySelector('#hero-date'),
+  heroDay: document.querySelector('#hero-day'),
+  heroWeekday: document.querySelector('#hero-weekday'),
+  heroMonth: document.querySelector('#hero-month'),
+  heroEyebrow: document.querySelector('#hero-eyebrow'),
+  heroTitle: document.querySelector('#hero-title'),
+  heroSummary: document.querySelector('#hero-summary'),
+  heroAction: document.querySelector('#hero-action'),
+  heroActionLabel: document.querySelector('#hero-action-label'),
   ruleDialog: document.querySelector('#rule-dialog'),
   ruleForm: document.querySelector('#rule-form'),
   ruleError: document.querySelector('#rule-error'),
@@ -191,7 +209,9 @@ function showLogin() {
   if (elements.emailDialog.open) elements.emailDialog.close();
   if (elements.ruleDialog.open) elements.ruleDialog.close();
   state.selectedEmailId = null;
+  state.emailDialogOpener = null;
   state.settingsDirty = false;
+  state.lastUnreadCount = null;
   elements.skipLink.hidden = true;
   elements.appView.hidden = true;
   elements.loginView.hidden = false;
@@ -286,6 +306,42 @@ function renderMetrics() {
   elements.metrics.replaceChildren(...items.map(item => metric(...item)));
 }
 
+function renderHero() {
+  const totals = counts();
+  const today = new Date();
+  const isAdmin = state.session.user.role === 'admin';
+  const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(today);
+  const month = new Intl.DateTimeFormat(undefined, { month: 'long' }).format(today);
+  elements.heroDate.dateTime = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0')
+  ].join('-');
+  setText(elements.heroDay, today.getDate());
+  setText(elements.heroWeekday, weekday);
+  setText(elements.heroMonth, month);
+  setText(elements.heroEyebrow, isAdmin ? 'Today’s workflow' : 'Your work today');
+  setText(elements.heroTitle, isAdmin ? 'Keep every email moving.' : 'Your queue, ready when you are.');
+  const assignedVerb = totals.assigned === 1 ? 'remains' : 'remain';
+  const memberAssignedVerb = totals.assigned === 1 ? 'is' : 'are';
+  setText(elements.heroSummary, isAdmin
+    ? totals.inbox
+      ? `${countLabel(totals.inbox, 'email')} ${totals.inbox === 1 ? 'needs' : 'need'} an owner. ${countLabel(totals.assigned, 'assignment')} ${assignedVerb} open.`
+      : `The intake queue is clear. ${countLabel(totals.assigned, 'assignment')} ${assignedVerb} open across the team.`
+    : `${countLabel(totals.assigned, 'assignment')} ${memberAssignedVerb} open, with ${countLabel(totals.notifications, 'unread update')} waiting.`);
+  const actionView = isAdmin
+    ? totals.inbox > 0 ? 'inbox' : totals.assigned > 0 ? 'assigned' : totals.notifications > 0 ? 'notifications' : 'completed'
+    : totals.assigned > 0 ? 'assigned' : totals.notifications > 0 ? 'notifications' : 'completed';
+  elements.heroAction.dataset.view = actionView;
+  const actionLabels = {
+    inbox: 'Review inbox',
+    assigned: isAdmin ? 'View assigned' : 'Open my work',
+    notifications: 'View updates',
+    completed: 'View completed'
+  };
+  setText(elements.heroActionLabel, actionLabels[actionView]);
+}
+
 function renderDepartments() {
   if (state.session.user.role !== 'admin') return;
   const departments = state.session.departments ?? [];
@@ -368,7 +424,9 @@ function renderEmailRow(email) {
 
   const person = node('span', 'email-person');
   const initials = email.assignee?.initials || '—';
-  person.append(node('span', 'avatar', initials), node('span', '', email.assignee?.name || 'Unassigned'));
+  const avatar = node('span', 'avatar', initials);
+  avatar.setAttribute('aria-hidden', 'true');
+  person.append(avatar, node('span', '', email.assignee?.name || 'Unassigned'));
   row.append(dot, copy, person);
   return row;
 }
@@ -551,14 +609,18 @@ function renderPanels() {
   const isQueue = ['inbox', 'assigned', 'completed'].includes(state.view);
   const canFilterDepartment = isAdmin && ['assigned', 'completed'].includes(state.view);
   const isFocus = !isQueue;
+  const hasRail = isQueue;
   elements.dashboardLayout.classList.toggle('focus-view', isFocus);
+  elements.dashboardLayout.classList.toggle('single-column', !hasRail);
   elements.queuePanel.hidden = !isQueue;
   elements.rulesPanel.hidden = !isAdmin || (isFocus && state.view !== 'rules');
   elements.activityPanel.hidden = !isAdmin || (isFocus && state.view !== 'activity');
   elements.settingsPanel.hidden = !isAdmin || state.view !== 'settings';
   elements.notificationsPanel.hidden = isFocus ? state.view !== 'notifications' : isAdmin;
   elements.departmentSwitch.hidden = !canFilterDepartment;
+  elements.workspaceToolbar.hidden = !canFilterDepartment;
   elements.metrics.hidden = isFocus;
+  elements.dashboardHero.hidden = isFocus;
 }
 
 function renderHeader() {
@@ -584,6 +646,9 @@ function renderIdentity() {
   setText(elements.sidebarAvatar, user.initials);
   setText(elements.sidebarUser, user.name);
   setText(elements.sidebarRole, `${user.role} · ${user.department}`);
+  setText(elements.topbarAvatar, user.initials);
+  setText(elements.topbarUser, user.name);
+  setText(elements.topbarRole, `${user.role} · ${user.department}`);
   setText(elements.sidebarMode, mode === 'graph' ? 'Outlook connected' : 'Demo mailbox');
   setText(elements.sidebarSync, user.role === 'member'
     ? 'Sync managed by admin'
@@ -604,11 +669,17 @@ function render() {
   elements.syncButton.hidden = !isAdmin;
   elements.sidebarDepartment.closest('.department-picker').hidden = !isAdmin || !['assigned', 'completed'].includes(state.view);
   if (isAdmin) renderDepartments();
-  setText(elements.notificationCount, state.session.unreadCount || '');
-  elements.notificationButton.setAttribute('aria-label', `View notifications, ${state.session.unreadCount ?? 0} unread`);
+  const unreadCount = state.session.unreadCount ?? 0;
+  setText(elements.notificationCount, unreadCount || '');
+  elements.notificationButton.setAttribute('aria-label', `View notifications, ${unreadCount} unread`);
+  if (state.lastUnreadCount !== null && unreadCount > state.lastUnreadCount) {
+    setText(elements.notificationAnnouncement, `${countLabel(unreadCount, 'unread notification')} available.`);
+  } else setText(elements.notificationAnnouncement, '');
+  state.lastUnreadCount = unreadCount;
   renderIdentity();
   renderHeader();
   renderNav();
+  renderHero();
   renderMetrics();
   renderEmails();
   if (isAdmin) {
@@ -628,7 +699,7 @@ function selectView(view) {
   render();
   window.requestAnimationFrame(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-    elements.mainContent.focus({ preventScroll: true });
+    elements.pageTitle.focus({ preventScroll: true });
   });
 }
 
@@ -637,12 +708,12 @@ function selectDepartment(department) {
   render();
 }
 
-const mobileNavigation = window.matchMedia('(max-width: 1023px)');
-
 function updateSidebarAccessibility() {
-  const closedOffCanvas = mobileNavigation.matches && !state.sidebarOpen;
-  elements.sidebar.inert = closedOffCanvas;
-  if (closedOffCanvas) elements.sidebar.setAttribute('aria-hidden', 'true');
+  const closed = !state.sidebarOpen;
+  elements.sidebar.inert = closed;
+  elements.mainColumn.inert = !closed;
+  elements.navBackdrop.hidden = closed;
+  if (closed) elements.sidebar.setAttribute('aria-hidden', 'true');
   else elements.sidebar.removeAttribute('aria-hidden');
 }
 
@@ -660,12 +731,13 @@ function closeSidebar(restoreFocus = false) {
   elements.appView.classList.remove('nav-open');
   elements.navOpen.setAttribute('aria-expanded', 'false');
   updateSidebarAccessibility();
-  if (restoreFocus && wasOpen && mobileNavigation.matches) elements.navOpen.focus();
+  if (restoreFocus && wasOpen) elements.navOpen.focus();
 }
 
-function openEmail(emailId) {
+function openEmail(emailId, opener = document.activeElement) {
   const email = (state.session.emails ?? []).find(item => item.id === Number(emailId));
   if (!email) return;
+  state.emailDialogOpener = opener instanceof HTMLElement ? opener : null;
   state.selectedEmailId = email.id;
   setText(elements.emailDialogTitle, email.subject, '(No subject)');
   setText(elements.emailDialogStatus, email.status === 'completed' ? 'Completed email' : email.status === 'unassigned' ? 'Unassigned email' : 'Assigned email');
@@ -782,7 +854,9 @@ document.querySelector('#logout-button').addEventListener('click', async () => {
     state.department = 'All';
     state.query = '';
     state.selectedEmailId = null;
+    state.emailDialogOpener = null;
     state.settingsDirty = false;
+    state.lastUnreadCount = null;
     elements.searchInput.value = '';
     showLogin();
     setButtonBusy(button, false, '…');
@@ -813,12 +887,13 @@ elements.emailList.addEventListener('click', event => {
 });
 
 elements.notificationButton.addEventListener('click', () => selectView('notifications'));
+elements.heroAction.addEventListener('click', () => selectView(elements.heroAction.dataset.view));
 elements.navOpen.addEventListener('click', openSidebar);
 elements.navClose.addEventListener('click', () => closeSidebar(true));
-document.querySelector('#nav-backdrop').addEventListener('click', () => closeSidebar(true));
+elements.navBackdrop.addEventListener('click', () => closeSidebar(true));
 
 elements.sidebar.addEventListener('keydown', event => {
-  if (event.key !== 'Tab' || !mobileNavigation.matches || !state.sidebarOpen) return;
+  if (event.key !== 'Tab' || !state.sidebarOpen) return;
   const focusable = [...elements.sidebar.querySelectorAll('button:not(:disabled), select:not(:disabled)')]
     .filter(control => control.getClientRects().length > 0);
   if (!focusable.length) return;
@@ -833,19 +908,19 @@ elements.sidebar.addEventListener('keydown', event => {
   }
 });
 
-mobileNavigation.addEventListener('change', event => {
-  if (!event.matches) {
-    state.sidebarOpen = false;
-    elements.appView.classList.remove('nav-open');
-    elements.navOpen.setAttribute('aria-expanded', 'false');
-  }
-  updateSidebarAccessibility();
-});
 updateSidebarAccessibility();
 
 document.querySelector('#new-rule-button').addEventListener('click', openRuleDialog);
 document.querySelectorAll('[data-close-dialog]').forEach(button => {
   button.addEventListener('click', () => closeDialog(button.dataset.closeDialog));
+});
+
+elements.emailDialog.addEventListener('close', () => {
+  const opener = state.emailDialogOpener;
+  state.emailDialogOpener = null;
+  if (state.session && !elements.appView.hidden && (!opener || !opener.isConnected)) {
+    elements.pageTitle.focus({ preventScroll: true });
+  }
 });
 
 elements.timingForm.addEventListener('submit', async event => {
@@ -1016,6 +1091,7 @@ elements.emailAssignmentForm.addEventListener('submit', async event => {
     const result = await mutate(`/api/emails/${email.id}/assign`, 'POST', { assigneeId });
     elements.emailDialog.close();
     state.selectedEmailId = null;
+    elements.pageTitle.focus({ preventScroll: true });
     showToast(result.changed
       ? `${wasAssigned ? 'Reassigned' : 'Assigned'} to ${selectedMember?.name || 'the selected team member'}.`
       : `Already assigned to ${selectedMember?.name || 'the selected team member'}.`);
@@ -1033,6 +1109,7 @@ elements.completeButton.addEventListener('click', async () => {
   try {
     await mutate(`/api/emails/${state.selectedEmailId}/complete`);
     elements.emailDialog.close();
+    elements.pageTitle.focus({ preventScroll: true });
     showToast('Email marked complete.');
   } catch (error) {
     showToast(error.message, true);
