@@ -23,6 +23,13 @@ function runSavepoint(db, operation) {
   }
 }
 
+function workflowError(status, code, message) {
+  const error = new Error(message);
+  error.status = status;
+  error.code = code;
+  return error;
+}
+
 function setSyncState(db, key, value) {
   db.prepare(`
     INSERT INTO sync_state (key, value) VALUES (?, ?)
@@ -39,25 +46,66 @@ function asMailMessage(row) {
   };
 }
 
-function assignEmail(db, email, rule, createdAt) {
+function recordAssignment(db, {
+  email,
+  assignee,
+  actorId = null,
+  assignedAt,
+  allowReassignment = false,
+}) {
+  const eligibleStatus = allowReassignment
+    ? "status IN ('unassigned', 'assigned')"
+    : "status = 'unassigned'";
   const updated = db.prepare(`
     UPDATE emails
-    SET status = 'assigned', assignee_id = ?
-    WHERE id = ? AND status = 'unassigned'
-  `).run(rule.assignee_id, email.id);
+    SET status = 'assigned', assignee_id = ?, assigned_at = ?
+    WHERE id = ? AND ${eligibleStatus}
+  `).run(assignee.id, assignedAt, email.id);
   if (updated.changes !== 1) return false;
 
-  const assignee = db.prepare('SELECT name FROM users WHERE id = ?').get(rule.assignee_id);
+  if (email.assignee_id) {
+    db.prepare(`
+      DELETE FROM notifications
+      WHERE user_id = ? AND email_id = ? AND kind IN ('assignment', 'assigned_overdue')
+    `).run(email.assignee_id, email.id);
+    db.prepare(`
+      DELETE FROM alert_deliveries
+      WHERE user_id = ? AND email_id = ? AND kind = 'assigned_overdue'
+    `).run(email.assignee_id, email.id);
+  }
   db.prepare(`
-    INSERT OR IGNORE INTO notifications
+    DELETE FROM alert_deliveries
+    WHERE email_id = ? AND kind = 'unassigned_overdue'
+  `).run(email.id);
+  db.prepare(`
+    INSERT INTO notifications
       (user_id, email_id, kind, message, created_at)
     VALUES (?, ?, 'assignment', ?, ?)
-  `).run(rule.assignee_id, email.id, `New assignment: ${email.subject}`, createdAt);
+  `).run(assignee.id, email.id, `New assignment: ${email.subject}`, assignedAt);
+
+  const previous = email.assignee_id
+    ? db.prepare('SELECT name FROM users WHERE id = ?').get(email.assignee_id)
+    : null;
+  const message = previous
+    ? `Reassigned "${email.subject}" from ${previous.name} to ${assignee.name}`
+    : `Assigned "${email.subject}" to ${assignee.name}`;
   db.prepare(`
     INSERT INTO activity (actor_id, email_id, kind, message, created_at)
-    VALUES (NULL, ?, 'assigned', ?, ?)
-  `).run(email.id, `Assigned "${email.subject}" to ${assignee.name}`, createdAt);
+    VALUES (?, ?, 'assigned', ?, ?)
+  `).run(actorId, email.id, message, assignedAt);
   return true;
+}
+
+function assignEmailByRule(db, email, rule, assignedAt) {
+  const assignee = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'member'")
+    .get(rule.assignee_id);
+  if (!assignee) return false;
+  return recordAssignment(db, {
+    email,
+    assignee,
+    assignedAt,
+    allowReassignment: false,
+  });
 }
 
 function sanitizeError(error) {
@@ -144,7 +192,7 @@ export async function syncMailbox({ db, source }) {
       imported += 1;
       const email = findEmail.get(message.providerId);
       const rule = matchRule(message, rules);
-      if (rule && assignEmail(db, email, rule, now)) assigned += 1;
+      if (rule && assignEmailByRule(db, email, rule, now)) assigned += 1;
     }
 
     if (nextCursor === null) {
@@ -187,7 +235,7 @@ export function applyRuleToUnassigned(db, ruleId) {
     const now = new Date().toISOString();
     let assigned = 0;
     for (const email of emails) {
-      if (matchRule(asMailMessage(email), [rule]) && assignEmail(db, email, rule, now)) {
+      if (matchRule(asMailMessage(email), [rule]) && assignEmailByRule(db, email, rule, now)) {
         assigned += 1;
       }
     }
@@ -195,9 +243,50 @@ export function applyRuleToUnassigned(db, ruleId) {
   });
 }
 
-export function completeAssignedEmail({ db, emailId, userId }) {
+export function assignEmailManually({
+  db,
+  emailId,
+  assigneeId,
+  adminId,
+  now = new Date(),
+}) {
   return runTransaction(db, () => {
-    const completedAt = new Date().toISOString();
+    const assignedAt = now.toISOString();
+    const email = db.prepare('SELECT * FROM emails WHERE id = ?').get(emailId);
+    const assignee = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'member'")
+      .get(assigneeId);
+    const admin = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'admin'").get(adminId);
+
+    if (!email) throw workflowError(404, 'NOT_FOUND', 'Email not found.');
+    if (!assignee) throw workflowError(404, 'NOT_FOUND', 'Team member not found.');
+    if (!admin) throw workflowError(403, 'FORBIDDEN', 'Admin access is required.');
+    if (email.status === 'completed') {
+      throw workflowError(409, 'CONFLICT', 'Completed emails cannot be reassigned.');
+    }
+    if (Number(email.assignee_id) === Number(assigneeId)) {
+      return { changed: false, email };
+    }
+
+    const changed = recordAssignment(db, {
+      email,
+      assignee,
+      actorId: adminId,
+      assignedAt,
+      allowReassignment: true,
+    });
+    if (!changed) {
+      throw workflowError(409, 'CONFLICT', 'Email assignment changed. Refresh and try again.');
+    }
+    return {
+      changed: true,
+      email: db.prepare('SELECT * FROM emails WHERE id = ?').get(emailId),
+    };
+  });
+}
+
+export function completeAssignedEmail({ db, emailId, userId, now = new Date() }) {
+  return runTransaction(db, () => {
+    const completedAt = now.toISOString();
     const update = db.prepare(`
       UPDATE emails
       SET status = 'completed', completed_by = ?, completed_at = ?

@@ -13,7 +13,11 @@ import {
   sessionIdFromRequest,
   verifyPassword
 } from './auth.js';
-import { applyRuleToUnassigned, completeAssignedEmail } from './workflows.js';
+import {
+  applyRuleToUnassigned,
+  assignEmailManually,
+  completeAssignedEmail,
+} from './workflows.js';
 
 const publicDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 
@@ -37,6 +41,7 @@ function emailFromRow(row) {
     receivedAt: row.received_at,
     outlookUrl: row.outlook_url,
     status: row.status,
+    assignedAt: row.assigned_at,
     department: row.assignee_department ?? null,
     assignee: row.assignee_id ? {
       id: Number(row.assignee_id),
@@ -161,6 +166,12 @@ function resourceId(value) {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+function notFound(response, message) {
+  return response.status(404).json({
+    error: { code: 'NOT_FOUND', message },
+  });
+}
+
 function parseRule(body) {
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   const keywords = typeof body.keywords === 'string'
@@ -188,7 +199,8 @@ export function createApp({
   syncRunner,
   mode = 'demo',
   cookieSecure = process.env.NODE_ENV === 'production',
-  staticDir = publicDirectory
+  staticDir = publicDirectory,
+  clock = () => new Date(),
 }) {
   const app = express();
   app.disable('x-powered-by');
@@ -333,6 +345,33 @@ export function createApp({
     response.status(204).end();
   });
 
+  app.post('/api/emails/:id/assign', requireAdmin, (request, response, next) => {
+    try {
+      const emailId = resourceId(request.params.id);
+      const assigneeId = resourceId(request.body?.assigneeId);
+      if (!emailId) return notFound(response, 'Email not found.');
+      if (!assigneeId) {
+        return validationError(response, 'Choose a valid team member.', 'assigneeId');
+      }
+
+      const result = assignEmailManually({
+        db,
+        emailId,
+        assigneeId,
+        adminId: Number(request.user.id),
+        now: clock(),
+      });
+      response.json({
+        changed: result.changed,
+        emailId,
+        assigneeId: Number(result.email.assignee_id),
+        assignedAt: result.email.assigned_at,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post('/api/emails/:id/complete', (request, response, next) => {
     try {
       if (request.user.role !== 'member') {
@@ -355,7 +394,12 @@ export function createApp({
         return;
       }
 
-      const completed = completeAssignedEmail({ db, emailId, userId: request.user.id });
+      const completed = completeAssignedEmail({
+        db,
+        emailId,
+        userId: request.user.id,
+        now: clock(),
+      });
       response.json({ email: completed });
     } catch (error) {
       next(error);
@@ -405,7 +449,8 @@ export function createApp({
     response.status(status).json({
       error: {
         code: error.code ?? (status === 500 ? 'INTERNAL_ERROR' : 'REQUEST_FAILED'),
-        message: expose ? error.message : 'Something went wrong. Please try again.'
+        message: expose ? error.message : 'Something went wrong. Please try again.',
+        ...(expose && error.field ? { fields: { [error.field]: error.message } } : {}),
       }
     });
   });

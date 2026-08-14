@@ -27,6 +27,16 @@ const invoiceMessage = {
   outlookUrl: 'https://outlook.office.com/mail/mock-invoice-1',
 };
 
+const generalMessage = {
+  providerId: 'mock-general-1',
+  subject: 'General customer question',
+  senderName: 'Customer',
+  senderAddress: 'customer@example.test',
+  preview: 'Please review this request.',
+  receivedAt: '2026-08-14T08:00:00.000Z',
+  outlookUrl: 'https://outlook.office.com/mail/mock-general-1',
+};
+
 function fixedSource(messages, cursorKey = 'mail_cursor') {
   return {
     cursorKey,
@@ -44,7 +54,10 @@ function mayaId(db) {
   return one(db, 'SELECT id FROM users WHERE email = ?', 'maya@lexflow.local').id;
 }
 
-async function createApiHarness(context) {
+async function createApiHarness(
+  context,
+  { includeUnassigned = false, clock = () => new Date() } = {},
+) {
   const db = createDatabase(':memory:');
   const [adminPasswordHash, memberPasswordHash] = await Promise.all([
     hashPassword('admin123'),
@@ -52,10 +65,12 @@ async function createApiHarness(context) {
   ]);
   seedDemoData(db, { adminPasswordHash, memberPasswordHash });
 
-  const source = fixedSource([ndaMessage, invoiceMessage]);
+  const sourceMessages = [ndaMessage, invoiceMessage];
+  if (includeUnassigned) sourceMessages.push(generalMessage);
+  const source = fixedSource(sourceMessages);
   const syncRunner = createSyncRunner({ db, source });
   await syncRunner.run();
-  const server = createApp({ db, syncRunner, mode: 'demo' }).listen(0, '127.0.0.1');
+  const server = createApp({ db, syncRunner, mode: 'demo', clock }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -86,8 +101,13 @@ async function createApiHarness(context) {
 
   return {
     db,
+    request,
     get: (path, cookie) => request('GET', path, undefined, cookie),
     post: (path, body, cookie) => request('POST', path, body, cookie),
+    patch: (path, body, cookie) => request('PATCH', path, body, cookie),
+    userId(email) {
+      return Number(db.prepare('SELECT id FROM users WHERE email = ?').get(email).id);
+    },
     async login(email, password) {
       const response = await request('POST', '/api/login', { email, password });
       assert.equal(response.status, 200);
@@ -178,6 +198,99 @@ test('a member cannot mutate rules or trigger sync', async (context) => {
 
   assert.equal(rule.status, 403);
   assert.equal(sync.status, 403);
+});
+
+test('admin assigns and reassigns open email while members cannot assign', async (context) => {
+  let now = new Date('2026-08-14T10:00:00.000Z');
+  const harness = await createApiHarness(context, {
+    includeUnassigned: true,
+    clock: () => now,
+  });
+  const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
+  const mayaCookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const priyaCookie = await harness.login('priya@lexflow.local', 'welcome123');
+  const email = harness.db.prepare("SELECT * FROM emails WHERE status = 'unassigned'").get();
+  const adminId = harness.userId('admin@lexflow.local');
+  const mayaId = harness.userId('maya@lexflow.local');
+  const priyaId = harness.userId('priya@lexflow.local');
+
+  const forbidden = await harness.post(
+    `/api/emails/${email.id}/assign`,
+    { assigneeId: mayaId },
+    mayaCookie,
+  );
+  assert.equal(forbidden.status, 403);
+
+  const assigned = await harness.post(
+    `/api/emails/${email.id}/assign`,
+    { assigneeId: mayaId },
+    adminCookie,
+  );
+  assert.equal(assigned.status, 200);
+  assert.equal(assigned.body.changed, true);
+  assert.equal(assigned.body.assignedAt, '2026-08-14T10:00:00.000Z');
+  assert.ok((await harness.get('/api/bootstrap', mayaCookie)).body.emails
+    .some(item => item.id === email.id));
+
+  const countsBeforeNoOp = harness.db.prepare(`
+    SELECT
+      (SELECT count(*) FROM activity WHERE email_id = ?) AS activity_count,
+      (SELECT count(*) FROM notifications WHERE email_id = ?) AS notification_count
+  `).get(email.id, email.id);
+  now = new Date('2026-08-14T11:00:00.000Z');
+  const noOp = await harness.post(
+    `/api/emails/${email.id}/assign`,
+    { assigneeId: mayaId },
+    adminCookie,
+  );
+  assert.equal(noOp.status, 200);
+  assert.equal(noOp.body.changed, false);
+  assert.equal(noOp.body.assignedAt, '2026-08-14T10:00:00.000Z');
+  assert.deepEqual(harness.db.prepare(`
+    SELECT
+      (SELECT count(*) FROM activity WHERE email_id = ?) AS activity_count,
+      (SELECT count(*) FROM notifications WHERE email_id = ?) AS notification_count
+  `).get(email.id, email.id), countsBeforeNoOp);
+
+  now = new Date('2026-08-14T12:00:00.000Z');
+  const reassigned = await harness.post(
+    `/api/emails/${email.id}/assign`,
+    { assigneeId: priyaId },
+    adminCookie,
+  );
+  assert.equal(reassigned.status, 200);
+  assert.equal(reassigned.body.changed, true);
+  assert.equal(reassigned.body.assignedAt, '2026-08-14T12:00:00.000Z');
+  assert.ok(!(await harness.get('/api/bootstrap', mayaCookie)).body.emails
+    .some(item => item.id === email.id));
+  assert.ok((await harness.get('/api/bootstrap', priyaCookie)).body.emails
+    .some(item => item.id === email.id));
+  assert.equal(harness.db.prepare(`
+    SELECT count(*) AS count FROM notifications
+    WHERE email_id = ? AND user_id = ? AND kind = 'assignment'
+  `).get(email.id, mayaId).count, 0);
+  assert.equal(harness.db.prepare(`
+    SELECT count(*) AS count FROM notifications
+    WHERE email_id = ? AND user_id = ? AND kind = 'assignment'
+  `).get(email.id, priyaId).count, 1);
+
+  const latest = harness.db.prepare(`
+    SELECT * FROM activity WHERE email_id = ? ORDER BY id DESC LIMIT 1
+  `).get(email.id);
+  assert.equal(Number(latest.actor_id), adminId);
+  assert.match(latest.message, /Reassigned.*Maya Shah.*Priya Menon/);
+
+  assert.equal((await harness.post(
+    `/api/emails/${email.id}/complete`,
+    {},
+    priyaCookie,
+  )).status, 200);
+  const completedConflict = await harness.post(
+    `/api/emails/${email.id}/assign`,
+    { assigneeId: mayaId },
+    adminCookie,
+  );
+  assert.equal(completedConflict.status, 409);
 });
 
 test('completion records the member and time for admin activity', async (context) => {
