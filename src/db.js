@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS emails (
   outlook_url TEXT,
   status TEXT NOT NULL CHECK (status IN ('unassigned', 'assigned', 'completed')),
   assignee_id INTEGER REFERENCES users(id),
+  assigned_at TEXT,
   completed_by INTEGER REFERENCES users(id),
   completed_at TEXT,
   created_at TEXT NOT NULL
@@ -44,11 +45,12 @@ CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   email_id INTEGER NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK (kind = 'assignment'),
+  kind TEXT NOT NULL CHECK (
+    kind IN ('assignment', 'completion', 'unassigned_overdue', 'assigned_overdue')
+  ),
   message TEXT NOT NULL,
   read_at TEXT,
-  created_at TEXT NOT NULL,
-  UNIQUE(user_id, email_id, kind)
+  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS activity (
   id INTEGER PRIMARY KEY,
@@ -62,10 +64,93 @@ CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS departments (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspace_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  time_unassigned_hours INTEGER NOT NULL
+    CHECK (time_unassigned_hours BETWEEN 1 AND 8760),
+  time_assigned_unmarked_hours INTEGER NOT NULL
+    CHECK (time_assigned_unmarked_hours BETWEEN 1 AND 8760)
+);
+CREATE TABLE IF NOT EXISTS alert_deliveries (
+  email_id INTEGER NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('unassigned_overdue', 'assigned_overdue')),
+  last_notified_at TEXT NOT NULL,
+  PRIMARY KEY (email_id, user_id, kind)
+);
 `;
 
+function tableHasColumn(db, table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column);
+}
+
+function migrateNotifications(db) {
+  const definition = String(db.prepare(`
+    SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'
+  `).get()?.sql ?? '').toLocaleLowerCase();
+  const supportsAllKinds = definition.includes('completion') && definition.includes('assigned_overdue');
+  const blocksRepeats = definition.includes('unique(user_id, email_id, kind)');
+  if (supportsAllKinds && !blocksRepeats) return;
+
+  db.exec(`
+    DROP TABLE IF EXISTS notifications_next;
+    CREATE TABLE notifications_next (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      email_id INTEGER NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (
+        kind IN ('assignment', 'completion', 'unassigned_overdue', 'assigned_overdue')
+      ),
+      message TEXT NOT NULL,
+      read_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    INSERT INTO notifications_next
+      (id, user_id, email_id, kind, message, read_at, created_at)
+    SELECT id, user_id, email_id, kind, message, read_at, created_at
+    FROM notifications;
+    DROP TABLE notifications;
+    ALTER TABLE notifications_next RENAME TO notifications;
+  `);
+}
+
 export function migrate(db) {
-  db.exec(schema);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(schema);
+    if (!tableHasColumn(db, 'emails', 'assigned_at')) {
+      db.exec('ALTER TABLE emails ADD COLUMN assigned_at TEXT');
+    }
+    db.exec(`
+      UPDATE emails
+      SET assigned_at = created_at
+      WHERE status IN ('assigned', 'completed') AND assigned_at IS NULL
+    `);
+    migrateNotifications(db);
+
+    const createdAt = new Date().toISOString();
+    db.prepare(`
+      INSERT OR IGNORE INTO departments (name, created_at)
+      SELECT trim(department), ?
+      FROM users
+      WHERE trim(department) <> ''
+      GROUP BY lower(trim(department))
+    `).run(createdAt);
+    db.prepare(`
+      INSERT OR IGNORE INTO workspace_settings
+        (id, time_unassigned_hours, time_assigned_unmarked_hours)
+      VALUES (1, 1, 24)
+    `).run();
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function createDatabase(filename = ':memory:') {
@@ -119,6 +204,14 @@ export function seedDemoData(
       'member',
       priyaPasswordHash,
     );
+
+    const insertDepartment = db.prepare(`
+      INSERT OR IGNORE INTO departments (name, created_at)
+      VALUES (?, ?)
+    `);
+    for (const name of ['Operations', 'Legal', 'Finance']) {
+      insertDepartment.run(name, createdAt);
+    }
 
     const insertRule = db.prepare(`
       INSERT INTO rules
