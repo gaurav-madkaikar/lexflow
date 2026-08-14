@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>LexFlow — Outlook assignment</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <section class="login-view" id="login-view" aria-labelledby="login-title">
+    <div class="login-card">
+      <div class="brand login-brand" aria-label="LexFlow">
+        <span class="logo" aria-hidden="true">L</span>
+        <span class="brand-name">LexFlow</span>
+      </div>
+      <p class="eyebrow">Shared mailbox operations</p>
+      <h1 id="login-title">Welcome back</h1>
+      <p class="login-copy">Sign in to review the email work assigned to your team.</p>
+
+      <form id="login-form" novalidate>
+        <label class="field">
+          <span>Email address</span>
+          <input id="login-email" name="email" type="email" autocomplete="username" required>
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" minlength="8" required>
+        </label>
+        <p class="form-error" id="login-error" role="alert" hidden></p>
+        <button class="button primary login-submit" type="submit">Sign in</button>
+      </form>
+
+      <p class="demo-note">Local demo credentials are listed in the project README.</p>
+    </div>
+  </section>
+
+  <section class="app-shell" id="app-view" aria-label="LexFlow workspace" hidden>
+    <button class="nav-backdrop" id="nav-backdrop" type="button" aria-label="Close navigation" tabindex="-1"></button>
+
+    <aside class="side" id="sidebar" aria-label="Workspace navigation">
+      <div class="brand side-brand">
+        <span class="logo" aria-hidden="true">L</span>
+        <span class="brand-name">LexFlow</span>
+        <button class="icon-button side-close" id="nav-close" type="button" aria-label="Close navigation">×</button>
+      </div>
+
+      <nav aria-label="Primary">
+        <div class="nav-section" id="admin-navigation" hidden>
+          <p class="nav-label">Workspace</p>
+          <div class="nav-list">
+            <button class="nav-item" type="button" data-view="inbox">
+              <span class="nav-icon" aria-hidden="true">↙</span>
+              <span>Inbox</span>
+              <span class="nav-badge" data-badge="inbox">0</span>
+            </button>
+            <button class="nav-item" type="button" data-view="assigned">
+              <span class="nav-icon" aria-hidden="true">→</span>
+              <span>Assigned</span>
+              <span class="nav-badge" data-badge="assigned">0</span>
+            </button>
+            <button class="nav-item" type="button" data-view="completed">
+              <span class="nav-icon" aria-hidden="true">✓</span>
+              <span>Completed</span>
+              <span class="nav-badge" data-badge="completed">0</span>
+            </button>
+          </div>
+
+          <div class="department-picker">
+            <label for="sidebar-department">Department</label>
+            <select id="sidebar-department">
+              <option value="All">All departments</option>
+              <option value="Legal">Legal</option>
+              <option value="Finance">Finance</option>
+            </select>
+          </div>
+
+          <p class="nav-label">Management</p>
+          <div class="nav-list">
+            <button class="nav-item" type="button" data-view="rules">
+              <span class="nav-icon" aria-hidden="true">⌘</span>
+              <span>Automation rules</span>
+              <span class="nav-badge" data-badge="rules">0</span>
+            </button>
+            <button class="nav-item" type="button" data-view="activity">
+              <span class="nav-icon" aria-hidden="true">◷</span>
+              <span>Activity</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="nav-section" id="member-navigation" hidden>
+          <p class="nav-label">Workspace</p>
+          <div class="nav-list">
+            <button class="nav-item" type="button" data-view="assigned">
+              <span class="nav-icon" aria-hidden="true">→</span>
+              <span>My work</span>
+              <span class="nav-badge" data-badge="assigned">0</span>
+            </button>
+            <button class="nav-item" type="button" data-view="completed">
+              <span class="nav-icon" aria-hidden="true">✓</span>
+              <span>Completed</span>
+              <span class="nav-badge" data-badge="completed">0</span>
+            </button>
+            <button class="nav-item" type="button" data-view="notifications">
+              <span class="nav-icon" aria-hidden="true">●</span>
+              <span>Notifications</span>
+              <span class="nav-badge" data-badge="notifications">0</span>
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      <div class="side-bottom">
+        <div class="mailbox-state">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span id="sidebar-mode">Demo mailbox</span>
+        </div>
+        <p id="sidebar-sync">Waiting for first sync</p>
+        <div class="signed-in-user">
+          <span class="avatar" id="sidebar-avatar" aria-hidden="true"></span>
+          <span>
+            <strong id="sidebar-user"></strong>
+            <small id="sidebar-role"></small>
+          </span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main-column">
+      <header class="topbar">
+        <div class="topbar-title">
+          <button class="icon-button mobile-menu" id="nav-open" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+          <div>
+            <h2 id="page-title">Unified intake</h2>
+            <span class="mode-chip" id="mode-chip">Demo mailbox</span>
+          </div>
+        </div>
+
+        <div class="top-actions">
+          <label class="search-field" for="search-input">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <span class="visually-hidden">Search emails</span>
+            <input id="search-input" type="search" placeholder="Search emails…" autocomplete="off">
+          </label>
+          <button class="button sync-button" id="sync-button" type="button" hidden>
+            <span aria-hidden="true">↻</span>
+            <span class="action-label">Sync</span>
+          </button>
+          <button class="icon-button notification-button" id="notification-button" type="button" aria-label="View notifications">
+            <span aria-hidden="true">●</span>
+            <span class="notification-count" id="notification-count">0</span>
+          </button>
+          <button class="button logout-button" id="logout-button" type="button">Sign out</button>
+        </div>
+      </header>
+
+      <main class="content" id="main-content">
+        <div class="status-banner" id="status-banner" role="alert" hidden></div>
+
+        <div class="department-switch" id="department-switch" aria-label="Filter by department">
+          <button type="button" data-department="All">All</button>
+          <button type="button" data-department="Legal">⚖ Legal</button>
+          <button type="button" data-department="Finance">Finance</button>
+        </div>
+
+        <section class="metrics" id="metrics" aria-label="Mailbox summary"></section>
+
+        <div class="dashboard-layout" id="dashboard-layout">
+          <section class="card queue-panel" id="queue-panel" aria-labelledby="queue-title">
+            <div class="card-head">
+              <div>
+                <h3 id="queue-title">Incoming work queue</h3>
+                <p id="queue-caption">New mailbox items</p>
+              </div>
+              <span id="email-count">0 emails</span>
+            </div>
+            <div class="email-list" id="email-list"></div>
+          </section>
+
+          <aside class="right-rail" id="right-rail" aria-label="Workspace details">
+            <section class="card panel" id="rules-panel" aria-labelledby="rules-title" hidden>
+              <div class="card-head">
+                <div>
+                  <h3 id="rules-title">Automation rules</h3>
+                  <p id="rules-caption">0 active</p>
+                </div>
+                <button class="small-button" id="new-rule-button" type="button">+ New rule</button>
+              </div>
+              <div id="rule-list"></div>
+            </section>
+
+            <section class="card panel" id="activity-panel" aria-labelledby="activity-title" hidden>
+              <div class="card-head">
+                <div>
+                  <h3 id="activity-title">Recent activity</h3>
+                  <p>Latest workflow events</p>
+                </div>
+              </div>
+              <div class="activity-list" id="activity-list"></div>
+            </section>
+
+            <section class="card panel" id="notifications-panel" aria-labelledby="notifications-title" hidden>
+              <div class="card-head">
+                <div>
+                  <h3 id="notifications-title">Notifications</h3>
+                  <p id="notifications-caption">0 unread</p>
+                </div>
+              </div>
+              <div class="notification-list" id="notification-list"></div>
+            </section>
+          </aside>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <dialog class="dialog rule-dialog" id="rule-dialog" aria-labelledby="rule-dialog-title">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">Admin only</p>
+        <h2 id="rule-dialog-title">Create automation rule</h2>
+      </div>
+      <button class="icon-button dialog-close" type="button" data-close-dialog="rule-dialog" aria-label="Close">×</button>
+    </div>
+    <form id="rule-form" novalidate>
+      <label class="field">
+        <span>Rule name</span>
+        <input name="name" autocomplete="off" placeholder="Legal NDA requests" maxlength="80" required>
+      </label>
+      <label class="field">
+        <span>Keywords</span>
+        <input name="keywords" autocomplete="off" placeholder="NDA, ACME" maxlength="200" required>
+        <small>Every comma-separated keyword must match the subject or preview.</small>
+      </label>
+      <label class="field">
+        <span>Sender contains <em>optional</em></span>
+        <input name="senderFilter" autocomplete="off" placeholder="@acme.com" maxlength="160">
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Assign to</span>
+          <select name="assigneeId" id="rule-assignee" required></select>
+        </label>
+        <label class="field">
+          <span>Priority</span>
+          <input name="priority" type="number" min="1" max="999" value="30" required>
+        </label>
+      </div>
+      <p class="form-error" id="rule-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="button" type="button" data-close-dialog="rule-dialog">Cancel</button>
+        <button class="button primary" type="submit">Create rule</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog email-dialog" id="email-dialog" aria-labelledby="email-dialog-title">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow" id="email-dialog-status">Assigned email</p>
+        <h2 id="email-dialog-title"></h2>
+      </div>
+      <button class="icon-button dialog-close" type="button" data-close-dialog="email-dialog" aria-label="Close">×</button>
+    </div>
+    <div class="email-detail">
+      <dl class="detail-grid">
+        <div><dt>From</dt><dd id="email-detail-sender"></dd></div>
+        <div><dt>Received</dt><dd id="email-detail-received"></dd></div>
+        <div><dt>Assigned to</dt><dd id="email-detail-assignee"></dd></div>
+        <div><dt>Department</dt><dd id="email-detail-department"></dd></div>
+      </dl>
+      <div class="message-preview">
+        <span>Message preview</span>
+        <p id="email-detail-preview"></p>
+      </div>
+      <p class="completion-note" id="email-completion-note" hidden></p>
+    </div>
+    <div class="dialog-actions detail-actions">
+      <a class="button" id="outlook-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Open in Outlook</a>
+      <button class="button primary" id="complete-button" type="button" hidden>Mark complete</button>
+    </div>
+  </dialog>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
