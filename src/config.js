@@ -18,7 +18,7 @@ export function loadConfig(env = process.env) {
     throw new RangeError('PORT must be between 1 and 65535');
   }
 
-  const syncIntervalSeconds = integerSetting(env, 'SYNC_INTERVAL_SECONDS', 300);
+  const syncIntervalSeconds = integerSetting(env, 'SYNC_INTERVAL_SECONDS', 60);
   if (syncIntervalSeconds !== 0 && (syncIntervalSeconds < 60 || syncIntervalSeconds > 86_400)) {
     throw new RangeError('SYNC_INTERVAL_SECONDS must be 0 or between 60 and 86400');
   }

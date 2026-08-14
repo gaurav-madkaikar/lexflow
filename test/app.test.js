@@ -373,17 +373,41 @@ test('only admins manage departments, team placement, and workspace limits', asy
   assert.equal('team' in memberBootstrap.body, false);
 });
 
-test('completion records the member and time for admin activity', async (context) => {
+test('completion records activity and notifies every admin once', async (context) => {
   const harness = await createApiHarness(context);
   const mayaCookie = await harness.login('maya@lexflow.local', 'welcome123');
   const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
   const email = harness.emailAssignedTo('maya@lexflow.local');
+  const secondAdminPasswordHash = await hashPassword('secondadmin123');
+  harness.db.prepare(`
+    INSERT INTO users (email, name, initials, department, role, password_hash)
+    VALUES ('ops2@lexflow.local', 'Second Admin', 'SA', 'Operations', 'admin', ?)
+  `).run(secondAdminPasswordHash);
 
   const completion = await harness.post(`/api/emails/${email.id}/complete`, {}, mayaCookie);
+  const repeatedCompletion = await harness.post(
+    `/api/emails/${email.id}/complete`,
+    {},
+    mayaCookie,
+  );
   const admin = await harness.get('/api/bootstrap', adminCookie);
   const event = admin.body.activity.find(item => item.kind === 'completed' && item.emailId === email.id);
+  const completionNotifications = admin.body.notifications.filter(item => (
+    item.kind === 'completion' && item.emailId === email.id
+  ));
 
   assert.equal(completion.status, 200);
+  assert.equal(repeatedCompletion.status, 200);
   assert.equal(event.actor.name, 'Maya Shah');
   assert.match(event.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(completionNotifications.length, 1);
+  assert.equal(completionNotifications[0].readAt, null);
+  assert.equal(harness.db.prepare(`
+    SELECT count(*) AS count FROM notifications
+    WHERE email_id = ? AND kind = 'completion'
+  `).get(email.id).count, 2);
+  assert.equal(harness.db.prepare(`
+    SELECT count(*) AS count FROM activity
+    WHERE email_id = ? AND kind = 'completed'
+  `).get(email.id).count, 1);
 });

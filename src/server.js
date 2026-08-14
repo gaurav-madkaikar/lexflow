@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { createApp } from './app.js';
+import { createAlertRunner } from './alerts.js';
 import { hashPassword } from './auth.js';
 import { loadConfig } from './config.js';
 import { createDatabase, seedDemoData } from './db.js';
@@ -50,14 +51,15 @@ if (userCount === 0 || config.mode === 'graph') {
 
 const source = createMailSource(config);
 const syncRunner = createSyncRunner({ db, source });
+const alertRunner = createAlertRunner({ db });
 const app = createApp({ db, syncRunner, mode: config.mode });
 const server = app.listen(config.port, '127.0.0.1', () => {
   console.log(`LexFlow listening at http://127.0.0.1:${config.port} (${config.mode} mode)`);
 });
 
-let timer;
+let syncTimer;
 if (config.syncIntervalSeconds > 0) {
-  timer = setInterval(async () => {
+  syncTimer = setInterval(async () => {
     try {
       const result = await syncRunner.run();
       console.log(`Mail sync complete: ${result.imported} imported, ${result.assigned} assigned`);
@@ -65,14 +67,25 @@ if (config.syncIntervalSeconds > 0) {
       console.error(`Mail sync failed: ${error.message}`);
     }
   }, config.syncIntervalSeconds * 1000);
-  timer.unref();
+  syncTimer.unref();
 }
+
+function reportAlertError(error) {
+  console.error(`Overdue alert sweep failed: ${error.message}`);
+}
+
+alertRunner.run().catch(reportAlertError);
+const alertTimer = setInterval(() => {
+  alertRunner.run().catch(reportAlertError);
+}, 60_000);
+alertTimer.unref();
 
 let stopping = false;
 function stop() {
   if (stopping) return;
   stopping = true;
-  if (timer) clearInterval(timer);
+  if (syncTimer) clearInterval(syncTimer);
+  clearInterval(alertTimer);
   server.close(() => {
     db.close();
   });

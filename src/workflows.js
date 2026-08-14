@@ -300,6 +300,16 @@ export function completeAssignedEmail({ db, emailId, userId, now = new Date() })
         INSERT INTO activity (actor_id, email_id, kind, message, created_at)
         VALUES (?, ?, 'completed', ?, ?)
       `).run(userId, emailId, `${actor.name} completed "${email.subject}"`, completedAt);
+      db.prepare(`
+        INSERT INTO notifications (user_id, email_id, kind, message, created_at)
+        SELECT id, ?, 'completion', ?, ?
+        FROM users
+        WHERE role = 'admin'
+      `).run(emailId, `${actor.name} completed "${email.subject}"`, completedAt);
+      db.prepare(`
+        DELETE FROM alert_deliveries
+        WHERE email_id = ? AND kind = 'assigned_overdue'
+      `).run(emailId);
       return email;
     }
 
