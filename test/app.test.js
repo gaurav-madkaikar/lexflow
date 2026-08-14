@@ -293,6 +293,86 @@ test('admin assigns and reassigns open email while members cannot assign', async
   assert.equal(completedConflict.status, 409);
 });
 
+test('only admins manage departments, team placement, and workspace limits', async (context) => {
+  const harness = await createApiHarness(context);
+  const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
+  const memberCookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const mayaId = harness.userId('maya@lexflow.local');
+
+  assert.equal((await harness.post(
+    '/api/departments',
+    { name: 'Compliance' },
+    memberCookie,
+  )).status, 403);
+  assert.equal((await harness.patch(
+    `/api/team/${mayaId}/department`,
+    { departmentId: 1 },
+    memberCookie,
+  )).status, 403);
+  assert.equal((await harness.patch(
+    '/api/settings',
+    { timeUnassignedHours: 2, timeAssignedUnmarkedHours: 12 },
+    memberCookie,
+  )).status, 403);
+
+  const created = await harness.post(
+    '/api/departments',
+    { name: '  Compliance  ' },
+    adminCookie,
+  );
+  assert.equal(created.status, 201);
+  assert.equal(created.body.department.name, 'Compliance');
+
+  const duplicate = await harness.post(
+    '/api/departments',
+    { name: 'compliance' },
+    adminCookie,
+  );
+  assert.equal(duplicate.status, 400);
+  assert.equal(duplicate.body.error.code, 'INVALID_INPUT');
+  assert.ok(duplicate.body.error.fields.name);
+
+  const moved = await harness.patch(
+    `/api/team/${mayaId}/department`,
+    { departmentId: created.body.department.id },
+    adminCookie,
+  );
+  assert.equal(moved.status, 200);
+  assert.equal(moved.body.member.department, 'Compliance');
+
+  const invalidSettings = await harness.patch(
+    '/api/settings',
+    { timeUnassignedHours: 0, timeAssignedUnmarkedHours: 12 },
+    adminCookie,
+  );
+  assert.equal(invalidSettings.status, 400);
+  assert.ok(invalidSettings.body.error.fields.timeUnassignedHours);
+
+  const settings = await harness.patch(
+    '/api/settings',
+    { timeUnassignedHours: 2, timeAssignedUnmarkedHours: 12 },
+    adminCookie,
+  );
+  assert.equal(settings.status, 200);
+  assert.deepEqual(settings.body.settings, {
+    timeUnassignedHours: 2,
+    timeAssignedUnmarkedHours: 12,
+  });
+
+  const adminBootstrap = await harness.get('/api/bootstrap', adminCookie);
+  assert.ok(adminBootstrap.body.departments.some(item => item.name === 'Compliance'));
+  assert.equal(
+    adminBootstrap.body.team.find(item => item.id === mayaId).department,
+    'Compliance',
+  );
+  assert.deepEqual(adminBootstrap.body.settings, settings.body.settings);
+
+  const memberBootstrap = await harness.get('/api/bootstrap', memberCookie);
+  assert.equal('departments' in memberBootstrap.body, false);
+  assert.equal('settings' in memberBootstrap.body, false);
+  assert.equal('team' in memberBootstrap.body, false);
+});
+
 test('completion records the member and time for admin activity', async (context) => {
   const harness = await createApiHarness(context);
   const mayaCookie = await harness.login('maya@lexflow.local', 'welcome123');

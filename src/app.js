@@ -18,6 +18,13 @@ import {
   assignEmailManually,
   completeAssignedEmail,
 } from './workflows.js';
+import {
+  createDepartment,
+  getWorkspaceSettings,
+  listDepartments,
+  moveMemberToDepartment,
+  updateWorkspaceSettings,
+} from './workspace.js';
 
 const publicDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 
@@ -265,9 +272,54 @@ export function createApp({
         .all().map(safeUser);
       payload.activity = listActivity(db);
       payload.sync = syncSummary(db);
+      payload.departments = listDepartments(db);
+      payload.settings = getWorkspaceSettings(db);
     }
 
     response.json(payload);
+  });
+
+  app.post('/api/departments', requireAdmin, (request, response, next) => {
+    try {
+      const department = createDepartment({
+        db,
+        name: request.body?.name,
+        now: clock(),
+      });
+      response.status(201).json({ department });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/team/:id/department', requireAdmin, (request, response, next) => {
+    try {
+      const userId = resourceId(request.params.id);
+      const departmentId = resourceId(request.body?.departmentId);
+      if (!userId) return notFound(response, 'Team member not found.');
+      if (!departmentId) {
+        return validationError(response, 'Choose a valid department.', 'departmentId');
+      }
+      response.json({
+        member: moveMemberToDepartment({ db, userId, departmentId }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/settings', requireAdmin, (request, response, next) => {
+    try {
+      response.json({
+        settings: updateWorkspaceSettings({
+          db,
+          timeUnassignedHours: Number(request.body?.timeUnassignedHours),
+          timeAssignedUnmarkedHours: Number(request.body?.timeAssignedUnmarkedHours),
+        }),
+      });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post('/api/sync', requireAdmin, async (request, response, next) => {
