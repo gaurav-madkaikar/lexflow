@@ -5,14 +5,20 @@ const state = {
   query: '',
   selectedEmailId: null,
   sidebarOpen: false,
-  pollTimer: null
+  pollTimer: null,
+  settingsDirty: false
 };
 
 const elements = {
+  skipLink: document.querySelector('#skip-link'),
   loginView: document.querySelector('#login-view'),
   loginForm: document.querySelector('#login-form'),
   loginError: document.querySelector('#login-error'),
   appView: document.querySelector('#app-view'),
+  sidebar: document.querySelector('#sidebar'),
+  mainContent: document.querySelector('#main-content'),
+  navOpen: document.querySelector('#nav-open'),
+  navClose: document.querySelector('#nav-close'),
   pageTitle: document.querySelector('#page-title'),
   modeChip: document.querySelector('#mode-chip'),
   adminNavigation: document.querySelector('#admin-navigation'),
@@ -43,6 +49,12 @@ const elements = {
   notificationsPanel: document.querySelector('#notifications-panel'),
   notificationsCaption: document.querySelector('#notifications-caption'),
   notificationList: document.querySelector('#notification-list'),
+  settingsPanel: document.querySelector('#settings-panel'),
+  timingForm: document.querySelector('#timing-form'),
+  timingError: document.querySelector('#timing-error'),
+  departmentForm: document.querySelector('#department-form'),
+  departmentError: document.querySelector('#department-error'),
+  teamDepartmentList: document.querySelector('#team-department-list'),
   statusBanner: document.querySelector('#status-banner'),
   ruleDialog: document.querySelector('#rule-dialog'),
   ruleForm: document.querySelector('#rule-form'),
@@ -57,6 +69,11 @@ const elements = {
   emailDetailDepartment: document.querySelector('#email-detail-department'),
   emailDetailPreview: document.querySelector('#email-detail-preview'),
   emailCompletionNote: document.querySelector('#email-completion-note'),
+  emailAssignmentForm: document.querySelector('#email-assignment-form'),
+  emailAssigneeSelect: document.querySelector('#email-assignee-select'),
+  emailAssignmentLabel: document.querySelector('#email-assignment-label'),
+  assignmentError: document.querySelector('#assignment-error'),
+  assignButton: document.querySelector('#assign-button'),
   outlookLink: document.querySelector('#outlook-link'),
   completeButton: document.querySelector('#complete-button'),
   toastRegion: document.querySelector('#toast-region')
@@ -70,7 +87,8 @@ function node(tag, className, text) {
 }
 
 function setText(element, value, fallback = '') {
-  element.textContent = value === null || value === undefined || value === '' ? fallback : String(value);
+  const next = value === null || value === undefined || value === '' ? fallback : String(value);
+  if (element.textContent !== next) element.textContent = next;
 }
 
 function clearFieldErrors(form) {
@@ -84,6 +102,7 @@ function clearFieldErrors(form) {
 function showFormError(form, errorElement, error) {
   setText(errorElement, error.message);
   errorElement.hidden = false;
+  let firstInvalid = null;
   for (const [name, message] of Object.entries(error.fields ?? {})) {
     const control = form.elements.namedItem(name);
     if (!(control instanceof HTMLElement)) continue;
@@ -93,6 +112,12 @@ function showFormError(form, errorElement, error) {
     control.insertAdjacentElement('afterend', detail);
     control.setAttribute('aria-invalid', 'true');
     control.setAttribute('aria-describedby', id);
+    firstInvalid ??= control;
+  }
+  if (firstInvalid) firstInvalid.focus();
+  else {
+    errorElement.tabIndex = -1;
+    errorElement.focus();
   }
 }
 
@@ -163,6 +188,11 @@ async function mutate(path, method = 'POST', body) {
 function showLogin() {
   stopPolling();
   closeSidebar();
+  if (elements.emailDialog.open) elements.emailDialog.close();
+  if (elements.ruleDialog.open) elements.ruleDialog.close();
+  state.selectedEmailId = null;
+  state.settingsDirty = false;
+  elements.skipLink.hidden = true;
   elements.appView.hidden = true;
   elements.loginView.hidden = false;
   elements.loginForm.email.focus();
@@ -171,12 +201,13 @@ function showLogin() {
 function showApp() {
   elements.loginView.hidden = true;
   elements.appView.hidden = false;
+  elements.skipLink.hidden = false;
 }
 
 function normalizeView() {
   const isAdmin = state.session?.user.role === 'admin';
   const allowed = isAdmin
-    ? ['inbox', 'assigned', 'completed', 'rules', 'activity', 'notifications']
+    ? ['inbox', 'assigned', 'completed', 'rules', 'activity', 'settings', 'notifications']
     : ['assigned', 'completed', 'notifications'];
   if (!allowed.includes(state.view)) state.view = isAdmin ? 'inbox' : 'assigned';
 }
@@ -187,11 +218,25 @@ function showToast(message, isError = false) {
   window.setTimeout(() => toast.remove(), 4200);
 }
 
+function buttonLabelElement(button) {
+  return button.querySelector('[data-button-label], .button-label, .action-label');
+}
+
+function setButtonLabel(button, label) {
+  const target = buttonLabelElement(button);
+  if (target) target.textContent = label;
+  else button.textContent = label;
+  button.dataset.label = label;
+}
+
 function setButtonBusy(button, busy, busyText) {
-  if (!button.dataset.label) button.dataset.label = button.textContent.trim();
+  const target = buttonLabelElement(button);
+  if (!button.dataset.label) button.dataset.label = (target ?? button).textContent.trim();
   button.disabled = busy;
   button.setAttribute('aria-busy', String(busy));
-  button.textContent = busy ? busyText : button.dataset.label;
+  const label = busy ? busyText : button.dataset.label;
+  if (target) target.textContent = label;
+  else button.textContent = label;
 }
 
 function emptyState(title, message, mark = '—') {
@@ -230,14 +275,52 @@ function renderMetrics() {
         ['Open assigned', totals.assigned, 'Across the team'],
         ['Completed', totals.completed, 'Recorded workflow items'],
         ['Active rules', totals.rules, 'Ordered by priority'],
-        ['Unread', totals.notifications, 'Assignment notifications']
+        ['Unread', totals.notifications, 'Work alerts and updates']
       ]
     : [
         ['Open assigned', totals.assigned, 'Ready for your review'],
         ['Completed', totals.completed, 'Work you have finished'],
-        ['Unread', totals.notifications, 'Assignment notifications']
+        ['Unread', totals.notifications, 'Work alerts and updates']
       ];
+  elements.metrics.style.setProperty('--metric-count', String(items.length));
   elements.metrics.replaceChildren(...items.map(item => metric(...item)));
+}
+
+function renderDepartments() {
+  if (state.session.user.role !== 'admin') return;
+  const departments = state.session.departments ?? [];
+  const validDepartments = new Set(['All', ...departments.map(department => department.name)]);
+  if (!validDepartments.has(state.department)) state.department = 'All';
+  const signature = departments.map(department => `${department.id}:${department.name}`).join('|');
+
+  if (elements.sidebarDepartment.dataset.signature !== signature) {
+    const allOption = node('option', '', 'All departments');
+    allOption.value = 'All';
+    const departmentOptions = departments.map(department => {
+      const option = node('option', '', department.name);
+      option.value = department.name;
+      return option;
+    });
+    elements.sidebarDepartment.replaceChildren(allOption, ...departmentOptions);
+    elements.sidebarDepartment.dataset.signature = signature;
+  }
+  elements.sidebarDepartment.value = state.department;
+
+  if (elements.departmentSwitch.dataset.signature !== signature) {
+    const filterButtons = ['All', ...departments.map(department => department.name)].map(name => {
+      const button = node('button', '', name);
+      button.type = 'button';
+      button.dataset.department = name;
+      return button;
+    });
+    elements.departmentSwitch.replaceChildren(...filterButtons);
+    elements.departmentSwitch.dataset.signature = signature;
+  }
+  elements.departmentSwitch.querySelectorAll('[data-department]').forEach(button => {
+    const active = button.dataset.department === state.department;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
 }
 
 function emailMatchesDepartment(email) {
@@ -268,7 +351,6 @@ function renderEmailRow(email) {
   const row = node('button', `email-row ${email.status}`);
   row.type = 'button';
   row.dataset.emailId = String(email.id);
-  row.setAttribute('aria-label', `Open ${email.subject}`);
 
   const dot = node('span', `status-dot ${email.status}`);
   dot.setAttribute('aria-hidden', 'true');
@@ -279,7 +361,7 @@ function renderEmailRow(email) {
   const meta = node('span', 'email-meta', `${sender} · ${formatDate(email.receivedAt, false)}`);
   const preview = node('span', 'email-preview', email.preview || 'No preview available.');
   const tags = node('span', 'email-tags');
-  if (email.department) tags.append(node('span', `tag ${email.department.toLocaleLowerCase()}`, email.department));
+  if (email.department) tags.append(node('span', 'tag department', email.department));
   const statusLabel = email.status === 'unassigned' ? 'Unassigned' : email.status === 'completed' ? 'Completed' : 'Assigned';
   tags.append(node('span', `tag ${email.status}`, statusLabel));
   copy.append(subject, meta, preview, tags);
@@ -304,15 +386,15 @@ function renderEmails() {
   setText(elements.emailCount, countLabel(emails.length, 'email'));
   elements.emailList.replaceChildren(...(emails.length
     ? emails.map(renderEmailRow)
-    : [emptyState('Nothing here', state.query ? 'No emails match your search and filters.' : 'This queue is clear.', '✓')]));
+    : [emptyState('Nothing here', state.query ? 'No emails match your search and filters.' : 'This queue is clear.')]));
 }
 
 function renderRule(rule) {
   const item = node('article', `rule-item${rule.enabled ? '' : ' is-disabled'}`);
   const copy = node('div');
   copy.append(
-    node('h4', '', rule.name),
-    node('p', '', `${rule.keywords}${rule.senderFilter ? ` · From “${rule.senderFilter}”` : ''} → ${rule.assignee?.name || 'Unknown member'}`),
+    node('h3', '', rule.name),
+    node('p', '', `${rule.keywords}${rule.senderFilter ? ` · From “${rule.senderFilter}”` : ''} · Assign to ${rule.assignee?.name || 'Unknown member'}`),
     node('p', '', `Priority ${rule.priority} · ${rule.enabled ? 'Active' : 'Paused'}`)
   );
   const actions = node('div', 'rule-actions');
@@ -336,7 +418,7 @@ function renderRules() {
   setText(elements.rulesCaption, `${activeCount} active`);
   elements.ruleList.replaceChildren(...(rules.length
     ? rules.map(renderRule)
-    : [emptyState('No automation rules', 'Create a rule to route matching email.', '⌘')]));
+    : [emptyState('No automation rules', 'Create a rule to route matching email.')]));
 }
 
 function renderActivityItem(item) {
@@ -356,14 +438,20 @@ function renderActivity() {
   const activity = state.session.activity ?? [];
   elements.activityList.replaceChildren(...(activity.length
     ? activity.map(renderActivityItem)
-    : [emptyState('No activity yet', 'Assignments and completions will appear here.', '◷')]));
+    : [emptyState('No activity yet', 'Assignments and completions will appear here.')]));
 }
 
 function renderNotification(item) {
   const wrapper = node('article', `notification-item${item.readAt ? '' : ' unread'}`);
   const top = node('div', 'notification-top');
+  const titles = {
+    assignment: item.readAt ? 'Assignment' : 'New assignment',
+    completion: 'Email completed',
+    unassigned_overdue: 'Unassigned email overdue',
+    assigned_overdue: 'Assigned work overdue'
+  };
   top.append(
-    node('strong', '', item.readAt ? 'Assignment' : 'New assignment'),
+    node('strong', '', titles[item.kind] || 'Workflow update'),
     node('time', '', formatDate(item.createdAt, false))
   );
   wrapper.append(top, node('p', '', item.message));
@@ -390,7 +478,59 @@ function renderNotifications() {
   setText(elements.notificationsCaption, `${state.session.unreadCount ?? 0} unread`);
   elements.notificationList.replaceChildren(...(notifications.length
     ? notifications.map(renderNotification)
-    : [emptyState('You are all caught up', 'New assignment notifications will appear here.', '✓')]));
+    : [emptyState('You are all caught up', 'Assignments, completions, and overdue work will appear here.')]));
+}
+
+function renderTeamMember(member, departments) {
+  const item = node('article', 'team-member');
+  const identity = node('div', 'team-member-copy');
+  const avatar = node('span', 'avatar', member.initials || '—');
+  avatar.setAttribute('aria-hidden', 'true');
+  const copy = node('span');
+  copy.append(node('strong', '', member.name), node('small', '', member.email));
+  identity.append(avatar, copy);
+
+  const control = node('label', 'team-member-control');
+  const label = node('span', 'visually-hidden', `Department for ${member.name}`);
+  const select = node('select');
+  select.name = 'departmentId';
+  select.dataset.memberId = String(member.id);
+  select.setAttribute('aria-label', `Department for ${member.name}`);
+  const options = departments.map(department => {
+    const option = node('option', '', department.name);
+    option.value = String(department.id);
+    option.selected = department.name === member.department;
+    return option;
+  });
+  select.replaceChildren(...options);
+  if (!options.some(option => option.selected) && options[0]) options[0].selected = true;
+  select.dataset.previousValue = select.value;
+  control.append(label, select);
+  item.append(identity, control);
+  return item;
+}
+
+function renderSettings() {
+  if (state.session.user.role !== 'admin') return;
+  const settings = state.session.settings;
+  if (settings && !state.settingsDirty) {
+    elements.timingForm.elements.namedItem('timeUnassignedHours').value = String(settings.timeUnassignedHours);
+    elements.timingForm.elements.namedItem('timeAssignedUnmarkedHours').value = String(settings.timeAssignedUnmarkedHours);
+  }
+
+  const departments = state.session.departments ?? [];
+  const members = state.session.team ?? [];
+  const signature = [
+    ...departments.map(department => `d:${department.id}:${department.name}`),
+    ...members.map(member => `m:${member.id}:${member.department}`)
+  ].join('|');
+  if (elements.teamDepartmentList.dataset.signature !== signature) {
+    elements.teamDepartmentList.replaceChildren(...(members.length
+      ? members.map(member => renderTeamMember(member, departments))
+      : [emptyState('No team members', 'Add member accounts before assigning departments.')]
+    ));
+    elements.teamDepartmentList.dataset.signature = signature;
+  }
 }
 
 function renderNav() {
@@ -409,13 +549,15 @@ function renderNav() {
 function renderPanels() {
   const isAdmin = state.session.user.role === 'admin';
   const isQueue = ['inbox', 'assigned', 'completed'].includes(state.view);
+  const canFilterDepartment = isAdmin && ['assigned', 'completed'].includes(state.view);
   const isFocus = !isQueue;
   elements.dashboardLayout.classList.toggle('focus-view', isFocus);
   elements.queuePanel.hidden = !isQueue;
   elements.rulesPanel.hidden = !isAdmin || (isFocus && state.view !== 'rules');
   elements.activityPanel.hidden = !isAdmin || (isFocus && state.view !== 'activity');
+  elements.settingsPanel.hidden = !isAdmin || state.view !== 'settings';
   elements.notificationsPanel.hidden = isFocus ? state.view !== 'notifications' : isAdmin;
-  elements.departmentSwitch.hidden = !isQueue;
+  elements.departmentSwitch.hidden = !canFilterDepartment;
   elements.metrics.hidden = isFocus;
 }
 
@@ -426,6 +568,7 @@ function renderHeader() {
     completed: 'Completed',
     rules: 'Automation rules',
     activity: 'Activity',
+    settings: 'Workspace settings',
     notifications: 'Notifications'
   };
   setText(elements.pageTitle, titles[state.view]);
@@ -459,11 +602,8 @@ function render() {
   elements.adminNavigation.hidden = !isAdmin;
   elements.memberNavigation.hidden = isAdmin;
   elements.syncButton.hidden = !isAdmin;
-  elements.sidebarDepartment.closest('.department-picker').hidden = !isAdmin;
-  elements.sidebarDepartment.value = state.department;
-  elements.departmentSwitch.querySelectorAll('[data-department]').forEach(button => {
-    button.classList.toggle('active', button.dataset.department === state.department);
-  });
+  elements.sidebarDepartment.closest('.department-picker').hidden = !isAdmin || !['assigned', 'completed'].includes(state.view);
+  if (isAdmin) renderDepartments();
   setText(elements.notificationCount, state.session.unreadCount || '');
   elements.notificationButton.setAttribute('aria-label', `View notifications, ${state.session.unreadCount ?? 0} unread`);
   renderIdentity();
@@ -474,6 +614,7 @@ function render() {
   if (isAdmin) {
     renderRules();
     renderActivity();
+    renderSettings();
   }
   renderNotifications();
   renderPanels();
@@ -481,9 +622,14 @@ function render() {
 
 function selectView(view) {
   state.view = view;
+  if (view === 'inbox') state.department = 'All';
   normalizeView();
   closeSidebar();
   render();
+  window.requestAnimationFrame(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    elements.mainContent.focus({ preventScroll: true });
+  });
 }
 
 function selectDepartment(department) {
@@ -491,17 +637,30 @@ function selectDepartment(department) {
   render();
 }
 
+const mobileNavigation = window.matchMedia('(max-width: 1023px)');
+
+function updateSidebarAccessibility() {
+  const closedOffCanvas = mobileNavigation.matches && !state.sidebarOpen;
+  elements.sidebar.inert = closedOffCanvas;
+  if (closedOffCanvas) elements.sidebar.setAttribute('aria-hidden', 'true');
+  else elements.sidebar.removeAttribute('aria-hidden');
+}
+
 function openSidebar() {
   state.sidebarOpen = true;
   elements.appView.classList.add('nav-open');
-  document.querySelector('#nav-open').setAttribute('aria-expanded', 'true');
-  document.querySelector('#nav-close').focus();
+  elements.navOpen.setAttribute('aria-expanded', 'true');
+  updateSidebarAccessibility();
+  elements.navClose.focus();
 }
 
-function closeSidebar() {
+function closeSidebar(restoreFocus = false) {
+  const wasOpen = state.sidebarOpen;
   state.sidebarOpen = false;
   elements.appView.classList.remove('nav-open');
-  document.querySelector('#nav-open').setAttribute('aria-expanded', 'false');
+  elements.navOpen.setAttribute('aria-expanded', 'false');
+  updateSidebarAccessibility();
+  if (restoreFocus && wasOpen && mobileNavigation.matches) elements.navOpen.focus();
 }
 
 function openEmail(emailId) {
@@ -524,6 +683,33 @@ function openEmail(emailId) {
   }
   elements.completeButton.hidden = state.session.user.role !== 'member' || email.status !== 'assigned';
 
+  clearFieldErrors(elements.emailAssignmentForm);
+  elements.assignmentError.hidden = true;
+  const canAssign = state.session.user.role === 'admin' && !completed;
+  elements.emailAssignmentForm.hidden = !canAssign;
+  elements.assignButton.hidden = !canAssign;
+  if (canAssign) {
+    const members = state.session.team ?? [];
+    const options = members.map(member => {
+      const option = node('option', '', `${member.name} · ${member.department}`);
+      option.value = String(member.id);
+      option.selected = member.id === email.assignee?.id;
+      return option;
+    });
+    elements.emailAssigneeSelect.replaceChildren(...options);
+    if (!options.some(option => option.selected) && options[0]) options[0].selected = true;
+    const reassigning = email.status === 'assigned';
+    setText(elements.emailAssignmentLabel, reassigning ? 'Reassign to' : 'Assign to');
+    setButtonLabel(elements.assignButton, reassigning ? 'Reassign' : 'Assign');
+    elements.assignButton.disabled = options.length === 0;
+    if (!options.length) {
+      setText(elements.assignmentError, 'Add a team member before assigning email.');
+      elements.assignmentError.hidden = false;
+    }
+  } else {
+    elements.emailAssigneeSelect.replaceChildren();
+  }
+
   const outlookUrl = safeWebUrl(email.outlookUrl);
   elements.outlookLink.hidden = !outlookUrl;
   if (outlookUrl) elements.outlookLink.href = outlookUrl;
@@ -532,6 +718,7 @@ function openEmail(emailId) {
 }
 
 function openRuleDialog() {
+  if (state.session?.user.role !== 'admin') return;
   elements.ruleForm.reset();
   clearFieldErrors(elements.ruleForm);
   elements.ruleForm.priority.value = '30';
@@ -594,6 +781,8 @@ document.querySelector('#logout-button').addEventListener('click', async () => {
     state.view = 'inbox';
     state.department = 'All';
     state.query = '';
+    state.selectedEmailId = null;
+    state.settingsDirty = false;
     elements.searchInput.value = '';
     showLogin();
     setButtonBusy(button, false, '…');
@@ -610,6 +799,9 @@ elements.departmentSwitch.addEventListener('click', event => {
 });
 
 elements.sidebarDepartment.addEventListener('change', event => selectDepartment(event.target.value));
+elements.timingForm.addEventListener('input', () => {
+  state.settingsDirty = true;
+});
 elements.searchInput.addEventListener('input', event => {
   state.query = event.target.value.trim().toLocaleLowerCase();
   renderEmails();
@@ -621,13 +813,125 @@ elements.emailList.addEventListener('click', event => {
 });
 
 elements.notificationButton.addEventListener('click', () => selectView('notifications'));
-document.querySelector('#nav-open').addEventListener('click', openSidebar);
-document.querySelector('#nav-close').addEventListener('click', closeSidebar);
-document.querySelector('#nav-backdrop').addEventListener('click', closeSidebar);
+elements.navOpen.addEventListener('click', openSidebar);
+elements.navClose.addEventListener('click', () => closeSidebar(true));
+document.querySelector('#nav-backdrop').addEventListener('click', () => closeSidebar(true));
+
+elements.sidebar.addEventListener('keydown', event => {
+  if (event.key !== 'Tab' || !mobileNavigation.matches || !state.sidebarOpen) return;
+  const focusable = [...elements.sidebar.querySelectorAll('button:not(:disabled), select:not(:disabled)')]
+    .filter(control => control.getClientRects().length > 0);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
+mobileNavigation.addEventListener('change', event => {
+  if (!event.matches) {
+    state.sidebarOpen = false;
+    elements.appView.classList.remove('nav-open');
+    elements.navOpen.setAttribute('aria-expanded', 'false');
+  }
+  updateSidebarAccessibility();
+});
+updateSidebarAccessibility();
 
 document.querySelector('#new-rule-button').addEventListener('click', openRuleDialog);
 document.querySelectorAll('[data-close-dialog]').forEach(button => {
   button.addEventListener('click', () => closeDialog(button.dataset.closeDialog));
+});
+
+elements.timingForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  clearFieldErrors(elements.timingForm);
+  elements.timingError.hidden = true;
+  if (!elements.timingForm.reportValidity()) return;
+  const submit = elements.timingForm.querySelector('[type="submit"]');
+  const form = new FormData(elements.timingForm);
+  setButtonBusy(submit, true, 'Saving…');
+  try {
+    const result = await api('/api/settings', {
+      method: 'PATCH',
+      body: {
+        timeUnassignedHours: Number(form.get('timeUnassignedHours')),
+        timeAssignedUnmarkedHours: Number(form.get('timeAssignedUnmarkedHours'))
+      }
+    });
+    state.session.settings = result.settings;
+    state.settingsDirty = false;
+    renderSettings();
+    showToast('Response timing updated for the workspace.');
+  } catch (error) {
+    if (!state.session) return;
+    state.settingsDirty = true;
+    showFormError(elements.timingForm, elements.timingError, error);
+  } finally {
+    setButtonBusy(submit, false, 'Saving…');
+  }
+});
+
+elements.departmentForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  clearFieldErrors(elements.departmentForm);
+  elements.departmentError.hidden = true;
+  if (!elements.departmentForm.reportValidity()) return;
+  const submit = elements.departmentForm.querySelector('[type="submit"]');
+  const name = elements.departmentForm.elements.namedItem('name').value.trim();
+  setButtonBusy(submit, true, 'Adding…');
+  try {
+    await mutate('/api/departments', 'POST', { name });
+    elements.departmentForm.reset();
+    elements.departmentForm.elements.namedItem('name').focus();
+    showToast(`${name} added to the workspace.`);
+  } catch (error) {
+    if (!state.session) return;
+    showFormError(elements.departmentForm, elements.departmentError, error);
+  } finally {
+    setButtonBusy(submit, false, 'Adding…');
+  }
+});
+
+elements.teamDepartmentList.addEventListener('change', async event => {
+  const select = event.target.closest('select[data-member-id]');
+  if (!select || state.session?.user.role !== 'admin') return;
+  const item = select.closest('.team-member');
+  const priorError = item.querySelector('.team-change-error');
+  if (priorError) priorError.remove();
+  select.removeAttribute('aria-invalid');
+  select.removeAttribute('aria-describedby');
+  const previousValue = select.dataset.previousValue;
+  const memberName = item.querySelector('strong')?.textContent || 'Team member';
+  select.disabled = true;
+  select.setAttribute('aria-busy', 'true');
+  try {
+    await api(`/api/team/${select.dataset.memberId}/department`, {
+      method: 'PATCH',
+      body: { departmentId: Number(select.value) }
+    });
+    select.dataset.previousValue = select.value;
+    await refresh({ quiet: true });
+    showToast(`${memberName} moved to the selected department.`);
+  } catch (error) {
+    if (!state.session) return;
+    select.value = previousValue;
+    const detail = node('small', 'field-error team-change-error', error.message);
+    detail.id = `team-member-${select.dataset.memberId}-error`;
+    detail.setAttribute('role', 'alert');
+    item.append(detail);
+    select.setAttribute('aria-invalid', 'true');
+    select.setAttribute('aria-describedby', detail.id);
+    select.focus();
+  } finally {
+    select.disabled = false;
+    select.setAttribute('aria-busy', 'false');
+  }
 });
 
 elements.ruleForm.addEventListener('submit', async event => {
@@ -690,6 +994,39 @@ elements.syncButton.addEventListener('click', async () => {
   }
 });
 
+elements.emailAssignmentForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!state.selectedEmailId || state.session?.user.role !== 'admin') return;
+  clearFieldErrors(elements.emailAssignmentForm);
+  elements.assignmentError.hidden = true;
+  if (!elements.emailAssignmentForm.reportValidity()) return;
+
+  const email = (state.session.emails ?? []).find(item => item.id === state.selectedEmailId);
+  if (!email || email.status === 'completed') {
+    const error = new Error('Completed email cannot be reassigned.');
+    showFormError(elements.emailAssignmentForm, elements.assignmentError, error);
+    return;
+  }
+
+  const assigneeId = Number(elements.emailAssigneeSelect.value);
+  const selectedMember = (state.session.team ?? []).find(member => member.id === assigneeId);
+  const wasAssigned = email.status === 'assigned';
+  setButtonBusy(elements.assignButton, true, wasAssigned ? 'Reassigning…' : 'Assigning…');
+  try {
+    const result = await mutate(`/api/emails/${email.id}/assign`, 'POST', { assigneeId });
+    elements.emailDialog.close();
+    state.selectedEmailId = null;
+    showToast(result.changed
+      ? `${wasAssigned ? 'Reassigned' : 'Assigned'} to ${selectedMember?.name || 'the selected team member'}.`
+      : `Already assigned to ${selectedMember?.name || 'the selected team member'}.`);
+  } catch (error) {
+    if (!state.session) return;
+    showFormError(elements.emailAssignmentForm, elements.assignmentError, error);
+  } finally {
+    setButtonBusy(elements.assignButton, false, wasAssigned ? 'Reassigning…' : 'Assigning…');
+  }
+});
+
 elements.completeButton.addEventListener('click', async () => {
   if (!state.selectedEmailId) return;
   setButtonBusy(elements.completeButton, true, 'Completing…');
@@ -722,7 +1059,7 @@ elements.notificationList.addEventListener('click', async event => {
 });
 
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && state.sidebarOpen) closeSidebar();
+  if (event.key === 'Escape' && state.sidebarOpen) closeSidebar(true);
 });
 
 document.addEventListener('visibilitychange', () => {

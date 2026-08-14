@@ -1,6 +1,6 @@
 # LexFlow Outlook Assignment
 
-A minimal Outlook intake app that assigns messages to team members using admin-managed rules. It runs with built-in demo mail by default and can connect to one Microsoft 365 mailbox through Microsoft Graph.
+A minimal Outlook intake app for rule-based and manual email assignment. Admins manage routing, departments, response windows, and reassignments; members see only their work, receive assignment and overdue notifications, and can mark email complete. It runs with built-in demo mail by default and can connect to one Microsoft 365 mailbox through Microsoft Graph.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ To change the port, database path, or automatic sync interval, copy the example 
 cp .env.example .env
 ```
 
-`SYNC_INTERVAL_SECONDS=0` disables automatic sync; any enabled interval must be at least 60 seconds.
+Automatic sync runs once per minute by default. `SYNC_INTERVAL_SECONDS=0` disables it; any enabled interval must be at least 60 seconds.
 
 ## Demo accounts
 
@@ -60,7 +60,11 @@ The three local account passwords are required whenever Graph mode starts and re
 - Comma-separated keywords are case-insensitive and must all appear across the email subject and preview.
 - The optional sender filter is a case-insensitive substring match against the sender name and address.
 - Creating or enabling a rule also checks currently unassigned email. Disabling or deleting a rule does not alter existing assignments.
-- An assignment creates an in-app notification for the member and an activity entry for the admin. Members see only their assigned email and can mark it complete; the admin activity records who completed it and when.
+- Admins can also assign or reassign any open email from its detail drawer. Completed email is locked.
+- An assignment creates an in-app notification for the member and an activity entry for the admin. Members see only their assigned email and can mark it complete.
+- Completion creates an activity entry and notifies every admin, once per email.
+- Admins can add departments, move members between them, and edit the two workspace-wide response windows in **Settings**.
+- Unassigned alerts notify admins based on the email's Outlook received time. Assigned-but-incomplete alerts notify both admins and the assignee from the latest assignment time. Overdue alerts repeat once per hour until the email is assigned, reassigned, or completed as applicable.
 
 ## Verification
 
@@ -70,9 +74,9 @@ Run the intentionally small suite:
 npm test
 ```
 
-It contains exactly five automated contract tests covering rule assignment and notification, idempotent imports, cross-user isolation, admin-only rule and sync changes, and completion activity. The expected result is `5` passing and `0` failing.
+The suite currently contains 13 automated contract tests covering migrations, rule and manual assignment, reassignment, isolation, admin-only controls, departments, response windows, completion notifications, hourly overdue alerts, idempotent imports, and the one-minute sync default.
 
-For a browser smoke check, sign in as the admin, sync demo mail, create a rule for an unassigned message, then sign in as its assignee. Confirm the assignment notification, complete the message, and return to the admin account to confirm the completion actor and timestamp in activity.
+For a browser smoke check, sign in as the admin, open an unassigned message and assign it, then sign in as its assignee. Confirm the notification and completion control. Return to the admin account to confirm the completion notification and activity entry. Admin settings should also expose department placement and both alert windows.
 
 ## Production limitations
 

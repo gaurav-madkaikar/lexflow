@@ -4,34 +4,70 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#142a43">
   <title>LexFlow — Outlook assignment</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="icon-inbox" viewBox="0 0 24 24"><path d="M5 4h14l2 11v5H3v-5L5 4Z"/><path d="M3.5 15h4.3l1.7 2.5h5L16.2 15h4.3"/></symbol>
+    <symbol id="icon-assigned" viewBox="0 0 24 24"><path d="M5 12h12M13 8l4 4-4 4"/><path d="M5 5v14"/></symbol>
+    <symbol id="icon-complete" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.7 2.7L16.5 9"/></symbol>
+    <symbol id="icon-rules" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 6h8M6 8v3a7 7 0 0 0 7 7h3"/></symbol>
+    <symbol id="icon-activity" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M7 14v6"/></symbol>
+    <symbol id="icon-bell" viewBox="0 0 24 24"><path d="M18 9a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z"/><path d="M10 21h4"/></symbol>
+    <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.2 16.2 4 4"/></symbol>
+    <symbol id="icon-sync" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M18.2 12A7 7 0 0 0 6.4 7M5.8 12a7 7 0 0 0 11.8 5"/></symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="icon-logout" viewBox="0 0 24 24"><path d="M14 8V5H5v14h9v-3M10 12h10M17 9l3 3-3 3"/></symbol>
+    <symbol id="icon-building" viewBox="0 0 24 24"><path d="M4 21V7l8-4 8 4v14M8 10h2M14 10h2M8 14h2M14 14h2M9 21v-3h6v3"/></symbol>
+    <symbol id="icon-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M9 3h6"/></symbol>
+    <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></symbol>
+  </svg>
+
+  <a class="skip-link" id="skip-link" href="#main-content" hidden>Skip to main content</a>
+
   <section class="login-view" id="login-view" aria-labelledby="login-title">
-    <div class="login-card">
-      <div class="brand login-brand" aria-label="LexFlow">
-        <span class="logo" aria-hidden="true">L</span>
-        <span class="brand-name">LexFlow</span>
+    <div class="login-layout">
+      <aside class="login-intro" aria-label="LexFlow overview">
+        <div class="brand login-brand" aria-label="LexFlow">
+          <span class="logo" aria-hidden="true">L</span>
+          <span class="brand-name">LexFlow</span>
+        </div>
+        <div class="login-intro-copy">
+          <p class="eyebrow">Shared mailbox operations</p>
+          <p class="login-statement">Every message has an owner. Every handoff has a record.</p>
+          <p>Route Outlook email, monitor response windows, and keep work accountable from one workspace.</p>
+        </div>
+        <div class="login-proof" aria-label="Workflow principles">
+          <span><svg class="icon" aria-hidden="true"><use href="#icon-rules"></use></svg> Rule-based routing</span>
+          <span><svg class="icon" aria-hidden="true"><use href="#icon-activity"></use></svg> Visible audit trail</span>
+        </div>
+      </aside>
+
+      <div class="login-card" role="main">
+        <p class="eyebrow">Secure workspace</p>
+        <h1 id="login-title">Welcome back</h1>
+        <p class="login-copy">Sign in to review and manage assigned email work.</p>
+
+        <form id="login-form" novalidate>
+          <label class="field">
+            <span>Email address</span>
+            <input id="login-email" name="email" type="email" autocomplete="username" required>
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" minlength="8" required>
+          </label>
+          <p class="form-error" id="login-error" role="alert" hidden></p>
+          <button class="button primary login-submit" type="submit"><span class="button-label" data-button-label>Sign in</span></button>
+        </form>
+
+        <p class="demo-note">Local demo credentials are listed in the project README.</p>
       </div>
-      <p class="eyebrow">Shared mailbox operations</p>
-      <h1 id="login-title">Welcome back</h1>
-      <p class="login-copy">Sign in to review the email work assigned to your team.</p>
-
-      <form id="login-form" novalidate>
-        <label class="field">
-          <span>Email address</span>
-          <input id="login-email" name="email" type="email" autocomplete="username" required>
-        </label>
-        <label class="field">
-          <span>Password</span>
-          <input id="login-password" name="password" type="password" autocomplete="current-password" minlength="8" required>
-        </label>
-        <p class="form-error" id="login-error" role="alert" hidden></p>
-        <button class="button primary login-submit" type="submit">Sign in</button>
-      </form>
-
-      <p class="demo-note">Local demo credentials are listed in the project README.</p>
     </div>
   </section>
 
@@ -41,8 +77,13 @@
     <aside class="side" id="sidebar" aria-label="Workspace navigation">
       <div class="brand side-brand">
         <span class="logo" aria-hidden="true">L</span>
-        <span class="brand-name">LexFlow</span>
-        <button class="icon-button side-close" id="nav-close" type="button" aria-label="Close navigation">×</button>
+        <span class="brand-lockup">
+          <span class="brand-name">LexFlow</span>
+          <small>Mailbox operations</small>
+        </span>
+        <button class="icon-button side-close" id="nav-close" type="button" aria-label="Close navigation">
+          <svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>
+        </button>
       </div>
 
       <nav aria-label="Primary">
@@ -50,17 +91,17 @@
           <p class="nav-label">Workspace</p>
           <div class="nav-list">
             <button class="nav-item" type="button" data-view="inbox">
-              <span class="nav-icon" aria-hidden="true">↙</span>
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-inbox"></use></svg>
               <span>Inbox</span>
               <span class="nav-badge" data-badge="inbox">0</span>
             </button>
             <button class="nav-item" type="button" data-view="assigned">
-              <span class="nav-icon" aria-hidden="true">→</span>
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-assigned"></use></svg>
               <span>Assigned</span>
               <span class="nav-badge" data-badge="assigned">0</span>
             </button>
             <button class="nav-item" type="button" data-view="completed">
-              <span class="nav-icon" aria-hidden="true">✓</span>
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-complete"></use></svg>
               <span>Completed</span>
               <span class="nav-badge" data-badge="completed">0</span>
             </button>
@@ -70,21 +111,23 @@
             <label for="sidebar-department">Department</label>
             <select id="sidebar-department">
               <option value="All">All departments</option>
-              <option value="Legal">Legal</option>
-              <option value="Finance">Finance</option>
             </select>
           </div>
 
           <p class="nav-label">Management</p>
           <div class="nav-list">
             <button class="nav-item" type="button" data-view="rules">
-              <span class="nav-icon" aria-hidden="true">⌘</span>
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-rules"></use></svg>
               <span>Automation rules</span>
               <span class="nav-badge" data-badge="rules">0</span>
             </button>
             <button class="nav-item" type="button" data-view="activity">
-              <span class="nav-icon" aria-hidden="true">◷</span>
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-activity"></use></svg>
               <span>Activity</span>
+            </button>
+            <button class="nav-item" type="button" data-view="settings">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>
+              <span>Settings</span>
             </button>
           </div>
         </div>
@@ -93,17 +136,17 @@
           <p class="nav-label">Workspace</p>
           <div class="nav-list">
             <button class="nav-item" type="button" data-view="assigned">
-              <span class="nav-icon" aria-hidden="true">→</span>
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-assigned"></use></svg>
               <span>My work</span>
               <span class="nav-badge" data-badge="assigned">0</span>
             </button>
             <button class="nav-item" type="button" data-view="completed">
-              <span class="nav-icon" aria-hidden="true">✓</span>
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-complete"></use></svg>
               <span>Completed</span>
               <span class="nav-badge" data-badge="completed">0</span>
             </button>
             <button class="nav-item" type="button" data-view="notifications">
-              <span class="nav-icon" aria-hidden="true">●</span>
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-bell"></use></svg>
               <span>Notifications</span>
               <span class="nav-badge" data-badge="notifications">0</span>
             </button>
@@ -112,14 +155,16 @@
       </nav>
 
       <div class="side-bottom">
-        <div class="mailbox-state">
-          <span class="connection-dot" aria-hidden="true"></span>
-          <span id="sidebar-mode">Demo mailbox</span>
+        <div class="mailbox-card">
+          <div class="mailbox-state">
+            <span class="connection-dot" aria-hidden="true"></span>
+            <strong id="sidebar-mode">Demo mailbox</strong>
+          </div>
+          <p id="sidebar-sync">Waiting for first sync</p>
         </div>
-        <p id="sidebar-sync">Waiting for first sync</p>
         <div class="signed-in-user">
           <span class="avatar" id="sidebar-avatar" aria-hidden="true"></span>
-          <span>
+          <span class="user-copy">
             <strong id="sidebar-user"></strong>
             <small id="sidebar-role"></small>
           </span>
@@ -130,38 +175,44 @@
     <div class="main-column">
       <header class="topbar">
         <div class="topbar-title">
-          <button class="icon-button mobile-menu" id="nav-open" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+          <button class="icon-button mobile-menu" id="nav-open" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
+            <svg class="icon" aria-hidden="true"><use href="#icon-menu"></use></svg>
+          </button>
           <div>
-            <h2 id="page-title">Unified intake</h2>
-            <span class="mode-chip" id="mode-chip">Demo mailbox</span>
+            <p class="topbar-kicker">Operations workspace</p>
+            <h1 id="page-title">Unified intake</h1>
           </div>
         </div>
 
         <div class="top-actions">
           <label class="search-field" for="search-input">
-            <span class="search-icon" aria-hidden="true">⌕</span>
+            <svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg>
             <span class="visually-hidden">Search emails</span>
             <input id="search-input" type="search" placeholder="Search emails…" autocomplete="off">
           </label>
-          <button class="button sync-button" id="sync-button" type="button" hidden>
-            <span aria-hidden="true">↻</span>
-            <span class="action-label">Sync</span>
+          <button class="button sync-button" id="sync-button" type="button" aria-label="Sync Outlook mailbox" hidden>
+            <svg class="icon" aria-hidden="true"><use href="#icon-sync"></use></svg>
+            <span class="button-label action-label" data-button-label>Sync now</span>
           </button>
           <button class="icon-button notification-button" id="notification-button" type="button" aria-label="View notifications">
-            <span aria-hidden="true">●</span>
-            <span class="notification-count" id="notification-count">0</span>
+            <svg class="icon" aria-hidden="true"><use href="#icon-bell"></use></svg>
+            <span class="notification-count" id="notification-count" aria-hidden="true">0</span>
           </button>
-          <button class="button logout-button" id="logout-button" type="button">Sign out</button>
+          <button class="button logout-button" id="logout-button" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#icon-logout"></use></svg>
+            <span class="button-label" data-button-label>Sign out</span>
+          </button>
         </div>
       </header>
 
-      <main class="content" id="main-content">
+      <main class="content" id="main-content" tabindex="-1">
         <div class="status-banner" id="status-banner" role="alert" hidden></div>
 
-        <div class="department-switch" id="department-switch" aria-label="Filter by department">
-          <button type="button" data-department="All">All</button>
-          <button type="button" data-department="Legal">⚖ Legal</button>
-          <button type="button" data-department="Finance">Finance</button>
+        <div class="workspace-toolbar">
+          <div class="department-switch" id="department-switch" aria-label="Filter by department">
+            <button type="button" data-department="All">All</button>
+          </div>
+          <span class="mode-chip" id="mode-chip">Demo mailbox</span>
         </div>
 
         <section class="metrics" id="metrics" aria-label="Mailbox summary"></section>
@@ -170,10 +221,11 @@
           <section class="card queue-panel" id="queue-panel" aria-labelledby="queue-title">
             <div class="card-head">
               <div>
-                <h3 id="queue-title">Incoming work queue</h3>
+                <p class="card-kicker">Email workflow</p>
+                <h2 id="queue-title">Incoming work queue</h2>
                 <p id="queue-caption">New mailbox items</p>
               </div>
-              <span id="email-count">0 emails</span>
+              <span class="count-chip" id="email-count" role="status" aria-live="polite" aria-atomic="true">0 emails</span>
             </div>
             <div class="email-list" id="email-list"></div>
           </section>
@@ -182,10 +234,14 @@
             <section class="card panel" id="rules-panel" aria-labelledby="rules-title" hidden>
               <div class="card-head">
                 <div>
-                  <h3 id="rules-title">Automation rules</h3>
+                  <p class="card-kicker">Routing</p>
+                  <h2 id="rules-title">Automation rules</h2>
                   <p id="rules-caption">0 active</p>
                 </div>
-                <button class="small-button" id="new-rule-button" type="button">+ New rule</button>
+                <button class="small-button" id="new-rule-button" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg>
+                  <span>New rule</span>
+                </button>
               </div>
               <div id="rule-list"></div>
             </section>
@@ -193,7 +249,8 @@
             <section class="card panel" id="activity-panel" aria-labelledby="activity-title" hidden>
               <div class="card-head">
                 <div>
-                  <h3 id="activity-title">Recent activity</h3>
+                  <p class="card-kicker">Audit trail</p>
+                  <h2 id="activity-title">Recent activity</h2>
                   <p>Latest workflow events</p>
                 </div>
               </div>
@@ -203,11 +260,70 @@
             <section class="card panel" id="notifications-panel" aria-labelledby="notifications-title" hidden>
               <div class="card-head">
                 <div>
-                  <h3 id="notifications-title">Notifications</h3>
+                  <p class="card-kicker">Attention</p>
+                  <h2 id="notifications-title">Notifications</h2>
                   <p id="notifications-caption">0 unread</p>
                 </div>
               </div>
               <div class="notification-list" id="notification-list"></div>
+            </section>
+
+            <section class="card panel settings-panel" id="settings-panel" aria-labelledby="settings-title" hidden>
+              <div class="card-head settings-head">
+                <div>
+                  <p class="card-kicker">Administration</p>
+                  <h2 id="settings-title">Workflow controls</h2>
+                  <p>Workspace-wide departments and response windows</p>
+                </div>
+              </div>
+              <div class="settings-sections">
+                <section class="settings-section" aria-labelledby="timing-title">
+                  <div class="section-heading">
+                    <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-timer"></use></svg></span>
+                    <div>
+                      <h3 id="timing-title">Response timing</h3>
+                      <p>Alerts repeat hourly until the work moves forward.</p>
+                    </div>
+                  </div>
+                  <form id="timing-form" novalidate>
+                    <div class="settings-form-grid">
+                      <label class="field">
+                        <span>Time unassigned <em>hours</em></span>
+                        <input name="timeUnassignedHours" type="number" min="1" max="8760" step="1" inputmode="numeric" required>
+                        <small>Measured from the email’s Outlook received time.</small>
+                      </label>
+                      <label class="field">
+                        <span>Assigned, not complete <em>hours</em></span>
+                        <input name="timeAssignedUnmarkedHours" type="number" min="1" max="8760" step="1" inputmode="numeric" required>
+                        <small>Restarts whenever the email is reassigned.</small>
+                      </label>
+                    </div>
+                    <p class="form-error" id="timing-error" role="alert" hidden></p>
+                    <div class="settings-actions">
+                      <button class="button primary" type="submit"><span class="button-label" data-button-label>Save timing</span></button>
+                    </div>
+                  </form>
+                </section>
+
+                <section class="settings-section" aria-labelledby="departments-title">
+                  <div class="section-heading">
+                    <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-building"></use></svg></span>
+                    <div>
+                      <h3 id="departments-title">Departments and team</h3>
+                      <p>Add a department, then place existing members in it.</p>
+                    </div>
+                  </div>
+                  <form class="department-form" id="department-form" novalidate>
+                    <label class="field">
+                      <span>New department</span>
+                      <input name="name" maxlength="60" autocomplete="off" placeholder="Compliance" required>
+                    </label>
+                    <button class="button" type="submit"><span class="button-label" data-button-label>Add department</span></button>
+                  </form>
+                  <p class="form-error" id="department-error" role="alert" hidden></p>
+                  <div class="team-list" id="team-department-list"></div>
+                </section>
+              </div>
             </section>
           </aside>
         </div>
@@ -221,7 +337,9 @@
         <p class="eyebrow">Admin only</p>
         <h2 id="rule-dialog-title">Create automation rule</h2>
       </div>
-      <button class="icon-button dialog-close" type="button" data-close-dialog="rule-dialog" aria-label="Close">×</button>
+      <button class="icon-button dialog-close" type="button" data-close-dialog="rule-dialog" aria-label="Close rule dialog">
+        <svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>
+      </button>
     </div>
     <form id="rule-form" novalidate>
       <label class="field">
@@ -250,18 +368,20 @@
       <p class="form-error" id="rule-error" role="alert" hidden></p>
       <div class="dialog-actions">
         <button class="button" type="button" data-close-dialog="rule-dialog">Cancel</button>
-        <button class="button primary" type="submit">Create rule</button>
+        <button class="button primary" type="submit"><span class="button-label" data-button-label>Create rule</span></button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog email-dialog" id="email-dialog" aria-labelledby="email-dialog-title">
-    <div class="dialog-head">
+    <div class="dialog-head email-dialog-head">
       <div>
         <p class="eyebrow" id="email-dialog-status">Assigned email</p>
         <h2 id="email-dialog-title"></h2>
       </div>
-      <button class="icon-button dialog-close" type="button" data-close-dialog="email-dialog" aria-label="Close">×</button>
+      <button class="icon-button dialog-close" type="button" data-close-dialog="email-dialog" aria-label="Close email details">
+        <svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>
+      </button>
     </div>
     <div class="email-detail">
       <dl class="detail-grid">
@@ -270,6 +390,13 @@
         <div><dt>Assigned to</dt><dd id="email-detail-assignee"></dd></div>
         <div><dt>Department</dt><dd id="email-detail-department"></dd></div>
       </dl>
+      <form class="assignment-control" id="email-assignment-form" novalidate hidden>
+        <label class="field" for="email-assignee-select">
+          <span id="email-assignment-label">Assign to</span>
+          <select name="assigneeId" id="email-assignee-select" required></select>
+        </label>
+        <p class="form-error" id="assignment-error" role="alert" hidden></p>
+      </form>
       <div class="message-preview">
         <span>Message preview</span>
         <p id="email-detail-preview"></p>
@@ -278,7 +405,8 @@
     </div>
     <div class="dialog-actions detail-actions">
       <a class="button" id="outlook-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Open in Outlook</a>
-      <button class="button primary" id="complete-button" type="button" hidden>Mark complete</button>
+      <button class="button primary" id="assign-button" type="submit" form="email-assignment-form" hidden><span class="button-label" data-button-label>Assign</span></button>
+      <button class="button primary" id="complete-button" type="button"><span class="button-label" data-button-label>Mark complete</span></button>
     </div>
   </dialog>
 
