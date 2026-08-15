@@ -53,21 +53,32 @@ const demoMessages = [
     receivedAt: '2026-08-14T01:51:00.000Z',
     outlookUrl: null
   }
-];
+].map(message => ({
+  ...message,
+  provider: 'demo',
+  mailboxAddress: null,
+  webUrl: message.outlookUrl
+}));
 
-function mapGraphMessage(item) {
+function mapGraphMessage(item, mailbox) {
   return {
     providerId: item.id,
+    provider: 'outlook',
+    mailboxAddress: mailbox,
     subject: item.subject || '(No subject)',
     senderName: item.from?.emailAddress?.name || 'Unknown sender',
     senderAddress: item.from?.emailAddress?.address || '',
     preview: item.bodyPreview || '',
     receivedAt: item.receivedDateTime,
+    webUrl: item.webLink || null,
     outlookUrl: item.webLink || null
   };
 }
 
 export class MockMailSource {
+  provider = 'demo';
+  mailboxAddress = null;
+  sourceKey = 'demo';
   cursorKey = 'mail_cursor:demo';
 
   async fetchChanges(cursor) {
@@ -80,6 +91,9 @@ export class MockMailSource {
 export class GraphMailSource {
   constructor({ tenantId, clientId, clientSecret, mailbox, fetchImpl = fetch, requestTimeoutMs = 15_000 }) {
     Object.assign(this, { tenantId, clientId, clientSecret, mailbox, fetchImpl, requestTimeoutMs });
+    this.provider = 'outlook';
+    this.mailboxAddress = mailbox;
+    this.sourceKey = `outlook:${mailbox.toLocaleLowerCase()}`;
     this.cursorKey = `mail_cursor:graph:${mailbox.toLocaleLowerCase()}`;
   }
 
@@ -125,7 +139,7 @@ export class GraphMailSource {
       messages.push(
         ...page.value
           .filter(item => !item['@removed'])
-          .map(mapGraphMessage)
+          .map(item => mapGraphMessage(item, this.mailbox))
       );
       if (page['@odata.deltaLink']) {
         nextCursor = page['@odata.deltaLink'];
@@ -142,7 +156,7 @@ export class GraphMailSource {
 }
 
 export function createMailSource(config) {
-  return config.mode === 'graph'
+  return ['graph', 'mixed'].includes(config.mode)
     ? new GraphMailSource(config.graph)
     : new MockMailSource();
 }

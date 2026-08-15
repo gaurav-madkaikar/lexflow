@@ -40,12 +40,16 @@ function safeUser(row) {
 }
 
 function emailFromRow(row) {
+  const provider = row.provider || 'outlook';
   return {
     id: Number(row.id),
     subject: row.subject,
     sender: { name: row.sender_name, address: row.sender_address },
     preview: row.preview,
     receivedAt: row.received_at,
+    provider,
+    mailboxAddress: row.mailbox_address ?? null,
+    webUrl: row.outlook_url,
     outlookUrl: row.outlook_url,
     status: row.status,
     assignedAt: row.assigned_at,
@@ -100,14 +104,8 @@ function listNotifications(db, userId) {
   }));
 }
 
-function listRules(db) {
-  return db.prepare(`
-    SELECT rules.*, users.email AS assignee_email, users.name AS assignee_name,
-      users.initials AS assignee_initials, users.department AS assignee_department
-    FROM rules
-    JOIN users ON users.id = rules.assignee_id
-    ORDER BY rules.priority, rules.id
-  `).all().map(row => ({
+function ruleFromRow(row) {
+  return {
     id: Number(row.id),
     name: row.name,
     keywords: row.keywords,
@@ -121,7 +119,26 @@ function listRules(db) {
       initials: row.assignee_initials,
       department: row.assignee_department
     }
-  }));
+  };
+}
+
+const ruleSelect = `
+    SELECT rules.*, users.email AS assignee_email, users.name AS assignee_name,
+      users.initials AS assignee_initials, users.department AS assignee_department
+    FROM rules
+    JOIN users ON users.id = rules.assignee_id
+`;
+
+function listRules(db) {
+  return db.prepare(`
+    ${ruleSelect}
+    ORDER BY rules.priority, rules.id
+  `).all().map(ruleFromRow);
+}
+
+function getRule(db, id) {
+  const row = db.prepare(`${ruleSelect} WHERE rules.id = ?`).get(id);
+  return row ? ruleFromRow(row) : null;
 }
 
 function listActivity(db) {
@@ -158,6 +175,50 @@ function syncSummary(db) {
   };
 }
 
+function sourceSyncSummary(db, cursorKey) {
+  if (!cursorKey) return { lastSuccessAt: null, lastError: null };
+  return {
+    lastSuccessAt: db.prepare('SELECT value FROM sync_state WHERE key = ?')
+      .get(`last_sync_at:${cursorKey}`)?.value ?? null,
+    lastError: db.prepare('SELECT value FROM sync_state WHERE key = ?')
+      .get(`last_sync_error:${cursorKey}`)?.value ?? null,
+  };
+}
+
+function integrationPayload(db, integrations) {
+  const outlookConfig = integrations?.outlook ?? {};
+  const outlookSync = sourceSyncSummary(db, outlookConfig.cursorKey);
+  const outlook = {
+    configured: Boolean(outlookConfig.configured),
+    connected: Boolean(outlookConfig.configured),
+    accountEmail: outlookConfig.accountEmail ?? null,
+    ...outlookSync,
+  };
+  const gmail = integrations?.gmail?.status?.() ?? {
+    configured: false,
+    connected: false,
+    accountEmail: null,
+    lastSuccessAt: null,
+    lastError: null,
+  };
+  return { outlook, gmail };
+}
+
+function mailboxSummary(details) {
+  const providers = Object.entries(details)
+    .filter(([, integration]) => integration.connected)
+    .map(([provider]) => provider);
+  const hasConfiguredIntegration = Object.values(details)
+    .some(integration => integration.configured);
+  let label = hasConfiguredIntegration ? 'No mailbox connected' : 'Demo mailbox';
+  if (providers.length === 1) {
+    label = `${providers[0] === 'gmail' ? 'Gmail' : 'Outlook'} connected`;
+  } else if (providers.length > 1) {
+    label = `${providers.length} mailboxes connected`;
+  }
+  return { connectedCount: providers.length, label, providers };
+}
+
 function validationError(response, message, field) {
   response.status(400).json({
     error: {
@@ -179,6 +240,18 @@ function notFound(response, message) {
   });
 }
 
+function runTransaction(db, operation) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = operation();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 function parseRule(body) {
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   const keywords = typeof body.keywords === 'string'
@@ -189,11 +262,90 @@ function parseRule(body) {
   const priority = Number(body.priority);
 
   if (!name || name.length > 80) return { error: 'Enter a rule name of 80 characters or fewer.', field: 'name' };
-  if (!keywords || keywords.length > 240) return { error: 'Enter one or more comma-separated keywords.', field: 'keywords' };
+  if (keywords.length > 240) return { error: 'Keywords must be 240 characters or fewer.', field: 'keywords' };
   if (senderFilter.length > 160) return { error: 'The sender filter is too long.', field: 'senderFilter' };
+  if (!keywords && !senderFilter) return { error: 'Enter keywords or a sender filter.', field: 'keywords' };
   if (!Number.isInteger(assigneeId) || assigneeId < 1) return { error: 'Choose an assignee.', field: 'assigneeId' };
   if (!Number.isInteger(priority) || priority < 1 || priority > 999) return { error: 'Priority must be between 1 and 999.', field: 'priority' };
   return { value: { name, keywords, senderFilter, assigneeId, priority } };
+}
+
+const editableRuleFields = ['name', 'keywords', 'senderFilter', 'assigneeId', 'priority', 'enabled'];
+
+function parseRulePatch(body, current) {
+  const hasField = (field) => Object.prototype.hasOwnProperty.call(body, field);
+  if (!editableRuleFields.some(hasField)) {
+    return { error: 'Update at least one rule field.' };
+  }
+
+  const value = {
+    name: current.name,
+    keywords: current.keywords,
+    senderFilter: current.sender_filter,
+    assigneeId: Number(current.assignee_id),
+    priority: Number(current.priority),
+    enabled: Boolean(current.enabled),
+  };
+
+  if (hasField('name')) {
+    if (typeof body.name !== 'string') {
+      return { error: 'Enter a rule name of 80 characters or fewer.', field: 'name' };
+    }
+    value.name = body.name.trim();
+  }
+  if (hasField('keywords')) {
+    if (typeof body.keywords !== 'string') {
+      return { error: 'Enter comma-separated keywords.', field: 'keywords' };
+    }
+    value.keywords = body.keywords
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean)
+      .join(',');
+  }
+  if (hasField('senderFilter')) {
+    if (typeof body.senderFilter !== 'string') {
+      return { error: 'Enter a valid sender filter.', field: 'senderFilter' };
+    }
+    value.senderFilter = body.senderFilter.trim();
+  }
+  if (hasField('assigneeId')) value.assigneeId = Number(body.assigneeId);
+  if (hasField('priority')) value.priority = Number(body.priority);
+  if (hasField('enabled')) {
+    if (typeof body.enabled !== 'boolean') {
+      return { error: 'Enabled must be true or false.', field: 'enabled' };
+    }
+    value.enabled = body.enabled;
+  }
+
+  if (!value.name || value.name.length > 80) {
+    return { error: 'Enter a rule name of 80 characters or fewer.', field: 'name' };
+  }
+  if (value.keywords.length > 240) {
+    return { error: 'Keywords must be 240 characters or fewer.', field: 'keywords' };
+  }
+  if (value.senderFilter.length > 160) {
+    return { error: 'The sender filter is too long.', field: 'senderFilter' };
+  }
+  if (!value.keywords && !value.senderFilter) {
+    return { error: 'Enter keywords or a sender filter.', field: 'keywords' };
+  }
+  if (!Number.isInteger(value.assigneeId) || value.assigneeId < 1) {
+    return { error: 'Choose an assignee.', field: 'assigneeId' };
+  }
+  if (!Number.isInteger(value.priority) || value.priority < 1 || value.priority > 999) {
+    return { error: 'Priority must be between 1 and 999.', field: 'priority' };
+  }
+  const changed = (
+    value.name !== current.name
+    || value.keywords !== current.keywords
+    || value.senderFilter !== current.sender_filter
+    || value.assigneeId !== Number(current.assignee_id)
+    || value.priority !== Number(current.priority)
+    || value.enabled !== Boolean(current.enabled)
+  );
+  if (!changed) return { error: 'Change at least one rule field.' };
+  return { value };
 }
 
 async function runSync(syncRunner) {
@@ -205,6 +357,7 @@ export function createApp({
   db,
   syncRunner,
   mode = 'demo',
+  integrations = {},
   cookieSecure = process.env.NODE_ENV === 'production',
   staticDir = publicDirectory,
   clock = () => new Date(),
@@ -258,9 +411,11 @@ export function createApp({
 
   app.get('/api/bootstrap', (request, response) => {
     const notifications = listNotifications(db, request.user.id);
+    const integrationDetails = integrationPayload(db, integrations);
     const payload = {
       user: safeUser(request.user),
       mode,
+      mailboxSummary: mailboxSummary(integrationDetails),
       emails: listEmails(db, request.user),
       notifications,
       unreadCount: notifications.filter(item => !item.readAt).length
@@ -274,9 +429,61 @@ export function createApp({
       payload.sync = syncSummary(db);
       payload.departments = listDepartments(db);
       payload.settings = getWorkspaceSettings(db);
+      payload.integrations = integrationDetails;
     }
 
     response.json(payload);
+  });
+
+  app.get('/api/integrations/gmail/authorize', requireAdmin, (request, response, next) => {
+    try {
+      const authorizationUrl = integrations.gmail?.authorizationUrl?.({
+        sessionId: request.sessionId,
+      });
+      if (!authorizationUrl) {
+        const error = new Error('Gmail connection is not configured on this server.');
+        error.status = 503;
+        error.code = 'GMAIL_NOT_CONFIGURED';
+        error.expose = true;
+        throw error;
+      }
+      response.redirect(303, authorizationUrl);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/integrations/gmail/callback', requireAdmin, async (request, response) => {
+    const state = typeof request.query?.state === 'string' ? request.query.state : '';
+    const code = typeof request.query?.code === 'string' ? request.query.code : '';
+    if (!integrations.gmail?.completeAuthorization || !state) {
+      response.redirect(303, '/?integration=gmail-error');
+      return;
+    }
+
+    try {
+      await integrations.gmail?.completeAuthorization?.({
+        sessionId: request.sessionId,
+        state,
+        code: request.query?.error ? '' : code,
+      });
+      if (!code || request.query?.error) throw new Error('Gmail authorization was cancelled.');
+      response.redirect(303, '/?integration=gmail-connected');
+    } catch {
+      response.redirect(303, '/?integration=gmail-error');
+    }
+  });
+
+  app.delete('/api/integrations/gmail', requireAdmin, async (request, response, next) => {
+    try {
+      if (!integrations.gmail?.disconnect) {
+        return notFound(response, 'Gmail connection is not available.');
+      }
+      await integrations.gmail.disconnect();
+      response.status(204).end();
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post('/api/departments', requireAdmin, (request, response, next) => {
@@ -329,6 +536,7 @@ export function createApp({
       error.status = 502;
       error.code = 'SYNC_FAILED';
       error.message = 'Mailbox sync failed. Review the last sync status and try again.';
+      error.expose = true;
       next(error);
     }
   });
@@ -342,19 +550,23 @@ export function createApp({
       if (!member) return validationError(response, 'Choose a valid team member.', 'assigneeId');
 
       const now = new Date().toISOString();
-      const result = db.prepare(`
-        INSERT INTO rules (name, keywords, sender_filter, assignee_id, priority, enabled, created_at)
-        VALUES (?, ?, ?, ?, ?, 1, ?)
-      `).run(
-        parsed.value.name,
-        parsed.value.keywords,
-        parsed.value.senderFilter,
-        parsed.value.assigneeId,
-        parsed.value.priority,
-        now
-      );
-      applyRuleToUnassigned(db, Number(result.lastInsertRowid));
-      response.status(201).json({ id: Number(result.lastInsertRowid) });
+      const id = runTransaction(db, () => {
+        const result = db.prepare(`
+          INSERT INTO rules (name, keywords, sender_filter, assignee_id, priority, enabled, created_at)
+          VALUES (?, ?, ?, ?, ?, 1, ?)
+        `).run(
+          parsed.value.name,
+          parsed.value.keywords,
+          parsed.value.senderFilter,
+          parsed.value.assigneeId,
+          parsed.value.priority,
+          now
+        );
+        const ruleId = Number(result.lastInsertRowid);
+        applyRuleToUnassigned(db, ruleId);
+        return ruleId;
+      });
+      response.status(201).json({ id });
     } catch (error) {
       next(error);
     }
@@ -362,22 +574,37 @@ export function createApp({
 
   app.patch('/api/rules/:id', requireAdmin, (request, response, next) => {
     try {
-      if (typeof request.body?.enabled !== 'boolean') {
-        return validationError(response, 'Enabled must be true or false.', 'enabled');
-      }
       const id = resourceId(request.params.id);
-      if (!id) {
-        response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Rule not found.' } });
-        return;
-      }
-      const result = db.prepare('UPDATE rules SET enabled = ? WHERE id = ?')
-        .run(request.body.enabled ? 1 : 0, id);
-      if (!result.changes) {
-        response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Rule not found.' } });
-        return;
-      }
-      if (request.body.enabled) applyRuleToUnassigned(db, id);
-      response.json({ id, enabled: request.body.enabled });
+      if (!id) return notFound(response, 'Rule not found.');
+
+      const current = db.prepare('SELECT * FROM rules WHERE id = ?').get(id);
+      if (!current) return notFound(response, 'Rule not found.');
+
+      const body = request.body && !Array.isArray(request.body) ? request.body : {};
+      const parsed = parseRulePatch(body, current);
+      if (parsed.error) return validationError(response, parsed.error, parsed.field);
+
+      const member = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'member'")
+        .get(parsed.value.assigneeId);
+      if (!member) return validationError(response, 'Choose a valid team member.', 'assigneeId');
+
+      runTransaction(db, () => {
+        db.prepare(`
+          UPDATE rules
+          SET name = ?, keywords = ?, sender_filter = ?, assignee_id = ?, priority = ?, enabled = ?
+          WHERE id = ?
+        `).run(
+          parsed.value.name,
+          parsed.value.keywords,
+          parsed.value.senderFilter,
+          parsed.value.assigneeId,
+          parsed.value.priority,
+          parsed.value.enabled ? 1 : 0,
+          id,
+        );
+        if (parsed.value.enabled) applyRuleToUnassigned(db, id);
+      });
+      response.json({ rule: getRule(db, id) });
     } catch (error) {
       next(error);
     }
@@ -497,7 +724,7 @@ export function createApp({
   app.use((error, request, response, next) => {
     if (response.headersSent) return next(error);
     const status = Number.isInteger(error.status) ? error.status : 500;
-    const expose = status >= 400 && status < 500;
+    const expose = (status >= 400 && status < 500) || error.expose === true;
     response.status(status).json({
       error: {
         code: error.code ?? (status === 500 ? 'INTERNAL_ERROR' : 'REQUEST_FAILED'),

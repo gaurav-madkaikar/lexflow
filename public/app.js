@@ -3,12 +3,17 @@ const state = {
   view: 'inbox',
   department: 'All',
   query: '',
+  dateFilter: '',
   selectedEmailId: null,
   sidebarOpen: false,
   pollTimer: null,
   settingsDirty: false,
   lastUnreadCount: null,
-  emailDialogOpener: null
+  emailDialogOpener: null,
+  ruleDialogOpener: null,
+  editingRuleId: null,
+  editingRuleSnapshot: null,
+  integrationReturnHandled: false
 };
 
 const elements = {
@@ -58,6 +63,9 @@ const elements = {
   notificationsCaption: document.querySelector('#notifications-caption'),
   notificationList: document.querySelector('#notification-list'),
   settingsPanel: document.querySelector('#settings-panel'),
+  integrationsTitle: document.querySelector('#integrations-title'),
+  integrationList: document.querySelector('#integration-list'),
+  integrationFeedback: document.querySelector('#integration-feedback'),
   timingForm: document.querySelector('#timing-form'),
   timingError: document.querySelector('#timing-error'),
   departmentForm: document.querySelector('#department-form'),
@@ -74,7 +82,13 @@ const elements = {
   heroSummary: document.querySelector('#hero-summary'),
   heroAction: document.querySelector('#hero-action'),
   heroActionLabel: document.querySelector('#hero-action-label'),
+  heroDateFilter: document.querySelector('#hero-date-filter'),
+  heroDateClear: document.querySelector('#hero-date-clear'),
+  heroDateFilterStatus: document.querySelector('#hero-date-filter-status'),
   ruleDialog: document.querySelector('#rule-dialog'),
+  ruleDialogEyebrow: document.querySelector('#rule-dialog-eyebrow'),
+  ruleDialogTitle: document.querySelector('#rule-dialog-title'),
+  ruleFormHelp: document.querySelector('#rule-form-help'),
   ruleForm: document.querySelector('#rule-form'),
   ruleError: document.querySelector('#rule-error'),
   ruleAssignee: document.querySelector('#rule-assignee'),
@@ -102,6 +116,17 @@ function node(tag, className, text) {
   if (className) element.className = className;
   if (text !== undefined) element.textContent = String(text);
   return element;
+}
+
+function svgIcon(symbol) {
+  const namespace = 'http://www.w3.org/2000/svg';
+  const icon = document.createElementNS(namespace, 'svg');
+  const use = document.createElementNS(namespace, 'use');
+  icon.setAttribute('class', 'icon');
+  icon.setAttribute('aria-hidden', 'true');
+  use.setAttribute('href', symbol);
+  icon.append(use);
+  return icon;
 }
 
 function setText(element, value, fallback = '') {
@@ -143,6 +168,31 @@ function countLabel(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
+function localDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0')
+  ].join('-');
+}
+
+function dateFromLocalKey(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return localDateKey(date) === value ? date : null;
+}
+
+function selectedDateLabel(value, style = 'long') {
+  const date = dateFromLocalKey(value);
+  if (!date) return '';
+  return new Intl.DateTimeFormat(undefined, style === 'short'
+    ? { month: 'short', day: 'numeric', year: 'numeric' }
+    : { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(date);
+}
+
 function formatDate(value, includeDate = true) {
   if (!value) return 'Not available';
   const date = new Date(value);
@@ -150,6 +200,39 @@ function formatDate(value, includeDate = true) {
   return new Intl.DateTimeFormat(undefined, includeDate
     ? { dateStyle: 'medium', timeStyle: 'short' }
     : { hour: 'numeric', minute: '2-digit' }).format(date);
+}
+
+function emailProvider(email) {
+  if (['gmail', 'outlook', 'demo'].includes(email?.provider)) return email.provider;
+  return email?.outlookUrl ? 'outlook' : 'demo';
+}
+
+function providerLabel(provider) {
+  return {
+    gmail: 'Gmail',
+    outlook: 'Outlook',
+    demo: 'Demo'
+  }[provider] || 'Email';
+}
+
+function mailboxSummary() {
+  const summary = state.session?.mailboxSummary;
+  if (summary && typeof summary.label === 'string') {
+    const providers = Array.isArray(summary.providers) ? summary.providers : [];
+    const connectedCount = Number(summary.connectedCount) || 0;
+    return {
+      connectedCount,
+      label: summary.label.trim() || (connectedCount
+        ? `${countLabel(connectedCount, 'mailbox')} connected`
+        : providers.includes('demo') ? 'Demo mailbox' : 'No mailbox connected')
+    };
+  }
+
+  const connected = state.session?.mode === 'graph';
+  return {
+    connectedCount: connected ? 1 : 0,
+    label: connected ? 'Outlook connected' : 'Demo mailbox'
+  };
 }
 
 function safeWebUrl(value) {
@@ -190,6 +273,7 @@ async function refresh({ quiet = false } = {}) {
     state.session = await api('/api/bootstrap');
     normalizeView();
     render();
+    handleIntegrationReturn();
     startPolling();
   } catch (error) {
     if (!quiet && state.session) showToast(error.message, true);
@@ -209,7 +293,11 @@ function showLogin() {
   if (elements.emailDialog.open) elements.emailDialog.close();
   if (elements.ruleDialog.open) elements.ruleDialog.close();
   state.selectedEmailId = null;
+  state.dateFilter = '';
   state.emailDialogOpener = null;
+  state.ruleDialogOpener = null;
+  state.editingRuleId = null;
+  state.editingRuleSnapshot = null;
   state.settingsDirty = false;
   state.lastUnreadCount = null;
   elements.skipLink.hidden = true;
@@ -275,8 +363,15 @@ function metric(label, value, note) {
   return card;
 }
 
-function counts() {
-  const emails = state.session?.emails ?? [];
+function emailMatchesDate(email) {
+  return !state.dateFilter || localDateKey(email.receivedAt) === state.dateFilter;
+}
+
+function emailsForSelectedDate() {
+  return (state.session?.emails ?? []).filter(emailMatchesDate);
+}
+
+function counts(emails = state.session?.emails ?? []) {
   return {
     inbox: emails.filter(email => email.status === 'unassigned').length,
     assigned: emails.filter(email => email.status === 'assigned').length,
@@ -287,19 +382,20 @@ function counts() {
 }
 
 function renderMetrics() {
-  const totals = counts();
+  const totals = counts(emailsForSelectedDate());
   const isAdmin = state.session.user.role === 'admin';
+  const periodNote = state.dateFilter ? `Received ${selectedDateLabel(state.dateFilter, 'short')}` : null;
   const items = isAdmin
     ? [
-        ['Unassigned', totals.inbox, 'Awaiting an automation match'],
-        ['Open assigned', totals.assigned, 'Across the team'],
-        ['Completed', totals.completed, 'Recorded workflow items'],
+        ['Unassigned', totals.inbox, periodNote || 'Awaiting an automation match'],
+        ['Open assigned', totals.assigned, periodNote || 'Across the team'],
+        ['Completed', totals.completed, periodNote || 'Recorded workflow items'],
         ['Active rules', totals.rules, 'Ordered by priority'],
         ['Unread', totals.notifications, 'Work alerts and updates']
       ]
     : [
-        ['Open assigned', totals.assigned, 'Ready for your review'],
-        ['Completed', totals.completed, 'Work you have finished'],
+        ['Open assigned', totals.assigned, periodNote || 'Ready for your review'],
+        ['Completed', totals.completed, periodNote || 'Work you have finished'],
         ['Unread', totals.notifications, 'Work alerts and updates']
       ];
   elements.metrics.style.setProperty('--metric-count', String(items.length));
@@ -307,28 +403,47 @@ function renderMetrics() {
 }
 
 function renderHero() {
-  const totals = counts();
   const today = new Date();
+  const displayedDate = dateFromLocalKey(state.dateFilter) || today;
+  const displayedDateKey = localDateKey(displayedDate);
+  const totals = counts(emailsForSelectedDate());
   const isAdmin = state.session.user.role === 'admin';
-  const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(today);
-  const month = new Intl.DateTimeFormat(undefined, { month: 'long' }).format(today);
-  elements.heroDate.dateTime = [
-    today.getFullYear(),
-    String(today.getMonth() + 1).padStart(2, '0'),
-    String(today.getDate()).padStart(2, '0')
-  ].join('-');
-  setText(elements.heroDay, today.getDate());
+  const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(displayedDate);
+  const month = new Intl.DateTimeFormat(undefined, { month: 'long' }).format(displayedDate);
+  elements.heroDate.dateTime = displayedDateKey;
+  elements.heroDate.classList.toggle('filtered', Boolean(state.dateFilter));
+  setText(elements.heroDay, displayedDate.getDate());
   setText(elements.heroWeekday, weekday);
   setText(elements.heroMonth, month);
-  setText(elements.heroEyebrow, isAdmin ? 'Today’s workflow' : 'Your work today');
+  setText(elements.heroEyebrow, state.dateFilter
+    ? `Received · ${selectedDateLabel(state.dateFilter, 'short')}`
+    : isAdmin ? 'Today’s workflow' : 'Your work today');
   setText(elements.heroTitle, isAdmin ? 'Keep every email moving.' : 'Your queue, ready when you are.');
   const assignedVerb = totals.assigned === 1 ? 'remains' : 'remain';
   const memberAssignedVerb = totals.assigned === 1 ? 'is' : 'are';
   setText(elements.heroSummary, isAdmin
     ? totals.inbox
-      ? `${countLabel(totals.inbox, 'email')} ${totals.inbox === 1 ? 'needs' : 'need'} an owner. ${countLabel(totals.assigned, 'assignment')} ${assignedVerb} open.`
-      : `The intake queue is clear. ${countLabel(totals.assigned, 'assignment')} ${assignedVerb} open across the team.`
-    : `${countLabel(totals.assigned, 'assignment')} ${memberAssignedVerb} open, with ${countLabel(totals.notifications, 'unread update')} waiting.`);
+      ? `${state.dateFilter ? 'On this date, ' : ''}${countLabel(totals.inbox, 'email')} ${totals.inbox === 1 ? 'needs' : 'need'} an owner. ${countLabel(totals.assigned, 'assignment')} ${assignedVerb} open.`
+      : `${state.dateFilter ? 'No unassigned email on this date.' : 'The intake queue is clear.'} ${countLabel(totals.assigned, 'assignment')} ${assignedVerb} open across the team.`
+    : `${state.dateFilter ? 'On this date, ' : ''}${countLabel(totals.assigned, 'assignment')} ${memberAssignedVerb} open${state.dateFilter ? '.' : `, with ${countLabel(totals.notifications, 'unread update')} waiting.`}`);
+
+  elements.heroDateFilter.value = state.dateFilter;
+  elements.heroDateFilter.closest('.hero-calendar').classList.toggle('active', Boolean(state.dateFilter));
+  elements.heroDateClear.hidden = !state.dateFilter;
+  const filterLabel = state.dateFilter ? selectedDateLabel(state.dateFilter) : '';
+  elements.heroDateFilter.setAttribute('aria-label', state.dateFilter
+    ? `Filter emails by received date, currently ${filterLabel}`
+    : 'Filter emails by received date');
+  elements.heroDateFilter.closest('.hero-calendar').title = state.dateFilter
+    ? `Showing emails received ${filterLabel}`
+    : 'Filter emails by received date';
+  elements.heroDateClear.setAttribute('aria-label', state.dateFilter
+    ? `Clear date filter for ${filterLabel}`
+    : 'Clear date filter');
+  setText(elements.heroDateFilterStatus, state.dateFilter
+    ? `Showing emails received on ${filterLabel}.`
+    : 'Showing emails from all received dates.');
+
   const actionView = isAdmin
     ? totals.inbox > 0 ? 'inbox' : totals.assigned > 0 ? 'assigned' : totals.notifications > 0 ? 'notifications' : 'completed'
     : totals.assigned > 0 ? 'assigned' : totals.notifications > 0 ? 'notifications' : 'completed';
@@ -387,7 +502,14 @@ function emailMatchesDepartment(email) {
 function emailMatchesSearch(email) {
   if (!state.query) return true;
   const sender = `${email.sender?.name ?? ''} ${email.sender?.address ?? ''}`;
-  const searchable = [email.subject, email.preview, sender, email.department, email.assignee?.name]
+  const searchable = [
+    email.subject,
+    email.preview,
+    sender,
+    email.department,
+    email.assignee?.name,
+    providerLabel(emailProvider(email))
+  ]
     .filter(Boolean)
     .join(' ')
     .toLocaleLowerCase();
@@ -398,13 +520,14 @@ function visibleEmails() {
   const status = state.view === 'inbox' ? 'unassigned' : state.view;
   return (state.session.emails ?? [])
     .filter(email => email.status === status)
+    .filter(emailMatchesDate)
     .filter(emailMatchesDepartment)
     .filter(emailMatchesSearch)
     .sort((left, right) => new Date(right.receivedAt) - new Date(left.receivedAt));
 }
 
-function renderEmailRow(email) {
-  const row = node('button', `email-row ${email.status}`);
+function renderEmailRow(email, { grouped = false } = {}) {
+  const row = node('button', `email-row ${email.status}${grouped ? ' grouped' : ''}`);
   row.type = 'button';
   row.dataset.emailId = String(email.id);
 
@@ -417,45 +540,129 @@ function renderEmailRow(email) {
   const meta = node('span', 'email-meta', `${sender} · ${formatDate(email.receivedAt, false)}`);
   const preview = node('span', 'email-preview', email.preview || 'No preview available.');
   const tags = node('span', 'email-tags');
+  const provider = emailProvider(email);
+  tags.append(node('span', `tag source ${provider}`, providerLabel(provider)));
   if (email.department) tags.append(node('span', 'tag department', email.department));
   const statusLabel = email.status === 'unassigned' ? 'Unassigned' : email.status === 'completed' ? 'Completed' : 'Assigned';
   tags.append(node('span', `tag ${email.status}`, statusLabel));
   copy.append(subject, meta, preview, tags);
 
-  const person = node('span', 'email-person');
-  const initials = email.assignee?.initials || '—';
-  const avatar = node('span', 'avatar', initials);
-  avatar.setAttribute('aria-hidden', 'true');
-  person.append(avatar, node('span', '', email.assignee?.name || 'Unassigned'));
-  row.append(dot, copy, person);
+  row.append(dot, copy);
+  if (!grouped) {
+    const person = node('span', 'email-person');
+    const avatar = node('span', 'avatar', email.assignee?.initials || '—');
+    avatar.setAttribute('aria-hidden', 'true');
+    person.append(avatar, node('span', '', email.assignee?.name || 'Unassigned'));
+    row.append(person);
+  }
   return row;
 }
 
+function assignedEmployeeGroups(emails) {
+  const groups = new Map();
+  for (const email of emails) {
+    const assignee = email.assignee ?? {
+      id: 'unknown',
+      name: 'Unknown employee',
+      initials: '—',
+      email: '',
+      department: email.department || 'No department'
+    };
+    const key = String(assignee.id ?? assignee.email ?? assignee.name);
+    if (!groups.has(key)) groups.set(key, { assignee, emails: [] });
+    groups.get(key).emails.push(email);
+  }
+  return [...groups.values()].sort((left, right) =>
+    left.assignee.name.localeCompare(right.assignee.name, undefined, { sensitivity: 'base' }));
+}
+
+function renderEmployeeGroup(group, index) {
+  const section = node('section', 'employee-email-group');
+  const identifier = String(group.assignee.id ?? index).replace(/[^a-z0-9_-]/gi, '-');
+  const headingId = `employee-group-${identifier}-title`;
+  const countId = `employee-group-${identifier}-count`;
+  section.setAttribute('aria-labelledby', headingId);
+  section.setAttribute('aria-describedby', countId);
+
+  const header = node('header', 'employee-group-head');
+  const avatar = node('span', 'avatar', group.assignee.initials || '—');
+  avatar.setAttribute('aria-hidden', 'true');
+  const copy = node('div', 'employee-group-copy');
+  const heading = node('h3', '', group.assignee.name || 'Unknown employee');
+  heading.id = headingId;
+  const details = [group.assignee.department, group.assignee.email].filter(Boolean).join(' · ');
+  copy.append(heading, node('p', '', details || 'No employee details'));
+  const count = node('span', 'employee-group-count', countLabel(group.emails.length, 'email'));
+  count.id = countId;
+  header.append(avatar, copy, count);
+
+  const emailRows = node('div', 'employee-group-emails');
+  emailRows.append(...group.emails.map(email => renderEmailRow(email, { grouped: true })));
+  section.append(header, emailRows);
+  return section;
+}
+
 function renderEmails() {
+  const focusedEmailId = elements.emailList.contains(document.activeElement)
+    ? document.activeElement.closest('[data-email-id]')?.dataset.emailId
+    : null;
   const emails = visibleEmails();
+  const groupedAssigned = state.view === 'assigned' && state.session.user.role === 'admin';
+  const employeeGroups = groupedAssigned ? assignedEmployeeGroups(emails) : [];
   const labels = {
     inbox: ['Unassigned inbox', 'New mailbox items awaiting a rule'],
-    assigned: [state.session.user.role === 'admin' ? 'Assigned work' : 'My work', 'Open assignments'],
+    assigned: [
+      state.session.user.role === 'admin' ? 'Assigned by employee' : 'My work',
+      state.session.user.role === 'admin'
+        ? `${countLabel(employeeGroups.length, 'employee')} with open assignments`
+        : 'Open assignments ready for your review'
+    ],
     completed: ['Completed work', 'Closed assignment history']
   };
   const [title, caption] = labels[state.view] ?? labels.assigned;
   setText(elements.queueTitle, title);
-  setText(elements.queueCaption, caption);
-  setText(elements.emailCount, countLabel(emails.length, 'email'));
+  const dateCaption = state.dateFilter ? ` · Received ${selectedDateLabel(state.dateFilter, 'short')}` : '';
+  setText(elements.queueCaption, `${caption}${dateCaption}`);
+  setText(elements.emailCount, groupedAssigned
+    ? `${countLabel(employeeGroups.length, 'employee')} · ${countLabel(emails.length, 'email')}`
+    : countLabel(emails.length, 'email'));
+  elements.emailList.classList.toggle('employee-group-list', groupedAssigned && emails.length > 0);
+  const hasFilters = Boolean(state.query || state.dateFilter || state.department !== 'All');
+  const emptyMessage = state.dateFilter
+    ? `No emails received on ${selectedDateLabel(state.dateFilter)} match the current filters.`
+    : hasFilters ? 'No emails match your search and filters.' : 'This queue is clear.';
   elements.emailList.replaceChildren(...(emails.length
-    ? emails.map(renderEmailRow)
-    : [emptyState('Nothing here', state.query ? 'No emails match your search and filters.' : 'This queue is clear.')]));
+    ? groupedAssigned
+      ? employeeGroups.map(renderEmployeeGroup)
+      : emails.map(renderEmailRow)
+    : [emptyState('Nothing here', emptyMessage)]));
+
+  if (focusedEmailId) {
+    window.requestAnimationFrame(() => {
+      const replacement = [...elements.emailList.querySelectorAll('[data-email-id]')]
+        .find(row => row.dataset.emailId === focusedEmailId);
+      (replacement || elements.pageTitle).focus({ preventScroll: true });
+    });
+  }
 }
 
 function renderRule(rule) {
   const item = node('article', `rule-item${rule.enabled ? '' : ' is-disabled'}`);
   const copy = node('div');
+  const criteria = [
+    rule.keywords ? `Keywords “${rule.keywords}”` : '',
+    rule.senderFilter ? `Sender contains “${rule.senderFilter}”` : ''
+  ].filter(Boolean).join(' · ');
   copy.append(
     node('h3', '', rule.name),
-    node('p', '', `${rule.keywords}${rule.senderFilter ? ` · From “${rule.senderFilter}”` : ''} · Assign to ${rule.assignee?.name || 'Unknown member'}`),
+    node('p', '', `${criteria || 'No matching criteria'} · Assign to ${rule.assignee?.name || 'Unknown member'}`),
     node('p', '', `Priority ${rule.priority} · ${rule.enabled ? 'Active' : 'Paused'}`)
   );
   const actions = node('div', 'rule-actions');
+  const edit = node('button', 'edit-rule', 'Edit');
+  edit.type = 'button';
+  edit.dataset.ruleId = String(rule.id);
+  edit.setAttribute('aria-label', `Edit ${rule.name}`);
   const toggle = node('button', 'toggle-rule', rule.enabled ? 'Pause' : 'Enable');
   toggle.type = 'button';
   toggle.dataset.ruleId = String(rule.id);
@@ -465,7 +672,7 @@ function renderRule(rule) {
   remove.type = 'button';
   remove.dataset.ruleId = String(rule.id);
   remove.setAttribute('aria-label', `Delete ${rule.name}`);
-  actions.append(toggle, remove);
+  actions.append(edit, toggle, remove);
   item.append(copy, actions);
   return item;
 }
@@ -568,8 +775,136 @@ function renderTeamMember(member, departments) {
   return item;
 }
 
+function integrationState(provider, integration) {
+  if (integration.lastError) return { key: 'attention', label: 'Needs attention' };
+  if (integration.connected) return { key: 'connected', label: 'Connected' };
+  if (provider === 'outlook' && integration.configured) return { key: 'configured', label: 'Configured' };
+  if (integration.configured) return { key: 'disconnected', label: 'Not connected' };
+  return { key: 'setup', label: 'Setup required' };
+}
+
+function renderIntegration(provider, integration = {}) {
+  const name = providerLabel(provider);
+  const connection = {
+    configured: Boolean(integration.configured),
+    connected: Boolean(integration.connected),
+    accountEmail: integration.accountEmail || '',
+    lastSuccessAt: integration.lastSuccessAt || null,
+    lastError: integration.lastError || ''
+  };
+  const status = integrationState(provider, connection);
+  const row = node('article', `integration-row ${provider}`);
+  row.dataset.provider = provider;
+
+  const mark = node('span', 'integration-mark');
+  mark.setAttribute('aria-hidden', 'true');
+  mark.append(svgIcon('#icon-mail'));
+
+  const copy = node('div', 'integration-copy');
+  const heading = node('div', 'integration-heading');
+  heading.append(
+    node('h4', '', name),
+    node('span', `integration-status ${status.key}`, status.label)
+  );
+  copy.append(heading);
+
+  const account = connection.accountEmail || (provider === 'outlook'
+    ? connection.configured ? 'Managed through server configuration.' : 'Microsoft Graph is not configured.'
+    : connection.configured ? 'No Gmail account connected.' : 'Google OAuth is not configured on this server.');
+  const accountElement = node('p', 'integration-account', account);
+  accountElement.id = `integration-${provider}-account`;
+  copy.append(accountElement);
+
+  if (connection.lastSuccessAt) {
+    copy.append(node('p', 'integration-meta', `Last synced ${formatDate(connection.lastSuccessAt)}`));
+  } else if (connection.connected) {
+    copy.append(node('p', 'integration-meta', 'Waiting for the first sync.'));
+  }
+
+  if (connection.lastError) {
+    const error = node('p', 'integration-error', connection.lastError);
+    error.setAttribute('role', 'alert');
+    copy.append(error);
+  }
+
+  const actions = node('div', 'integration-actions');
+  if (provider === 'gmail') {
+    if (connection.configured) {
+      const reconnecting = connection.connected || connection.accountEmail || connection.lastError;
+      const authorize = node('a', 'button', reconnecting ? 'Reconnect' : 'Connect Gmail');
+      authorize.href = '/api/integrations/gmail/authorize';
+      authorize.dataset.integrationAction = 'authorize';
+      authorize.setAttribute('aria-label', `${reconnecting ? 'Reconnect' : 'Connect'} Gmail account`);
+      actions.append(authorize);
+    } else {
+      const unavailable = node('button', 'button', 'Connect Gmail');
+      unavailable.type = 'button';
+      unavailable.disabled = true;
+      unavailable.setAttribute('aria-describedby', accountElement.id);
+      actions.append(unavailable);
+    }
+
+    if (connection.connected) {
+      const disconnect = node('button', 'button integration-disconnect', 'Disconnect');
+      disconnect.type = 'button';
+      disconnect.dataset.integrationAction = 'disconnect';
+      disconnect.setAttribute('aria-label', `Disconnect Gmail account ${connection.accountEmail}`.trim());
+      actions.append(disconnect);
+    }
+  } else {
+    actions.append(node('span', 'integration-managed', connection.configured ? 'Server managed' : 'Server setup'));
+  }
+
+  row.append(mark, copy, actions);
+  return row;
+}
+
+function renderIntegrations() {
+  const integrations = state.session.integrations ?? {};
+  const providers = ['outlook', 'gmail'];
+  const signature = JSON.stringify(providers.map(provider => {
+    const integration = integrations[provider] ?? {};
+    return [
+      provider,
+      Boolean(integration.configured),
+      Boolean(integration.connected),
+      integration.accountEmail || '',
+      integration.lastSuccessAt || '',
+      integration.lastError || ''
+    ];
+  }));
+  if (elements.integrationList.dataset.signature === signature) return;
+
+  const focused = elements.integrationList.contains(document.activeElement)
+    ? {
+        provider: document.activeElement.closest('[data-provider]')?.dataset.provider,
+        action: document.activeElement.dataset.integrationAction
+      }
+    : null;
+  elements.integrationList.replaceChildren(
+    ...providers.map(provider => renderIntegration(provider, integrations[provider]))
+  );
+  elements.integrationList.dataset.signature = signature;
+
+  if (focused?.provider && focused.action) {
+    window.requestAnimationFrame(() => {
+      elements.integrationList
+        .querySelector(`[data-provider="${focused.provider}"] [data-integration-action="${focused.action}"]`)
+        ?.focus();
+    });
+  }
+}
+
+function setIntegrationFeedback(message, isError = false) {
+  setText(elements.integrationFeedback, message);
+  elements.integrationFeedback.classList.toggle('error', isError);
+  elements.integrationFeedback.setAttribute('role', isError ? 'alert' : 'status');
+  elements.integrationFeedback.setAttribute('aria-live', isError ? 'assertive' : 'polite');
+}
+
 function renderSettings() {
   if (state.session.user.role !== 'admin') return;
+  renderIntegrations();
   const settings = state.session.settings;
   if (settings && !state.settingsDirty) {
     elements.timingForm.elements.namedItem('timeUnassignedHours').value = String(settings.timeUnassignedHours);
@@ -634,27 +969,44 @@ function renderHeader() {
     notifications: 'Notifications'
   };
   setText(elements.pageTitle, titles[state.view]);
-  const connected = state.session.mode === 'graph';
-  setText(elements.modeChip, connected ? 'Outlook connected' : 'Demo mailbox');
+  const mailbox = mailboxSummary();
+  const connected = mailbox.connectedCount > 0;
+  setText(elements.modeChip, mailbox.label);
   elements.modeChip.classList.toggle('connected', connected);
   elements.searchInput.hidden = !['inbox', 'assigned', 'completed'].includes(state.view);
   elements.searchInput.parentElement.hidden = elements.searchInput.hidden;
 }
 
 function renderIdentity() {
-  const { user, mode, sync } = state.session;
+  const { user, sync } = state.session;
+  const mailbox = mailboxSummary();
+  const connectedIntegrations = Object.values(state.session.integrations ?? {})
+    .filter(integration => integration.connected);
+  const connectedIntegrationErrors = connectedIntegrations
+    .filter(integration => integration.lastError);
+  const staleSourceSummary = sync?.lastError?.startsWith('Sync needs attention:')
+    && connectedIntegrationErrors.length === 0;
+  const syncError = staleSourceSummary ? null : sync?.lastError;
+  const connectedSyncAt = connectedIntegrations
+    .map(integration => integration.lastSuccessAt)
+    .filter(Boolean)
+    .sort((left, right) => new Date(right) - new Date(left))[0] ?? null;
+  const lastSyncAt = state.session.mode === 'demo' ? sync?.lastSuccessAt : connectedSyncAt;
   setText(elements.sidebarAvatar, user.initials);
   setText(elements.sidebarUser, user.name);
   setText(elements.sidebarRole, `${user.role} · ${user.department}`);
   setText(elements.topbarAvatar, user.initials);
   setText(elements.topbarUser, user.name);
   setText(elements.topbarRole, `${user.role} · ${user.department}`);
-  setText(elements.sidebarMode, mode === 'graph' ? 'Outlook connected' : 'Demo mailbox');
+  setText(elements.sidebarMode, mailbox.label);
+  elements.sidebarMode.closest('.mailbox-card').classList.toggle('connected', mailbox.connectedCount > 0);
   setText(elements.sidebarSync, user.role === 'member'
     ? 'Sync managed by admin'
-    : sync?.lastSuccessAt ? `Synced ${formatDate(sync.lastSuccessAt)}` : 'Waiting for first sync');
-  elements.statusBanner.hidden = !sync?.lastError;
-  setText(elements.statusBanner, sync?.lastError ? `Last sync failed: ${sync.lastError}` : '');
+    : lastSyncAt ? `Synced ${formatDate(lastSyncAt)}` : 'Waiting for first sync');
+  elements.statusBanner.hidden = !syncError;
+  setText(elements.statusBanner, syncError
+    ? syncError.startsWith('Sync needs attention:') ? syncError : `Sync needs attention: ${syncError}`
+    : '');
 }
 
 function render() {
@@ -666,7 +1018,8 @@ function render() {
   const isAdmin = state.session.user.role === 'admin';
   elements.adminNavigation.hidden = !isAdmin;
   elements.memberNavigation.hidden = isAdmin;
-  elements.syncButton.hidden = !isAdmin;
+  elements.syncButton.hidden = !isAdmin
+    || (state.session.mode !== 'demo' && mailboxSummary().connectedCount === 0);
   elements.sidebarDepartment.closest('.department-picker').hidden = !isAdmin || !['assigned', 'completed'].includes(state.view);
   if (isAdmin) renderDepartments();
   const unreadCount = state.session.unreadCount ?? 0;
@@ -689,6 +1042,32 @@ function render() {
   }
   renderNotifications();
   renderPanels();
+}
+
+function handleIntegrationReturn() {
+  if (state.integrationReturnHandled || state.session?.user.role !== 'admin') return;
+  const url = new URL(window.location.href);
+  const result = url.searchParams.get('integration');
+  if (!['gmail-connected', 'gmail-error'].includes(result)) return;
+
+  state.integrationReturnHandled = true;
+  url.searchParams.delete('integration');
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  state.view = 'settings';
+  normalizeView();
+  render();
+
+  const isError = result === 'gmail-error';
+  setIntegrationFeedback(
+    isError
+      ? 'Gmail authorization could not be completed. Try again.'
+      : 'Gmail connected to this workspace.',
+    isError
+  );
+  window.requestAnimationFrame(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    elements.integrationsTitle.focus({ preventScroll: true });
+  });
 }
 
 function selectView(view) {
@@ -782,26 +1161,102 @@ function openEmail(emailId, opener = document.activeElement) {
     elements.emailAssigneeSelect.replaceChildren();
   }
 
-  const outlookUrl = safeWebUrl(email.outlookUrl);
-  elements.outlookLink.hidden = !outlookUrl;
-  if (outlookUrl) elements.outlookLink.href = outlookUrl;
+  const webUrl = safeWebUrl(email.webUrl || email.outlookUrl);
+  const sourceName = providerLabel(emailProvider(email));
+  const openLabel = `Open in ${sourceName}`;
+  elements.outlookLink.hidden = !webUrl;
+  setText(elements.outlookLink, openLabel);
+  elements.outlookLink.setAttribute('aria-label', `${openLabel}: ${email.subject || 'No subject'}`);
+  if (webUrl) elements.outlookLink.href = webUrl;
   else elements.outlookLink.removeAttribute('href');
   elements.emailDialog.showModal();
 }
 
-function openRuleDialog() {
+function normalizedRuleValues(source) {
+  return {
+    name: String(source.name ?? '').trim(),
+    keywords: String(source.keywords ?? '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean)
+      .join(','),
+    senderFilter: String(source.senderFilter ?? '').trim(),
+    assigneeId: Number(source.assigneeId ?? source.assignee?.id),
+    priority: Number(source.priority)
+  };
+}
+
+function ruleFormValues() {
+  const form = new FormData(elements.ruleForm);
+  return normalizedRuleValues({
+    name: form.get('name'),
+    keywords: form.get('keywords'),
+    senderFilter: form.get('senderFilter'),
+    assigneeId: form.get('assigneeId'),
+    priority: form.get('priority')
+  });
+}
+
+function validateRuleValues(values) {
+  const fields = {};
+  if (!values.name || values.name.length > 80) {
+    fields.name = 'Enter a rule name of 80 characters or fewer.';
+  }
+  if (!values.keywords && !values.senderFilter) {
+    fields.keywords = 'Enter keywords, a sender filter, or both.';
+  }
+  if (!Number.isInteger(values.assigneeId) || values.assigneeId < 1) {
+    fields.assigneeId = 'Choose a valid team member.';
+  }
+  if (!Number.isInteger(values.priority) || values.priority < 1 || values.priority > 999) {
+    fields.priority = 'Priority must be between 1 and 999.';
+  }
+  if (!Object.keys(fields).length) return null;
+  const error = new Error(Object.values(fields)[0]);
+  error.fields = fields;
+  return error;
+}
+
+function openRuleDialog(rule = null, opener = document.activeElement) {
   if (state.session?.user.role !== 'admin') return;
   elements.ruleForm.reset();
   clearFieldErrors(elements.ruleForm);
-  elements.ruleForm.priority.value = '30';
   elements.ruleError.hidden = true;
+  state.ruleDialogOpener = opener instanceof HTMLElement ? opener : null;
+  state.editingRuleId = rule?.id ?? null;
+  state.editingRuleSnapshot = rule ? normalizedRuleValues(rule) : null;
+
+  const editing = Boolean(rule);
+  setText(elements.ruleDialogEyebrow, editing ? 'Update routing' : 'Admin only');
+  setText(elements.ruleDialogTitle, editing ? `Edit ${rule.name}` : 'Create automation rule');
+  setText(elements.ruleFormHelp, editing
+    ? 'Change at least one field. A name, teammate, priority, and one matching condition must remain.'
+    : 'Set a rule name, teammate, priority, and at least one matching condition.');
+  setButtonLabel(elements.ruleForm.querySelector('[type="submit"]'), editing ? 'Save changes' : 'Create rule');
+
   const members = (state.session.team ?? []).filter(user => user.role === 'member');
   const options = members.map(member => {
     const option = node('option', '', `${member.name} · ${member.department}`);
     option.value = String(member.id);
+    option.selected = member.id === rule?.assignee?.id;
     return option;
   });
   elements.ruleAssignee.replaceChildren(...options);
+  ['name', 'assigneeId', 'priority'].forEach(name => {
+    elements.ruleForm.elements.namedItem(name).required = !editing;
+  });
+  elements.ruleForm.elements.namedItem('keywords').required = false;
+
+  if (editing) {
+    const values = state.editingRuleSnapshot;
+    elements.ruleForm.elements.namedItem('name').value = values.name;
+    elements.ruleForm.elements.namedItem('keywords').value = values.keywords;
+    elements.ruleForm.elements.namedItem('senderFilter').value = values.senderFilter;
+    elements.ruleForm.elements.namedItem('assigneeId').value = String(values.assigneeId);
+    elements.ruleForm.elements.namedItem('priority').value = String(values.priority);
+  } else {
+    elements.ruleForm.elements.namedItem('priority').value = '30';
+  }
   elements.ruleDialog.showModal();
   elements.ruleForm.elements.namedItem('name').focus();
 }
@@ -880,6 +1335,15 @@ elements.searchInput.addEventListener('input', event => {
   state.query = event.target.value.trim().toLocaleLowerCase();
   renderEmails();
 });
+elements.heroDateFilter.addEventListener('change', event => {
+  state.dateFilter = dateFromLocalKey(event.target.value) ? event.target.value : '';
+  render();
+});
+elements.heroDateClear.addEventListener('click', () => {
+  state.dateFilter = '';
+  render();
+  window.requestAnimationFrame(() => elements.heroDateFilter.focus({ preventScroll: true }));
+});
 
 elements.emailList.addEventListener('click', event => {
   const row = event.target.closest('[data-email-id]');
@@ -910,9 +1374,24 @@ elements.sidebar.addEventListener('keydown', event => {
 
 updateSidebarAccessibility();
 
-document.querySelector('#new-rule-button').addEventListener('click', openRuleDialog);
+document.querySelector('#new-rule-button').addEventListener('click', event => openRuleDialog(null, event.currentTarget));
 document.querySelectorAll('[data-close-dialog]').forEach(button => {
   button.addEventListener('click', () => closeDialog(button.dataset.closeDialog));
+});
+
+elements.ruleDialog.addEventListener('close', () => {
+  const opener = state.ruleDialogOpener;
+  const editedRuleId = state.editingRuleId;
+  state.ruleDialogOpener = null;
+  state.editingRuleId = null;
+  state.editingRuleSnapshot = null;
+  if (!state.session || elements.appView.hidden) return;
+  window.requestAnimationFrame(() => {
+    if (opener?.isConnected) opener.focus({ preventScroll: true });
+    else if (editedRuleId) {
+      elements.ruleList.querySelector(`.edit-rule[data-rule-id="${editedRuleId}"]`)?.focus({ preventScroll: true });
+    } else elements.pageTitle.focus({ preventScroll: true });
+  });
 });
 
 elements.emailDialog.addEventListener('close', () => {
@@ -920,6 +1399,39 @@ elements.emailDialog.addEventListener('close', () => {
   state.emailDialogOpener = null;
   if (state.session && !elements.appView.hidden && (!opener || !opener.isConnected)) {
     elements.pageTitle.focus({ preventScroll: true });
+  }
+});
+
+elements.integrationList.addEventListener('click', async event => {
+  const action = event.target.closest('[data-integration-action]');
+  if (!action || state.session?.user.role !== 'admin') return;
+
+  if (action.dataset.integrationAction === 'authorize') {
+    event.preventDefault();
+    action.setAttribute('aria-busy', 'true');
+    action.setAttribute('aria-disabled', 'true');
+    setText(action, 'Connecting…');
+    window.location.assign(action.href);
+    return;
+  }
+
+  if (action.dataset.integrationAction !== 'disconnect') return;
+  if (!window.confirm('Disconnect Gmail from this workspace? New Gmail messages will stop syncing.')) return;
+
+  setButtonBusy(action, true, 'Disconnecting…');
+  setIntegrationFeedback('');
+  try {
+    await mutate('/api/integrations/gmail', 'DELETE');
+    setIntegrationFeedback('Gmail disconnected from this workspace.');
+    window.requestAnimationFrame(() => {
+      elements.integrationList.querySelector('[data-integration-action="authorize"]')?.focus();
+    });
+  } catch (error) {
+    if (!state.session) return;
+    setIntegrationFeedback(`Gmail could not be disconnected: ${error.message}`, true);
+    action.focus();
+  } finally {
+    if (action.isConnected) setButtonBusy(action, false, 'Disconnecting…');
   }
 });
 
@@ -1014,27 +1526,48 @@ elements.ruleForm.addEventListener('submit', async event => {
   clearFieldErrors(elements.ruleForm);
   elements.ruleError.hidden = true;
   if (!elements.ruleForm.reportValidity()) return;
+  const values = ruleFormValues();
+  const validationError = validateRuleValues(values);
+  if (validationError) {
+    showFormError(elements.ruleForm, elements.ruleError, validationError);
+    return;
+  }
+
+  const editingRuleId = state.editingRuleId;
+  const editing = Number.isInteger(editingRuleId);
+  let body = values;
+  if (editing) {
+    body = {};
+    for (const key of ['name', 'keywords', 'senderFilter', 'assigneeId', 'priority']) {
+      if (values[key] !== state.editingRuleSnapshot[key]) body[key] = values[key];
+    }
+    if (!Object.keys(body).length) {
+      const error = new Error('Change at least one field before saving.');
+      showFormError(elements.ruleForm, elements.ruleError, error);
+      return;
+    }
+  }
+
   const submit = elements.ruleForm.querySelector('[type="submit"]');
-  setButtonBusy(submit, true, 'Creating…');
-  const form = new FormData(elements.ruleForm);
+  setButtonBusy(submit, true, editing ? 'Saving…' : 'Creating…');
   try {
-    await mutate('/api/rules', 'POST', {
-      name: String(form.get('name')).trim(),
-      keywords: String(form.get('keywords')).trim(),
-      senderFilter: String(form.get('senderFilter')).trim(),
-      assigneeId: Number(form.get('assigneeId')),
-      priority: Number(form.get('priority'))
-    });
+    await mutate(editing ? `/api/rules/${editingRuleId}` : '/api/rules', editing ? 'PATCH' : 'POST', body);
     elements.ruleDialog.close();
-    showToast('Automation rule created.');
+    showToast(editing ? 'Automation rule updated.' : 'Automation rule created.');
   } catch (error) {
     showFormError(elements.ruleForm, elements.ruleError, error);
   } finally {
-    setButtonBusy(submit, false, 'Creating…');
+    setButtonBusy(submit, false, editing ? 'Saving…' : 'Creating…');
   }
 });
 
 elements.ruleList.addEventListener('click', async event => {
+  const edit = event.target.closest('.edit-rule');
+  if (edit) {
+    const rule = (state.session.rules ?? []).find(item => item.id === Number(edit.dataset.ruleId));
+    if (rule) openRuleDialog(rule, edit);
+    return;
+  }
   const toggle = event.target.closest('.toggle-rule');
   const remove = event.target.closest('.delete-rule');
   const button = toggle || remove;
@@ -1061,7 +1594,13 @@ elements.syncButton.addEventListener('click', async () => {
     const result = await mutate('/api/sync');
     const imported = result.imported ?? result.result?.imported;
     const assigned = result.assigned ?? result.result?.assigned;
-    showToast(Number.isInteger(imported) ? `Sync complete: ${imported} new, ${assigned ?? 0} assigned.` : 'Mailbox synced.');
+    const failed = Number(result.failed ?? result.result?.failed) || 0;
+    const attention = failed > 0
+      ? `; ${countLabel(failed, 'mailbox')} ${failed === 1 ? 'needs' : 'need'} attention.`
+      : '.';
+    showToast(Number.isInteger(imported)
+      ? `Sync complete: ${imported} new, ${assigned ?? 0} assigned${attention}`
+      : failed > 0 ? `${countLabel(failed, 'mailbox')} ${failed === 1 ? 'needs' : 'need'} attention.` : 'Mailboxes synced.');
   } catch (error) {
     showToast(error.message, true);
   } finally {

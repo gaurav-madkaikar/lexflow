@@ -6,6 +6,7 @@ import { createAlertRunner } from './alerts.js';
 import { hashPassword } from './auth.js';
 import { loadConfig } from './config.js';
 import { createDatabase, seedDemoData } from './db.js';
+import { createGmailIntegration } from './gmail.js';
 import { createMailSource } from './mail-sources.js';
 import { createSyncRunner } from './workflows.js';
 
@@ -18,14 +19,14 @@ if (config.databasePath !== ':memory:') {
 
 const db = createDatabase(config.databasePath);
 const userCount = Number(db.prepare('SELECT count(*) AS count FROM users').get().count);
-const passwords = config.mode === 'graph'
+const passwords = config.liveMailConfigured
   ? config.bootstrapPasswords
   : { admin: 'admin123', maya: 'welcome123', priya: 'welcome123' };
-if (config.mode === 'graph' && Object.values(passwords).some(password => password.length < 8)) {
+if (config.liveMailConfigured && Object.values(passwords).some(password => password.length < 8)) {
   db.close();
-  throw new Error('Graph mode requires all BOOTSTRAP_*_PASSWORD values (minimum 8 characters).');
+  throw new Error('Live mail connections require all BOOTSTRAP_*_PASSWORD values (minimum 8 characters).');
 }
-if (userCount === 0 || config.mode === 'graph') {
+if (userCount === 0 || config.liveMailConfigured) {
   const [adminPasswordHash, mayaPasswordHash, priyaPasswordHash] = await Promise.all([
     hashPassword(passwords.admin),
     hashPassword(passwords.maya),
@@ -40,6 +41,7 @@ if (userCount === 0 || config.mode === 'graph') {
       updatePassword.run(adminPasswordHash, 'admin@lexflow.local');
       updatePassword.run(mayaPasswordHash, 'maya@lexflow.local');
       updatePassword.run(priyaPasswordHash, 'priya@lexflow.local');
+      db.prepare('DELETE FROM sessions').run();
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -49,10 +51,39 @@ if (userCount === 0 || config.mode === 'graph') {
   }
 }
 
-const source = createMailSource(config);
-const syncRunner = createSyncRunner({ db, source });
+const primarySource = createMailSource(config);
+const gmailIntegration = createGmailIntegration({ db, gmail: config.gmail });
+const outlookConfigured = ['graph', 'mixed'].includes(config.mode);
+const sources = () => {
+  let gmailSources;
+  try {
+    gmailSources = gmailIntegration.sources();
+  } catch (error) {
+    gmailSources = [{
+      provider: 'gmail',
+      mailboxAddress: gmailIntegration.status().accountEmail,
+      cursorKey: 'mail_cursor:gmail',
+      async fetchChanges() { throw error; },
+    }];
+  }
+  if (outlookConfigured) return [primarySource, ...gmailSources];
+  return config.mode === 'demo' ? [primarySource] : gmailSources;
+};
+const syncRunner = createSyncRunner({ db, sources });
 const alertRunner = createAlertRunner({ db });
-const app = createApp({ db, syncRunner, mode: config.mode });
+const app = createApp({
+  db,
+  syncRunner,
+  mode: config.mode,
+  integrations: {
+    outlook: {
+      configured: outlookConfigured,
+      accountEmail: outlookConfigured ? config.graph.mailbox : null,
+      cursorKey: outlookConfigured ? primarySource.cursorKey : null,
+    },
+    gmail: gmailIntegration,
+  },
+});
 const server = app.listen(config.port, '127.0.0.1', () => {
   console.log(`LexFlow listening at http://127.0.0.1:${config.port} (${config.mode} mode)`);
 });
@@ -62,7 +93,8 @@ if (config.syncIntervalSeconds > 0) {
   syncTimer = setInterval(async () => {
     try {
       const result = await syncRunner.run();
-      console.log(`Mail sync complete: ${result.imported} imported, ${result.assigned} assigned`);
+      const failures = result.failed ? `, ${result.failed} mailbox failed` : '';
+      console.log(`Mail sync complete: ${result.imported} imported, ${result.assigned} assigned${failures}`);
     } catch (error) {
       console.error(`Mail sync failed: ${error.message}`);
     }

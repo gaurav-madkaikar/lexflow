@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LexFlow — Legal & Finance Operations</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--line:#e6e6e8;--blue:#0071e3;--green:#34c759;--orange:#ff9500;--red:#ff3b30}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",Inter,Arial,sans-serif}
+.app{height:100vh;display:flex;overflow:hidden}.side{width:245px;background:#fff;border-right:1px solid var(--line);padding:22px 15px;display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:10px;padding:5px 10px 25px}.logo{width:34px;height:34px;background:#111;color:#fff;border-radius:11px;display:grid;place-items:center;font-weight:700}.brand b{font-size:18px}
+.label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#999;padding:10px}.nav{display:grid;gap:3px}.nav button{border:0;background:none;padding:11px 12px;border-radius:10px;text-align:left;color:#555;cursor:pointer}.nav button:hover,.nav button.active{background:#ededf0;color:#111}.badge{float:right;background:#eeeef0;border-radius:20px;padding:2px 7px;font-size:10px}
+.dept{margin:18px 7px 10px;padding:12px;background:#f5f5f7;border-radius:12px;font-size:12px}.dept select{border:0;background:transparent;font-weight:600;margin-top:6px;width:100%;outline:0}
+.bottom{margin-top:auto;border-top:1px solid var(--line);padding-top:15px;font-size:11px;color:var(--muted)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}.top{height:72px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:rgba(245,245,247,.85);backdrop-filter:blur(15px)}
+h1{font-size:24px;margin:0;letter-spacing:-.6px}.topright{display:flex;gap:9px;align-items:center}.search{width:250px;padding:9px 12px;border:1px solid #ddd;border-radius:10px;background:#fff;outline:0}.btn{border:0;border-radius:10px;padding:9px 13px;background:#fff;cursor:pointer}.primary{background:#111;color:white}
+.content{padding:24px 28px;overflow:auto}.switch{display:flex;gap:4px;background:#e9e9ec;padding:3px;border-radius:10px;width:max-content;margin-bottom:18px}.switch button{border:0;background:transparent;padding:7px 15px;border-radius:8px;font-size:12px;cursor:pointer}.switch button.active{background:#fff;box-shadow:0 1px 4px #ccc}
+.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:13px;margin-bottom:18px}.metric{background:#fff;border-radius:16px;padding:17px;box-shadow:0 7px 28px #0000000b}.metric small{color:var(--muted)}.metric strong{display:block;font-size:25px;margin-top:9px}.metric span{font-size:10px;color:var(--muted)}
+.layout{display:grid;grid-template-columns:minmax(0,1.7fr) 360px;gap:18px}.card{background:#fff;border-radius:17px;overflow:hidden;box-shadow:0 7px 28px #0000000b}.head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.head b{font-size:14px}.head span{font-size:11px;color:var(--muted)}
+.email{display:grid;grid-template-columns:10px 1fr auto;gap:12px;padding:15px 18px;border-bottom:1px solid #eee;cursor:pointer}.email:hover{background:#fafafa}.dot{width:8px;height:8px;border-radius:50%;margin-top:7px}.subject{font-weight:600;font-size:13px}.meta,.preview{font-size:11px;color:var(--muted);margin-top:4px}.preview{color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:550px}.tags{margin-top:8px}.tag{display:inline-block;background:#f0f0f2;border-radius:99px;padding:4px 7px;margin-right:4px;font-size:9px}.legal{background:#eef6ff;color:#0665bd}.finance{background:#ecfbf0;color:#16833b}.high{background:#fff0ee;color:#c82c21}.person{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:600;white-space:nowrap}.avatar{width:25px;height:25px;background:#e3e3e8;border-radius:50%;display:grid;place-items:center;font-size:8px}
+.panel{margin-bottom:18px}.rule{padding:12px 16px;border-bottom:1px solid #eee}.rule b{font-size:11px}.rule p{margin:5px 0 0;font-size:10px;color:var(--muted);line-height:1.4}.activity{padding:8px 17px 14px}.act{padding:11px 0;border-bottom:1px solid #eee;font-size:10px}.act:last-child{border:0}.act span{float:right;color:#aaa}.detail{display:none}
+@media(max-width:1100px){.metrics{grid-template-columns:repeat(3,1fr)}.layout{grid-template-columns:1fr 300px}}@media(max-width:850px){.side{display:none}.metrics{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}.search{width:180px}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="side">
+ <div class="brand"><div class="logo">L</div><b>LexFlow</b></div>
+ <div class="label">Workspace</div>
+ <div class="nav">
+  <button class="active" onclick="tab(this,'Inbox')">Inbox <i class="badge">24</i></button>
+  <button onclick="tab(this,'Assigned')">Assigned <i class="badge">47</i></button>
+  <button onclick="tab(this,'Review')">Pending Review <i class="badge">8</i></button>
+  <button onclick="tab(this,'Completed')">Completed</button>
+ </div>
+ <div class="dept"><div style="color:#888;font-size:10px">DEPARTMENT</div><select id="dept" onchange="department()"><option>All Departments</option><option>Legal</option><option>Finance</option></select></div>
+ <div class="label">Management</div>
+ <div class="nav">
+  <button>Automation Rules</button><button>Team</button><button>Accounts</button><button>Matters</button><button>Analytics</button><button>Settings</button>
+ </div>
+ <div class="bottom">Connected shared mailbox<br><b style="color:#333">legal-finance@company.com</b><br><br>● Mailbox connected</div>
+</aside>
+
+<main class="main">
+<header class="top"><h1 id="title">Unified Intake</h1><div class="topright"><input class="search" placeholder="Search emails, accounts..." oninput="search(this.value)"><button class="btn">↻ Sync</button><button class="btn">◉</button><button class="btn primary">+ Assign</button></div></header>
+<section class="content">
+ <div class="switch"><button class="active" onclick="filterDept(this,'All')">All</button><button onclick="filterDept(this,'Legal')">⚖ Legal</button><button onclick="filterDept(this,'Finance')">₿ Finance</button></div>
+ <div class="metrics">
+  <div class="metric"><small>Unassigned</small><strong id="m1">24</strong><span>↓ 6 since yesterday</span></div>
+  <div class="metric"><small>Assigned Today</small><strong id="m2">47</strong><span>Across both teams</span></div>
+  <div class="metric"><small>High Priority</small><strong id="m3">8</strong><span>3 due within 24h</span></div>
+  <div class="metric"><small>Auto-Routed</small><strong>89%</strong><span>AI + rules</span></div>
+  <div class="metric"><small>SLA At Risk</small><strong>4</strong><span>2 Finance · 2 Legal</span></div>
+ </div>
+
+ <div class="layout">
+  <div class="card">
+   <div class="head"><b>Incoming work queue</b><span id="count">6 emails</span></div>
+   <div id="emails"></div>
+  </div>
+  <div>
+   <div class="card panel"><div class="head"><b>Automation rules</b><span>Live</span></div>
+    <div class="rule"><b>⚖ ACME + NDA → Maya Shah</b><p>Legal · Contract · High priority</p></div>
+    <div class="rule"><b>⚖ Court / lawsuit → Rahul Mehta</b><p>Legal · Litigation · Critical</p></div>
+    <div class="rule"><b>₿ Invoice / payment → Priya Menon</b><p>Finance · AR · High</p></div>
+    <div class="rule"><b>₿ PO / SOW → Karan Verma</b><p>Finance · Billing · Medium</p></div>
+   </div>
+   <div class="card"><div class="head"><b>Recent activity</b><span>Today</span></div><div class="activity">
+    <div class="act"><b>Maya Shah</b> accepted NDA review<span>09:04</span><br><small>Auto-routed · Legal</small></div>
+    <div class="act"><b>Priya Menon</b> assigned invoice query<span>08:57</span><br><small>Rule matched · Finance</small></div>
+    <div class="act"><b>Rahul Mehta</b> escalated court notice<span>08:42</span><br><small>Critical · Legal</small></div>
+    <div class="act"><b>Karan Verma</b> completed PO review<span>08:31</span><br><small>Completed · Finance</small></div>
+   </div></div>
+  </div>
+ </div>
+</section>
+</main>
+</div>
+
+<script>
+const data=[
+{d:'Legal',tag:'Contract',c:'legal',p:'high',s:'Urgent: NDA amendment for Project Falcon',f:'Priya Nair <priya@acme.com>',a:'ACME Corp',x:'Please review the attached amendment before today’s signing call.',u:'Maya Shah',i:'MS'},
+{d:'Legal',tag:'Litigation',c:'legal',p:'high',s:'Court notice — Orion Systems vs. Delta',f:'Robert Chen <robert@lawfirm.com>',a:'Orion Systems',x:'New district court notice requiring a response.',u:'Rahul Mehta',i:'RM'},
+{d:'Finance',tag:'AR',c:'finance',p:'high',s:'Outstanding payment — Invoice INV-4821',f:'David Lee <ap@globex.com>',a:'Globex',x:'Can you confirm the status of the overdue invoice?',u:'Priya Menon',i:'PM'},
+{d:'Finance',tag:'Billing',c:'finance',p:'',s:'PO required for September billing',f:'Sarah Wong <procurement@initech.com>',a:'Initech',x:'Please provide the PO before the next invoice is submitted.',u:'Karan Verma',i:'KV'},
+{d:'Legal',tag:'Employment',c:'legal',p:'',s:'Employment agreement review — VP hire',f:'Anita Rao <anita@peoplecorp.com>',a:'PeopleCorp',x:'Review revised employment terms and restrictive covenants.',u:'Neha Kapoor',i:'NK'},
+{d:'Finance',tag:'Collections',c:'finance',p:'high',s:'Payment escalation — ACME account',f:'Accounts <ar@acme.com>',a:'ACME Corp',x:'Customer is requesting clarification on outstanding balances.',u:'Unassigned',i:'—'}
+];
+let active='All',query='';
+function draw(){let list=data.filter(e=>(active==='All'||e.d===active)&&JSON.stringify(e).toLowerCase().includes(query));document.getElementById('count').textContent=list.length+' emails';document.getElementById('emails').innerHTML=list.map(e=>`<div class="email" onclick="openEmail('${e.s.replace(/'/g,'')}','${e.d}')"><div class="dot" style="background:${e.p?'#ff3b30':'#0071e3'}"></div><div><div class="subject">${e.s}</div><div class="meta">${e.f} · ${e.a}</div><div class="preview">${e.x}</div><div class="tags"><span class="tag ${e.c}">${e.d}</span><span class="tag">${e.tag}</span>${e.p?'<span class="tag high">High</span>':''}</div></div><div class="person"><div class="avatar">${e.i}</div>${e.u}</div></div>`).join('')}
+function filterDept(el,d){document.querySelectorAll('.switch button').forEach(x=>x.classList.remove('active'));el.classList.add('active');active=d;document.getElementById('dept').value=d==='All'?'All Departments':d;document.getElementById('title').textContent=d==='All'?'Unified Intake':d+' Intake';draw()}
+function department(){let d=document.getElementById('dept').value==='All Departments'?'All':document.getElementById('dept').value;active=d;document.getElementById('title').textContent=d==='All'?'Unified Intake':d+' Intake';document.querySelectorAll('.switch button').forEach(x=>x.classList.remove('active'));draw()}
+function search(v){query=v.toLowerCase();draw()}
+function tab(el,t){document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));el.classList.add('active');document.getElementById('title').textContent=t}
+function openEmail(s,d){alert('LEXFLOW EMAIL DETAIL\\n\\nDepartment: '+d+'\\nSubject: '+s+'\\n\\nThis preview would open the full email, AI classification, detected account, priority, SLA, suggested assignee, rule explanation and reassignment controls.')}
+draw();
+</script>
+</body>
+</html>

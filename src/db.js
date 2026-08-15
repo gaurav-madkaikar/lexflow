@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS rules (
 CREATE TABLE IF NOT EXISTS emails (
   id INTEGER PRIMARY KEY,
   provider_id TEXT NOT NULL UNIQUE,
+  provider TEXT NOT NULL DEFAULT 'outlook',
+  mailbox_address TEXT,
   subject TEXT NOT NULL,
   sender_name TEXT NOT NULL,
   sender_address TEXT NOT NULL,
@@ -63,6 +65,18 @@ CREATE TABLE IF NOT EXISTS activity (
 CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS gmail_connection (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  account_email TEXT NOT NULL COLLATE NOCASE,
+  encrypted_refresh_token TEXT NOT NULL,
+  connected_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS gmail_oauth_states (
+  state_digest TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS departments (
   id INTEGER PRIMARY KEY,
@@ -123,6 +137,19 @@ export function migrate(db) {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec(schema);
+    if (!tableHasColumn(db, 'emails', 'provider')) {
+      db.exec("ALTER TABLE emails ADD COLUMN provider TEXT NOT NULL DEFAULT 'outlook'");
+    }
+    if (!tableHasColumn(db, 'emails', 'mailbox_address')) {
+      db.exec('ALTER TABLE emails ADD COLUMN mailbox_address TEXT');
+    }
+    db.exec(`
+      UPDATE emails
+      SET provider = 'demo', mailbox_address = NULL
+      WHERE provider_id LIKE 'mock-%'
+        AND provider = 'outlook'
+        AND mailbox_address IS NULL
+    `);
     if (!tableHasColumn(db, 'emails', 'assigned_at')) {
       db.exec('ALTER TABLE emails ADD COLUMN assigned_at TEXT');
     }

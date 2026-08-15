@@ -113,7 +113,10 @@ function sanitizeError(error) {
   return (
     message
       .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
-      .replace(/(client_secret|access_token|token)=([^\s&]+)/gi, '$1=[redacted]')
+      .replace(
+        /(client_secret|access_token|refresh_token|id_token|code|token)\s*["']?\s*[:=]\s*["']?([^\s&",}]+)/gi,
+        '$1=[redacted]',
+      )
       .replace(/[\u0000-\u001f\u007f]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
@@ -142,21 +145,28 @@ export function matchRule(message, rules) {
 }
 
 export async function syncMailbox({ db, source }) {
+  if (source.isCurrentConnection?.() === false) {
+    return { imported: 0, assigned: 0, skipped: true };
+  }
   const cursorKey = source.cursorKey || 'mail_cursor';
   const cursor = db.prepare('SELECT value FROM sync_state WHERE key = ?').get(cursorKey)?.value ?? null;
   const { messages, nextCursor } = await source.fetchChanges(cursor);
 
   return runTransaction(db, () => {
+    if (source.isCurrentConnection?.() === false) {
+      return { imported: 0, assigned: 0, skipped: true };
+    }
     const rules = db.prepare('SELECT * FROM rules').all();
     const insertEmail = db.prepare(`
       INSERT OR IGNORE INTO emails
         (provider_id, subject, sender_name, sender_address, preview, received_at,
-         outlook_url, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'unassigned', ?)
+         outlook_url, provider, mailbox_address, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned', ?)
     `);
     const updateEmail = db.prepare(`
       UPDATE emails
-      SET subject = ?, sender_name = ?, sender_address = ?, preview = ?, received_at = ?, outlook_url = ?
+      SET subject = ?, sender_name = ?, sender_address = ?, preview = ?, received_at = ?,
+          outlook_url = ?, provider = ?, mailbox_address = ?
       WHERE provider_id = ?
     `);
     const findEmail = db.prepare('SELECT * FROM emails WHERE provider_id = ?');
@@ -165,6 +175,9 @@ export async function syncMailbox({ db, source }) {
     let assigned = 0;
 
     for (const message of messages) {
+      const provider = message.provider || source.provider || 'outlook';
+      const mailboxAddress = message.mailboxAddress || source.mailboxAddress || null;
+      const webUrl = message.webUrl ?? message.outlookUrl ?? null;
       const insertion = insertEmail.run(
         message.providerId,
         message.subject,
@@ -172,7 +185,9 @@ export async function syncMailbox({ db, source }) {
         message.senderAddress,
         message.preview,
         message.receivedAt,
-        message.outlookUrl,
+        webUrl,
+        provider,
+        mailboxAddress,
         now,
       );
 
@@ -183,7 +198,9 @@ export async function syncMailbox({ db, source }) {
           message.senderAddress,
           message.preview,
           message.receivedAt,
-          message.outlookUrl,
+          webUrl,
+          provider,
+          mailboxAddress,
           message.providerId,
         );
         continue;
@@ -201,22 +218,91 @@ export async function syncMailbox({ db, source }) {
       setSyncState(db, cursorKey, nextCursor);
     }
     setSyncState(db, 'last_sync_at', now);
-    db.prepare("DELETE FROM sync_state WHERE key = 'last_sync_error'").run();
+    setSyncState(db, `last_sync_at:${cursorKey}`, now);
+    db.prepare('DELETE FROM sync_state WHERE key = ?').run(`last_sync_error:${cursorKey}`);
 
     return { imported, assigned };
   });
 }
 
-export function createSyncRunner({ db, source }) {
+export function createSyncRunner({ db, source, sources }) {
   let inFlight = null;
+
+  async function syncAll() {
+    const available = typeof sources === 'function' ? await sources() : sources;
+    const activeSources = (available ?? (source ? [source] : [])).filter(Boolean);
+    if (activeSources.length === 0) {
+      return { imported: 0, assigned: 0, succeeded: 0, failed: 0, skipped: 0, sources: [] };
+    }
+
+    const settled = await Promise.allSettled(
+      activeSources.map((activeSource) => syncMailbox({ db, source: activeSource })),
+    );
+    const summary = {
+      imported: 0,
+      assigned: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+      sources: [],
+    };
+
+    settled.forEach((outcome, index) => {
+      const activeSource = activeSources[index];
+      const cursorKey = activeSource.cursorKey || 'mail_cursor';
+      const provider = activeSource.provider || 'mailbox';
+      const account = activeSource.mailboxAddress || null;
+      if (outcome.status === 'fulfilled') {
+        if (outcome.value.skipped) {
+          summary.skipped += 1;
+          summary.sources.push({ provider, account, skipped: true });
+          return;
+        }
+        summary.imported += outcome.value.imported;
+        summary.assigned += outcome.value.assigned;
+        summary.succeeded += 1;
+        summary.sources.push({
+          provider,
+          account,
+          imported: outcome.value.imported,
+          assigned: outcome.value.assigned,
+        });
+        return;
+      }
+
+      if (activeSource.isCurrentConnection?.() === false) {
+        summary.skipped += 1;
+        summary.sources.push({ provider, account, skipped: true });
+        return;
+      }
+
+      const safeMessage = sanitizeError(outcome.reason);
+      summary.failed += 1;
+      summary.sources.push({ provider, account, error: safeMessage });
+      setSyncState(db, `last_sync_error:${cursorKey}`, safeMessage);
+    });
+
+    if (summary.failed > 0) {
+      const failedProviders = summary.sources
+        .filter((item) => item.error)
+        .map((item) => item.account ? `${item.provider} (${item.account})` : item.provider)
+        .join(', ');
+      setSyncState(db, 'last_sync_error', `Sync needs attention: ${failedProviders}.`);
+    } else {
+      db.prepare("DELETE FROM sync_state WHERE key = 'last_sync_error'").run();
+    }
+
+    if (summary.succeeded === 0 && summary.failed > 0) {
+      const error = workflowError(502, 'SYNC_FAILED', 'All configured mailboxes failed to sync.');
+      error.result = summary;
+      throw error;
+    }
+    return summary;
+  }
 
   function run() {
     if (inFlight) return inFlight;
-    inFlight = syncMailbox({ db, source })
-      .catch((error) => {
-        setSyncState(db, 'last_sync_error', sanitizeError(error));
-        throw error;
-      })
+    inFlight = syncAll()
       .finally(() => {
         inFlight = null;
       });

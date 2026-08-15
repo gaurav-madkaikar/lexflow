@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#fbfbfa">
-  <title>LexFlow — Outlook assignment</title>
+  <title>LexFlow — Email assignment</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -42,7 +42,7 @@
         <div class="login-intro-copy">
           <p class="eyebrow">Shared mailbox operations</p>
           <p class="login-statement">Every message has an owner. Every handoff has a record.</p>
-          <p>Route Outlook email, monitor response windows, and keep work accountable from one workspace.</p>
+          <p>Route Outlook and Gmail messages, monitor response windows, and keep work accountable from one workspace.</p>
         </div>
         <div class="login-proof" aria-label="Workflow principles">
           <span><svg class="icon" aria-hidden="true"><use href="#icon-rules"></use></svg> Rule-based routing</span>
@@ -203,7 +203,7 @@
             <span class="visually-hidden">Search emails</span>
             <input id="search-input" type="search" placeholder="Search emails…" autocomplete="off">
           </label>
-          <button class="button sync-button" id="sync-button" type="button" aria-label="Sync Outlook mailbox" hidden>
+          <button class="button sync-button" id="sync-button" type="button" aria-label="Sync connected mailboxes" hidden>
             <svg class="icon" aria-hidden="true"><use href="#icon-sync"></use></svg>
             <span class="button-label action-label" data-button-label>Sync now</span>
           </button>
@@ -235,9 +235,17 @@
               <span id="hero-action-label">Review inbox</span>
               <svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg>
             </button>
-            <span class="hero-calendar" aria-hidden="true">
-              <svg class="icon"><use href="#icon-calendar"></use></svg>
+            <span class="hero-calendar-control">
+              <label class="hero-calendar" for="hero-date-filter" title="Filter emails by received date">
+                <svg class="icon" aria-hidden="true"><use href="#icon-calendar"></use></svg>
+                <span class="visually-hidden">Filter emails by received date</span>
+                <input id="hero-date-filter" type="date" aria-describedby="hero-date-filter-status">
+              </label>
+              <button class="hero-date-clear" id="hero-date-clear" type="button" aria-label="Clear date filter" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>
+              </button>
             </span>
+            <span class="visually-hidden" id="hero-date-filter-status" role="status" aria-live="polite" aria-atomic="true">Showing emails from all received dates.</span>
           </div>
 
           <div class="hero-copy">
@@ -316,11 +324,23 @@
                 <div>
                   <p class="card-kicker">Administration</p>
                   <h2 id="settings-title">Workflow controls</h2>
-                  <p>Workspace-wide departments and response windows</p>
+                  <p>Email connections, departments, and response windows</p>
                 </div>
               </div>
               <div class="settings-sections">
-                <section class="settings-section" aria-labelledby="timing-title">
+                <section class="settings-section integration-section" aria-labelledby="integrations-title">
+                  <div class="section-heading">
+                    <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-mail"></use></svg></span>
+                    <div>
+                      <h3 id="integrations-title" tabindex="-1">Email connections</h3>
+                      <p>Connect inboxes that feed the unified work queue.</p>
+                    </div>
+                  </div>
+                  <div class="integration-list" id="integration-list"></div>
+                  <p class="integration-feedback" id="integration-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
+                </section>
+
+                <section class="settings-section timing-section" aria-labelledby="timing-title">
                   <div class="section-heading">
                     <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-timer"></use></svg></span>
                     <div>
@@ -333,7 +353,7 @@
                       <label class="field">
                         <span>Time unassigned <em>hours</em></span>
                         <input name="timeUnassignedHours" type="number" min="1" max="8760" step="1" inputmode="numeric" required>
-                        <small>Measured from the email’s Outlook received time.</small>
+                        <small>Measured from the email’s received time.</small>
                       </label>
                       <label class="field">
                         <span>Assigned, not complete <em>hours</em></span>
@@ -374,10 +394,10 @@
     </div>
   </section>
 
-  <dialog class="dialog rule-dialog" id="rule-dialog" aria-labelledby="rule-dialog-title">
+  <dialog class="dialog rule-dialog" id="rule-dialog" aria-labelledby="rule-dialog-title" aria-describedby="rule-form-help">
     <div class="dialog-head">
       <div>
-        <p class="eyebrow">Admin only</p>
+        <p class="eyebrow" id="rule-dialog-eyebrow">Admin only</p>
         <h2 id="rule-dialog-title">Create automation rule</h2>
       </div>
       <button class="icon-button dialog-close" type="button" data-close-dialog="rule-dialog" aria-label="Close rule dialog">
@@ -385,18 +405,20 @@
       </button>
     </div>
     <form id="rule-form" novalidate>
+      <p class="form-help" id="rule-form-help">Set the routing criteria and teammate for this rule.</p>
       <label class="field">
         <span>Rule name</span>
         <input name="name" autocomplete="off" placeholder="Legal NDA requests" maxlength="80" required>
       </label>
       <label class="field">
-        <span>Keywords</span>
-        <input name="keywords" autocomplete="off" placeholder="NDA, ACME" maxlength="200" required>
+        <span>Keywords <em>optional with sender</em></span>
+        <input name="keywords" autocomplete="off" placeholder="NDA, ACME" maxlength="200">
         <small>Every comma-separated keyword must match the subject or preview.</small>
       </label>
       <label class="field">
-        <span>Sender contains <em>optional</em></span>
+        <span>Sender contains <em>optional with keywords</em></span>
         <input name="senderFilter" autocomplete="off" placeholder="@acme.com" maxlength="160">
+        <small>Add keywords, a sender filter, or both.</small>
       </label>
       <div class="field-row">
         <label class="field">
@@ -447,7 +469,7 @@
       <p class="completion-note" id="email-completion-note" hidden></p>
     </div>
     <div class="dialog-actions detail-actions">
-      <a class="button" id="outlook-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Open in Outlook</a>
+      <a class="button" id="outlook-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Open email</a>
       <button class="button primary" id="assign-button" type="submit" form="email-assignment-form" hidden><span class="button-label" data-button-label>Assign</span></button>
       <button class="button primary" id="complete-button" type="button"><span class="button-label" data-button-label>Mark complete</span></button>
     </div>
