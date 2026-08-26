@@ -30,6 +30,10 @@ function applicationBaseUrl(env, port) {
   ) {
     throw new TypeError('APP_BASE_URL must be an HTTP(S) origin without credentials, a path, query, or hash');
   }
+  const isLoopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !isLoopback) {
+    throw new TypeError('APP_BASE_URL must use HTTPS unless it is a loopback development origin');
+  }
   return url.origin;
 }
 
@@ -44,6 +48,19 @@ function encryptionKey(raw) {
   }
   return decoded;
 }
+
+const GMAIL_REQUESTED_SCOPES = Object.freeze([
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.send',
+  'openid',
+  'email',
+]);
+const OUTLOOK_REQUESTED_SCOPES = Object.freeze([
+  'offline_access',
+  'User.Read',
+  'Mail.Read',
+  'Mail.Send',
+]);
 
 export function loadConfig(env = process.env) {
   const port = integerSetting(env, 'PORT', 3000);
@@ -60,29 +77,62 @@ export function loadConfig(env = process.env) {
     tenantId: String(env.GRAPH_TENANT_ID ?? '').trim(),
     clientId: String(env.GRAPH_CLIENT_ID ?? '').trim(),
     clientSecret: String(env.GRAPH_CLIENT_SECRET ?? '').trim(),
-    mailbox: String(env.GRAPH_MAILBOX ?? '').trim()
+    mailbox: String(env.GRAPH_MAILBOX ?? '').trim(),
+    authMode: 'application',
+    capabilities: { read: true, send: false },
   };
 
   const appBaseUrl = applicationBaseUrl(env, port);
   const googleClientId = String(env.GOOGLE_CLIENT_ID ?? '').trim();
   const googleClientSecret = String(env.GOOGLE_CLIENT_SECRET ?? '').trim();
+  const outlookTenantId = String(env.OUTLOOK_TENANT_ID ?? '').trim();
+  const outlookClientId = String(env.OUTLOOK_CLIENT_ID ?? '').trim();
+  const outlookClientSecret = String(env.OUTLOOK_CLIENT_SECRET ?? '').trim();
   const tokenEncryptionKeyRaw = String(env.TOKEN_ENCRYPTION_KEY ?? '').trim();
-  const gmailParts = [googleClientId, googleClientSecret, tokenEncryptionKeyRaw];
-  const suppliedGmailParts = gmailParts.filter(Boolean).length;
-  if (suppliedGmailParts > 0 && suppliedGmailParts !== gmailParts.length) {
+  const suppliedGoogleClientParts = [googleClientId, googleClientSecret].filter(Boolean).length;
+  if (
+    suppliedGoogleClientParts > 0
+    && (suppliedGoogleClientParts !== 2 || !tokenEncryptionKeyRaw)
+  ) {
     throw new Error(
       'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and TOKEN_ENCRYPTION_KEY must be configured together'
     );
   }
-  const gmailConfigured = suppliedGmailParts === gmailParts.length;
+  const gmailConfigured = suppliedGoogleClientParts === 2 && Boolean(tokenEncryptionKeyRaw);
+  const outlookClientParts = [outlookTenantId, outlookClientId, outlookClientSecret];
+  const suppliedOutlookParts = outlookClientParts.filter(Boolean).length;
+  if (
+    suppliedOutlookParts > 0
+    && (suppliedOutlookParts !== outlookClientParts.length || !tokenEncryptionKeyRaw)
+  ) {
+    throw new Error(
+      'OUTLOOK_TENANT_ID, OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET, and TOKEN_ENCRYPTION_KEY must be configured together'
+    );
+  }
+  const outlookConfigured = suppliedOutlookParts === outlookClientParts.length
+    && Boolean(tokenEncryptionKeyRaw);
   const tokenEncryptionKey = encryptionKey(tokenEncryptionKeyRaw);
-  const graphConfigured = Object.values(graph).every(Boolean);
-  const mode = graphConfigured
-    ? (gmailConfigured ? 'mixed' : 'graph')
-    : (gmailConfigured ? 'gmail' : 'demo');
+  const graphConfigured = [
+    graph.tenantId,
+    graph.clientId,
+    graph.clientSecret,
+    graph.mailbox,
+  ].every(Boolean);
+  const configuredProviders = [graphConfigured, gmailConfigured, outlookConfigured]
+    .filter(Boolean).length;
+  const mode = configuredProviders > 1
+    ? 'mixed'
+    : graphConfigured
+      ? 'graph'
+      : gmailConfigured
+        ? 'gmail'
+        : outlookConfigured
+          ? 'outlook'
+          : 'demo';
 
   return {
     port,
+    appBaseUrl,
     databasePath: String(env.DATABASE_PATH ?? '').trim() || 'data/lexflow.db',
     syncIntervalSeconds,
     mode,
@@ -92,13 +142,18 @@ export function loadConfig(env = process.env) {
       clientId: googleClientId,
       clientSecret: googleClientSecret,
       redirectUri: `${appBaseUrl}/api/integrations/gmail/callback`,
-      tokenEncryptionKey
+      tokenEncryptionKey,
+      requestedScopes: [...GMAIL_REQUESTED_SCOPES],
     },
-    liveMailConfigured: graphConfigured || gmailConfigured,
-    bootstrapPasswords: {
-      admin: String(env.BOOTSTRAP_ADMIN_PASSWORD ?? ''),
-      maya: String(env.BOOTSTRAP_MAYA_PASSWORD ?? ''),
-      priya: String(env.BOOTSTRAP_PRIYA_PASSWORD ?? '')
-    }
+    outlook: {
+      configured: outlookConfigured,
+      tenantId: outlookTenantId,
+      clientId: outlookClientId,
+      clientSecret: outlookClientSecret,
+      redirectUri: `${appBaseUrl}/api/integrations/outlook/callback`,
+      tokenEncryptionKey,
+      requestedScopes: [...OUTLOOK_REQUESTED_SCOPES],
+    },
+    liveMailConfigured: graphConfigured || gmailConfigured || outlookConfigured,
   };
 }

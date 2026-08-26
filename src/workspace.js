@@ -29,27 +29,32 @@ function settingValue(value, field, label) {
   return value;
 }
 
-export function getWorkspaceSettings(db) {
-  const row = db.prepare('SELECT * FROM workspace_settings WHERE id = 1').get();
+export function getWorkspaceSettings(db, organizationId = 1) {
+  const row = db.prepare('SELECT * FROM workspace_settings WHERE organization_id = ?')
+    .get(organizationId);
+  if (!row) {
+    throw domainError(404, 'NOT_FOUND', 'Workspace settings not found.');
+  }
   return {
     timeUnassignedHours: Number(row.time_unassigned_hours),
     timeAssignedUnmarkedHours: Number(row.time_assigned_unmarked_hours),
   };
 }
 
-export function listDepartments(db) {
+export function listDepartments(db, organizationId = 1) {
   return db.prepare(`
     SELECT id, name, created_at
     FROM departments
+    WHERE organization_id = ?
     ORDER BY name COLLATE NOCASE
-  `).all().map(row => ({
+  `).all(organizationId).map(row => ({
     id: Number(row.id),
     name: row.name,
     createdAt: row.created_at,
   }));
 }
 
-export function createDepartment({ db, name, now = new Date() }) {
+export function createDepartment({ db, organizationId = 1, name, now = new Date() }) {
   const normalized = typeof name === 'string' ? name.trim() : '';
   if (!normalized || normalized.length > 60) {
     throw invalid('name', 'Enter a department name of 60 characters or fewer.');
@@ -57,9 +62,9 @@ export function createDepartment({ db, name, now = new Date() }) {
 
   try {
     const result = db.prepare(`
-      INSERT INTO departments (name, created_at)
-      VALUES (?, ?)
-    `).run(normalized, now.toISOString());
+      INSERT INTO departments (organization_id, name, created_at)
+      VALUES (?, ?, ?)
+    `).run(organizationId, normalized, now.toISOString());
     return { id: Number(result.lastInsertRowid), name: normalized };
   } catch (error) {
     if (String(error.message).includes('UNIQUE constraint failed')) {
@@ -69,24 +74,32 @@ export function createDepartment({ db, name, now = new Date() }) {
   }
 }
 
-export function moveMemberToDepartment({ db, userId, departmentId }) {
+export function moveMemberToDepartment({ db, organizationId = 1, userId, departmentId }) {
   return transaction(db, () => {
-    const member = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'member'").get(userId);
+    const member = db.prepare(`
+      SELECT id FROM users
+      WHERE id = ? AND organization_id = ? AND role = 'member'
+    `).get(userId, organizationId);
     if (!member) {
       throw domainError(404, 'NOT_FOUND', 'Team member not found.');
     }
-    const department = db.prepare('SELECT id, name FROM departments WHERE id = ?').get(departmentId);
+    const department = db.prepare(`
+      SELECT id, name FROM departments
+      WHERE id = ? AND organization_id = ?
+    `).get(departmentId, organizationId);
     if (!department) {
       throw domainError(404, 'NOT_FOUND', 'Department not found.');
     }
 
-    db.prepare('UPDATE users SET department = ? WHERE id = ?').run(department.name, userId);
+    db.prepare('UPDATE users SET department = ? WHERE id = ? AND organization_id = ?')
+      .run(department.name, userId, organizationId);
     return { id: Number(userId), department: department.name };
   });
 }
 
 export function updateWorkspaceSettings({
   db,
+  organizationId = 1,
   timeUnassignedHours,
   timeAssignedUnmarkedHours,
 }) {
@@ -104,7 +117,7 @@ export function updateWorkspaceSettings({
   db.prepare(`
     UPDATE workspace_settings
     SET time_unassigned_hours = ?, time_assigned_unmarked_hours = ?
-    WHERE id = 1
-  `).run(unassigned, assigned);
-  return getWorkspaceSettings(db);
+    WHERE organization_id = ?
+  `).run(unassigned, assigned, organizationId);
+  return getWorkspaceSettings(db, organizationId);
 }

@@ -1,92 +1,176 @@
-import { existsSync, mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { loadEnvFile } from 'node:process';
 import { createApp } from './app.js';
 import { createAlertRunner } from './alerts.js';
-import { hashPassword } from './auth.js';
 import { loadConfig } from './config.js';
-import { createDatabase, seedDemoData } from './db.js';
+import { createConversationHistoryService } from './conversation-history.js';
+import {
+  secureDatabaseStorage,
+  useRestrictiveFileCreationMask,
+} from './database-backup.js';
+import { createDatabase } from './db.js';
+import { createDeliveryRunner } from './deliveries.js';
 import { createGmailIntegration } from './gmail.js';
+import {
+  assertDemoRuntimeAllowed,
+  seedLocalAccountsIfEmpty,
+} from './local-accounts.js';
 import { createMailSource } from './mail-sources.js';
-import { createSyncRunner } from './workflows.js';
+import { resolveMailboxConnection } from './mailbox-connections.js';
+import { createOutlookIntegration } from './outlook.js';
+import {
+  createSyncRunner,
+  resolveCurrentDeliveryContext,
+} from './workflows.js';
 
+useRestrictiveFileCreationMask();
 if (existsSync('.env')) loadEnvFile('.env');
 
 const config = loadConfig(process.env);
-if (config.databasePath !== ':memory:') {
-  mkdirSync(dirname(resolve(config.databasePath)), { recursive: true });
-}
+const runtime = { nodeEnv: process.env.NODE_ENV, mode: config.mode };
+assertDemoRuntimeAllowed(runtime);
+secureDatabaseStorage(config.databasePath);
 
 const db = createDatabase(config.databasePath);
-const userCount = Number(db.prepare('SELECT count(*) AS count FROM users').get().count);
-const passwords = config.liveMailConfigured
-  ? config.bootstrapPasswords
-  : { admin: 'admin123', maya: 'welcome123', priya: 'welcome123' };
-if (config.liveMailConfigured && Object.values(passwords).some(password => password.length < 8)) {
+try {
+  secureDatabaseStorage(config.databasePath);
+  await seedLocalAccountsIfEmpty(db, runtime);
+} catch (error) {
   db.close();
-  throw new Error('Live mail connections require all BOOTSTRAP_*_PASSWORD values (minimum 8 characters).');
-}
-if (userCount === 0 || config.liveMailConfigured) {
-  const [adminPasswordHash, mayaPasswordHash, priyaPasswordHash] = await Promise.all([
-    hashPassword(passwords.admin),
-    hashPassword(passwords.maya),
-    hashPassword(passwords.priya)
-  ]);
-  if (userCount === 0) {
-    seedDemoData(db, { adminPasswordHash, mayaPasswordHash, priyaPasswordHash });
-  } else {
-    const updatePassword = db.prepare('UPDATE users SET password_hash = ? WHERE email = ?');
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      updatePassword.run(adminPasswordHash, 'admin@lexflow.local');
-      updatePassword.run(mayaPasswordHash, 'maya@lexflow.local');
-      updatePassword.run(priyaPasswordHash, 'priya@lexflow.local');
-      db.prepare('DELETE FROM sessions').run();
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      db.close();
-      throw error;
-    }
-  }
+  throw error;
 }
 
-const primarySource = createMailSource(config);
 const gmailIntegration = createGmailIntegration({ db, gmail: config.gmail });
-const outlookConfigured = ['graph', 'mixed'].includes(config.mode);
-const sources = () => {
-  let gmailSources;
-  try {
-    gmailSources = gmailIntegration.sources();
-  } catch (error) {
-    gmailSources = [{
-      provider: 'gmail',
-      mailboxAddress: gmailIntegration.status().accountEmail,
-      cursorKey: 'mail_cursor:gmail',
-      async fetchChanges() { throw error; },
-    }];
-  }
-  if (outlookConfigured) return [primarySource, ...gmailSources];
-  return config.mode === 'demo' ? [primarySource] : gmailSources;
+const outlookIntegration = createOutlookIntegration({
+  db,
+  outlook: config.outlook,
+  graph: config.graph,
+});
+const integrations = {
+  gmail: gmailIntegration,
+  outlook: outlookIntegration,
 };
-const syncRunner = createSyncRunner({ db, sources });
+const demoSource = config.mode === 'demo' ? createMailSource(config) : null;
+if (demoSource) demoSource.organizationId = 1;
+
+function organizationIds() {
+  return db.prepare('SELECT id FROM organizations ORDER BY id')
+    .all()
+    .map(row => Number(row.id));
+}
+
+function failedSource(provider, organizationId, integration, error) {
+  let account = null;
+  try {
+    account = integration.status({ organizationId }).accountEmail;
+  } catch {
+    // Status is best effort; connection secrets are never included.
+  }
+  return {
+    provider,
+    organizationId,
+    mailboxAddress: account,
+    cursorKey: `mail_cursor:${provider}`,
+    async fetchChanges() { throw error; },
+  };
+}
+
+function discoverSources() {
+  const discovered = demoSource ? [demoSource] : [];
+  for (const organizationId of organizationIds()) {
+    for (const [provider, integration] of Object.entries(integrations)) {
+      try {
+        discovered.push(...integration.sources({ organizationId }));
+      } catch (error) {
+        discovered.push(failedSource(provider, organizationId, integration, error));
+      }
+    }
+  }
+  return discovered;
+}
+
+function currentProvider({ organizationId, connectionSnapshot, connection, context }) {
+  const provider = String(
+    connectionSnapshot?.provider
+      ?? connection?.provider
+      ?? context?.provider
+      ?? '',
+  ).toLocaleLowerCase();
+  const integration = integrations[provider];
+  if (!integration) return null;
+  const connectionId = Number(
+    connectionSnapshot?.id
+      ?? connection?.id
+      ?? context?.connectionId
+      ?? 0,
+  );
+  const generation = Number(
+    connectionSnapshot?.generation
+      ?? connection?.generation
+      ?? context?.connectionGeneration
+      ?? 0,
+  );
+  return integration.sources({ organizationId }).find(source => (
+    Number(source.connectionId ?? 0) === connectionId
+    && Number(source.connectionGeneration ?? 0) === generation
+    && source.isCurrentConnection?.() !== false
+  )) ?? null;
+}
+
+const deliveryRunner = createDeliveryRunner({
+  db,
+  trustedAppOrigin: config.appBaseUrl,
+  resolveCurrentContext: resolveCurrentDeliveryContext,
+  resolveSender({ delivery, context }) {
+    try {
+      return currentProvider({
+        organizationId: Number(delivery.organization_id),
+        context: context ?? resolveCurrentDeliveryContext({ db, delivery }),
+      });
+    } catch {
+      return null;
+    }
+  },
+});
+
+const conversationHistory = createConversationHistoryService({
+  db,
+  resolveMailboxConnection(options) {
+    return resolveMailboxConnection({ db, ...options });
+  },
+  loadProvider({ organizationId, connectionSnapshot, connection }) {
+    return currentProvider({ organizationId, connectionSnapshot, connection });
+  },
+});
+
+const syncRunner = createSyncRunner({
+  db,
+  sources: discoverSources,
+  trustedAppOrigin: config.appBaseUrl,
+});
 const alertRunner = createAlertRunner({ db });
 const app = createApp({
   db,
   syncRunner,
+  deliveryRunner,
+  conversationHistory,
   mode: config.mode,
-  integrations: {
-    outlook: {
-      configured: outlookConfigured,
-      accountEmail: outlookConfigured ? config.graph.mailbox : null,
-      cursorKey: outlookConfigured ? primarySource.cursorKey : null,
-    },
-    gmail: gmailIntegration,
-  },
+  appBaseUrl: config.appBaseUrl,
+  integrations,
 });
 const server = app.listen(config.port, '127.0.0.1', () => {
   console.log(`LexFlow listening at http://127.0.0.1:${config.port} (${config.mode} mode)`);
 });
+
+function reportDeliveryError(error) {
+  console.error(`Assignment delivery processing failed: ${error.message}`);
+}
+
+deliveryRunner.run().catch(reportDeliveryError);
+const deliveryTimer = setInterval(() => {
+  deliveryRunner.run().catch(reportDeliveryError);
+}, 60_000);
+deliveryTimer.unref();
 
 let syncTimer;
 if (config.syncIntervalSeconds > 0) {
@@ -95,8 +179,13 @@ if (config.syncIntervalSeconds > 0) {
       const result = await syncRunner.run();
       const failures = result.failed ? `, ${result.failed} mailbox failed` : '';
       console.log(`Mail sync complete: ${result.imported} imported, ${result.assigned} assigned${failures}`);
+      await deliveryRunner.run();
     } catch (error) {
-      console.error(`Mail sync failed: ${error.message}`);
+      const sourceErrors = error.result?.sources
+        ?.filter(source => source.error)
+        .map(source => `${source.provider}: ${source.error}`)
+        .join('; ');
+      console.error(`Mail sync failed: ${sourceErrors || error.message}`);
     }
   }, config.syncIntervalSeconds * 1000);
   syncTimer.unref();
@@ -117,6 +206,7 @@ function stop() {
   if (stopping) return;
   stopping = true;
   if (syncTimer) clearInterval(syncTimer);
+  clearInterval(deliveryTimer);
   clearInterval(alertTimer);
   server.close(() => {
     db.close();

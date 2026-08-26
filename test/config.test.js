@@ -18,6 +18,13 @@ const gmailEnv = {
   TOKEN_ENCRYPTION_KEY: encryptionKey,
 };
 
+const outlookEnv = {
+  OUTLOOK_TENANT_ID: 'organizations',
+  OUTLOOK_CLIENT_ID: 'outlook-client-id',
+  OUTLOOK_CLIENT_SECRET: 'outlook-client-secret',
+  TOKEN_ENCRYPTION_KEY: encryptionKey,
+};
+
 test('mail integrations are disabled by default', () => {
   const config = loadConfig({});
 
@@ -25,9 +32,34 @@ test('mail integrations are disabled by default', () => {
   assert.equal(config.liveMailConfigured, false);
   assert.equal(config.gmail.configured, false);
   assert.equal(config.gmail.tokenEncryptionKey, null);
+  assert.deepEqual(config.gmail.requestedScopes, [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.send',
+    'openid',
+    'email',
+  ]);
+  assert.equal(config.appBaseUrl, 'http://127.0.0.1:3000');
   assert.equal(
     config.gmail.redirectUri,
     'http://127.0.0.1:3000/api/integrations/gmail/callback',
+  );
+  assert.deepEqual(config.outlook.requestedScopes, [
+    'offline_access',
+    'User.Read',
+    'Mail.Read',
+    'Mail.Send',
+  ]);
+  assert.equal(config.outlook.configured, false);
+});
+
+test('public application origin requires HTTPS except on loopback', () => {
+  assert.throws(
+    () => loadConfig({ APP_BASE_URL: 'http://lexflow.example.test' }),
+    /must use HTTPS/,
+  );
+  assert.equal(
+    loadConfig({ APP_BASE_URL: 'http://localhost:4321/' }).appBaseUrl,
+    'http://localhost:4321',
   );
 });
 
@@ -60,7 +92,51 @@ test('Outlook and Gmail settings can coexist', () => {
     clientId: 'graph-client-id',
     clientSecret: 'graph-client-secret',
     mailbox: 'shared@example.test',
+    authMode: 'application',
+    capabilities: { read: true, send: false },
   });
+});
+
+test('delegated Outlook OAuth is configured independently from legacy Graph application auth', () => {
+  const config = loadConfig({
+    ...outlookEnv,
+    APP_BASE_URL: 'https://lexflow.example.test',
+  });
+
+  assert.equal(config.mode, 'outlook');
+  assert.equal(config.liveMailConfigured, true);
+  assert.deepEqual(config.outlook, {
+    configured: true,
+    tenantId: 'organizations',
+    clientId: 'outlook-client-id',
+    clientSecret: 'outlook-client-secret',
+    redirectUri: 'https://lexflow.example.test/api/integrations/outlook/callback',
+    tokenEncryptionKey: Buffer.alloc(32, 0x2a),
+    requestedScopes: ['offline_access', 'User.Read', 'Mail.Read', 'Mail.Send'],
+  });
+  assert.equal(config.graph.mailbox, '');
+});
+
+test('delegated Outlook settings require a complete client and encryption key', () => {
+  assert.throws(
+    () => loadConfig({ OUTLOOK_CLIENT_ID: 'outlook-client-id' }),
+    /OUTLOOK_TENANT_ID, OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET, and TOKEN_ENCRYPTION_KEY/,
+  );
+  assert.throws(
+    () => loadConfig({
+      OUTLOOK_TENANT_ID: 'organizations',
+      OUTLOOK_CLIENT_ID: 'outlook-client-id',
+      OUTLOOK_CLIENT_SECRET: 'outlook-client-secret',
+    }),
+    /OUTLOOK_TENANT_ID, OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET, and TOKEN_ENCRYPTION_KEY/,
+  );
+});
+
+test('a shared token encryption key can configure Outlook without partially configuring Gmail', () => {
+  const config = loadConfig(outlookEnv);
+
+  assert.equal(config.outlook.configured, true);
+  assert.equal(config.gmail.configured, false);
 });
 
 test('partial Gmail settings and invalid encryption keys are rejected', () => {

@@ -52,7 +52,7 @@ export function sessionUser(db, sessionId, now = new Date()) {
     SELECT users.*, sessions.expires_at
     FROM sessions
     JOIN users ON users.id = sessions.user_id
-    WHERE sessions.id = ?
+    WHERE sessions.id = ? AND users.registration_status = 'active'
   `).get(sessionId);
 
   if (!row || row.expires_at <= now.toISOString()) {

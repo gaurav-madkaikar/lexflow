@@ -28,6 +28,7 @@
     <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></symbol>
     <symbol id="icon-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/></symbol>
     <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></symbol>
+    <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
   </svg>
 
   <a class="skip-link" id="skip-link" href="#main-content" hidden>Skip to main content</a>
@@ -68,8 +69,255 @@
           <button class="button primary login-submit" type="submit"><span class="button-label" data-button-label>Sign in</span></button>
         </form>
 
+        <div class="login-register-prompt">
+          <span>New to LexFlow?</span>
+          <button class="button" id="register-open" type="button">Create or join a workspace</button>
+        </div>
         <p class="demo-note">Local demo credentials are listed in the project README.</p>
       </div>
+    </div>
+  </section>
+
+  <section class="login-view registration-view" id="register-view" aria-labelledby="register-title" hidden>
+    <div class="registration-layout">
+      <aside class="registration-aside" aria-label="Registration progress">
+        <div class="brand login-brand" aria-label="LexFlow">
+          <span class="logo" aria-hidden="true">L</span>
+          <span class="brand-name">LexFlow</span>
+        </div>
+        <div class="registration-aside-copy">
+          <p class="eyebrow">Workspace enrollment</p>
+          <p class="registration-statement">A private workspace for accountable email work.</p>
+          <p>Admins create the organization. Users request access and finish registration after approval.</p>
+        </div>
+        <ol class="registration-progress" id="registration-progress" aria-label="Registration progress">
+          <li data-registration-progress="entry"><span>1</span><strong>Choose account</strong></li>
+          <li data-registration-progress="organization"><span>2</span><strong>Organization</strong></li>
+          <li data-registration-progress="account"><span>3</span><strong>Account details</strong></li>
+        </ol>
+      </aside>
+
+      <main class="registration-card">
+        <div class="registration-card-topline">
+          <button class="registration-back-link" id="register-back-login" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#icon-chevron"></use></svg>
+            Sign in instead
+          </button>
+          <span class="registration-step-label" id="registration-step-label">Step 1 of 3</span>
+        </div>
+
+        <section class="registration-step" id="register-entry-step" aria-labelledby="register-title">
+          <p class="eyebrow">Get started</p>
+          <h1 id="register-title" tabindex="-1">Create your LexFlow account</h1>
+          <p class="registration-copy">Choose how you are joining and use the address that will identify you in LexFlow.</p>
+          <form id="register-entry-form" novalidate>
+            <fieldset class="role-choice">
+              <legend>Account type</legend>
+              <div class="segmented-control" id="register-role" role="group" aria-label="Account type">
+                <button type="button" data-register-role="admin" aria-pressed="true">
+                  <svg class="icon" aria-hidden="true"><use href="#icon-building"></use></svg>
+                  <span><strong>Admin</strong><small>Create an organization</small></span>
+                </button>
+                <button type="button" data-register-role="member" aria-pressed="false">
+                  <svg class="icon" aria-hidden="true"><use href="#icon-assigned"></use></svg>
+                  <span><strong>User</strong><small>Request to join</small></span>
+                </button>
+              </div>
+            </fieldset>
+            <label class="field">
+              <span>Email address</span>
+              <input name="email" type="email" autocomplete="email" inputmode="email" required>
+              <small>Admins connect this mailbox; users receive assignment notices at this address.</small>
+            </label>
+            <label class="field registration-provider-field" id="register-provider-field" hidden>
+              <span>Mailbox provider</span>
+              <select name="mailboxProvider">
+                <option value="">Choose Gmail or Outlook</option>
+                <option value="gmail">Gmail</option>
+                <option value="outlook">Outlook</option>
+              </select>
+              <small>Custom email domains need a provider choice.</small>
+            </label>
+            <p class="provider-detection" id="register-provider-status" role="status" aria-live="polite"></p>
+            <p class="form-error" id="register-entry-error" role="alert" hidden></p>
+            <button class="button primary registration-primary" type="submit">
+              <span class="button-label" data-button-label>Continue</span>
+              <svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg>
+            </button>
+          </form>
+        </section>
+
+        <section class="registration-step" id="organization-step" aria-labelledby="organization-step-title" hidden>
+          <p class="eyebrow">Organization profile</p>
+          <h2 id="organization-step-title" tabindex="-1">Set up your workspace</h2>
+          <p class="registration-copy">This information helps future teammates recognize the correct organization.</p>
+          <form id="organization-form" novalidate>
+            <label class="field">
+              <span>Organization name</span>
+              <input name="organizationName" autocomplete="organization" maxlength="120" required>
+            </label>
+            <label class="field">
+              <span>Organization domain</span>
+              <input name="organizationDomain" inputmode="url" autocomplete="url" placeholder="example.com" maxlength="253" required>
+              <small>The domain is descriptive for now and is not treated as verified ownership.</small>
+            </label>
+            <label class="field logo-field">
+              <span>Organization logo</span>
+              <span class="logo-upload">
+                <span class="logo-preview" id="organization-logo-frame">
+                  <svg class="icon" aria-hidden="true"><use href="#icon-building"></use></svg>
+                  <img id="organization-logo-preview" alt="" hidden>
+                </span>
+                <span class="logo-upload-copy">
+                  <input name="organizationLogo" type="file" accept="image/png,image/jpeg,image/webp" required>
+                  <small>PNG, JPEG, or WebP. 64–2,048 px and no more than 2 MB.</small>
+                </span>
+              </span>
+            </label>
+            <p class="form-error" id="organization-error" role="alert" hidden></p>
+            <div class="registration-actions">
+              <button class="button" type="button" data-registration-back="entry">Back</button>
+              <button class="button primary" type="submit"><span class="button-label" data-button-label>Continue</span></button>
+            </div>
+          </form>
+        </section>
+
+        <section class="registration-step" id="admin-account-step" aria-labelledby="admin-account-title" hidden>
+          <p class="eyebrow">Administrator account</p>
+          <h2 id="admin-account-title" tabindex="-1">Finish your account</h2>
+          <p class="registration-copy">Your organization and mailbox details are locked from the first steps.</p>
+          <form id="admin-registration-form" novalidate>
+            <div class="locked-fields" aria-label="Locked registration details">
+              <label class="field">
+                <span>Email</span>
+                <input name="email" type="email" readonly aria-readonly="true">
+              </label>
+              <label class="field">
+                <span>Role</span>
+                <input value="Admin" readonly aria-readonly="true">
+              </label>
+              <label class="field">
+                <span>Organization</span>
+                <input name="organization" readonly aria-readonly="true">
+              </label>
+              <label class="field">
+                <span>Mailbox provider</span>
+                <input name="mailboxProvider" readonly aria-readonly="true">
+              </label>
+            </div>
+            <label class="field">
+              <span>Name</span>
+              <input name="name" autocomplete="name" maxlength="120" required>
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input name="password" type="password" autocomplete="new-password" minlength="10" required>
+              <small>Use at least 10 characters. Password managers and paste are supported.</small>
+            </label>
+            <label class="password-visibility">
+              <input type="checkbox" data-password-toggle="admin-registration-form">
+              <span>Show password</span>
+            </label>
+            <p class="form-error" id="admin-registration-error" role="alert" hidden></p>
+            <div class="registration-actions">
+              <button class="button" type="button" data-registration-back="organization">Back</button>
+              <button class="button primary" type="submit"><span class="button-label" data-button-label>Create workspace</span></button>
+            </div>
+          </form>
+        </section>
+
+        <section class="registration-step" id="join-step" aria-labelledby="join-step-title" hidden>
+          <p class="eyebrow">Join an organization</p>
+          <h2 id="join-step-title" tabindex="-1">Find your workspace</h2>
+          <p class="registration-copy">Enter the exact organization handle or join code shared by your administrator.</p>
+          <form id="join-request-form" novalidate>
+            <div class="locked-fields join-identity" aria-label="Locked registration details">
+              <label class="field">
+                <span>Email</span>
+                <input name="email" type="email" readonly aria-readonly="true">
+              </label>
+              <label class="field">
+                <span>Mailbox provider</span>
+                <input name="mailboxProvider" readonly aria-readonly="true">
+              </label>
+            </div>
+            <label class="field">
+              <span>Organization handle or join code</span>
+              <input name="organizationKey" autocomplete="off" spellcheck="false" maxlength="160" required>
+            </label>
+            <button class="button join-lookup-button" id="organization-lookup-button" type="button"><span class="button-label" data-button-label>Find organization</span></button>
+            <article class="organization-match" id="organization-match" aria-live="polite" hidden>
+              <img id="organization-match-logo" alt="" hidden>
+              <span class="organization-match-mark" id="organization-match-mark" aria-hidden="true"><svg class="icon"><use href="#icon-building"></use></svg></span>
+              <span>
+                <strong id="organization-match-name"></strong>
+                <small id="organization-match-domain"></small>
+              </span>
+              <span class="status-pill">Ready to request</span>
+            </article>
+            <p class="form-error" id="join-request-error" role="alert" hidden></p>
+            <div class="registration-actions">
+              <button class="button" type="button" data-registration-back="entry">Back</button>
+              <button class="button primary" id="join-request-submit" type="submit" disabled><span class="button-label" data-button-label>Request access</span></button>
+            </div>
+          </form>
+        </section>
+
+        <section class="registration-step registration-confirmation" id="join-confirmation-step" aria-labelledby="join-confirmation-title" hidden>
+          <span class="confirmation-mark" aria-hidden="true"><svg class="icon"><use href="#icon-complete"></use></svg></span>
+          <p class="eyebrow">Request sent</p>
+          <h2 id="join-confirmation-title" tabindex="-1">Your administrator will review it</h2>
+          <p class="registration-copy" id="join-confirmation-copy">Return using the one-time invite after your request is approved.</p>
+          <button class="button primary" type="button" data-registration-home>Return to sign in</button>
+        </section>
+
+        <section class="registration-step" id="invite-step" aria-labelledby="invite-step-title" hidden>
+          <p class="eyebrow">Approved invitation</p>
+          <h2 id="invite-step-title" tabindex="-1">Complete your registration</h2>
+          <p class="registration-copy">Create your account using the approved email and organization below.</p>
+          <div class="invite-loading" id="invite-loading" role="status">Checking this invitation…</div>
+          <form id="invite-form" novalidate hidden>
+            <div class="organization-match invite-organization">
+              <img id="invite-organization-logo" alt="" hidden>
+              <span class="organization-match-mark" id="invite-organization-mark" aria-hidden="true"><svg class="icon"><use href="#icon-building"></use></svg></span>
+              <span>
+                <strong id="invite-organization-name"></strong>
+                <small id="invite-organization-domain"></small>
+              </span>
+              <span class="status-pill">Approved</span>
+            </div>
+            <div class="locked-fields">
+              <label class="field">
+                <span>Email</span>
+                <input name="email" type="email" readonly aria-readonly="true">
+              </label>
+              <label class="field">
+                <span>Role</span>
+                <input value="User" readonly aria-readonly="true">
+              </label>
+              <label class="field">
+                <span>Mailbox provider</span>
+                <input name="mailboxProvider" readonly aria-readonly="true">
+              </label>
+            </div>
+            <label class="field">
+              <span>Name</span>
+              <input name="name" autocomplete="name" maxlength="120" required>
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input name="password" type="password" autocomplete="new-password" minlength="10" required>
+              <small>Use at least 10 characters. This invitation can only be used once.</small>
+            </label>
+            <label class="password-visibility">
+              <input type="checkbox" data-password-toggle="invite-form">
+              <span>Show password</span>
+            </label>
+            <p class="form-error" id="invite-error" role="alert" hidden></p>
+            <button class="button primary registration-primary" type="submit"><span class="button-label" data-button-label>Finish registration</span></button>
+          </form>
+        </section>
+      </main>
     </div>
   </section>
 
@@ -236,16 +484,16 @@
               <svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg>
             </button>
             <span class="hero-calendar-control">
-              <label class="hero-calendar" for="hero-date-filter" title="Filter emails by received date">
+              <label class="hero-calendar" for="hero-date-filter" title="Filter threads by email received date">
                 <svg class="icon" aria-hidden="true"><use href="#icon-calendar"></use></svg>
-                <span class="visually-hidden">Filter emails by received date</span>
+                <span class="visually-hidden">Filter threads by email received date</span>
                 <input id="hero-date-filter" type="date" aria-describedby="hero-date-filter-status">
               </label>
               <button class="hero-date-clear" id="hero-date-clear" type="button" aria-label="Clear date filter" hidden>
                 <svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>
               </button>
             </span>
-            <span class="visually-hidden" id="hero-date-filter-status" role="status" aria-live="polite" aria-atomic="true">Showing emails from all received dates.</span>
+            <span class="visually-hidden" id="hero-date-filter-status" role="status" aria-live="polite" aria-atomic="true">Showing threads from all received dates.</span>
           </div>
 
           <div class="hero-copy">
@@ -328,6 +576,38 @@
                 </div>
               </div>
               <div class="settings-sections">
+                <section class="settings-section organization-section" aria-labelledby="organization-profile-title">
+                  <div class="section-heading">
+                    <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-building"></use></svg></span>
+                    <div>
+                      <h3 id="organization-profile-title">Organization profile</h3>
+                      <p>Share the handle or join code with people who should request access.</p>
+                    </div>
+                  </div>
+                  <div class="organization-profile" id="organization-profile">
+                    <img class="organization-profile-logo" id="organization-profile-logo" alt="" hidden>
+                    <div class="organization-profile-copy">
+                      <strong id="organization-profile-name"></strong>
+                      <span id="organization-profile-domain"></span>
+                    </div>
+                    <div class="field organization-identity-field">
+                      <span>Organization handle</span>
+                      <span class="copy-control">
+                        <input id="organization-handle" aria-label="Organization handle" readonly aria-readonly="true">
+                        <button class="small-button" type="button" data-organization-copy="handle">Copy</button>
+                      </span>
+                    </div>
+                    <div class="field organization-identity-field">
+                      <span>Join code</span>
+                      <span class="copy-control">
+                        <input id="organization-join-code" aria-label="Organization join code" readonly aria-readonly="true">
+                        <button class="small-button" type="button" data-organization-copy="joinCode">Copy</button>
+                      </span>
+                    </div>
+                  </div>
+                  <p class="integration-feedback" id="organization-copy-feedback" role="status" aria-live="polite"></p>
+                </section>
+
                 <section class="settings-section integration-section" aria-labelledby="integrations-title">
                   <div class="section-heading">
                     <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-mail"></use></svg></span>
@@ -338,6 +618,20 @@
                   </div>
                   <div class="integration-list" id="integration-list"></div>
                   <p class="integration-feedback" id="integration-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
+                </section>
+
+                <section class="settings-section membership-section" aria-labelledby="membership-requests-title">
+                  <div class="section-heading">
+                    <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-assigned"></use></svg></span>
+                    <div>
+                      <h3 id="membership-requests-title">Membership requests</h3>
+                      <p>Approve or reject people requesting access to this organization.</p>
+                    </div>
+                  </div>
+                  <div class="membership-request-list" id="membership-request-list" aria-live="polite">
+                    <div class="membership-loading" role="status">Loading requests…</div>
+                  </div>
+                  <p class="integration-feedback" id="membership-request-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
                 </section>
 
                 <section class="settings-section timing-section" aria-labelledby="timing-title">
@@ -458,24 +752,69 @@
       <form class="assignment-control" id="email-assignment-form" novalidate hidden>
         <label class="field" for="email-assignee-select">
           <span id="email-assignment-label">Assign to</span>
-          <select name="assigneeId" id="email-assignee-select" required></select>
+          <select name="assigneeId" id="email-assignee-select" aria-describedby="email-assignment-help" required></select>
+          <small id="email-assignment-help">Assignment applies to every open message in this conversation.</small>
         </label>
         <p class="form-error" id="assignment-error" role="alert" hidden></p>
       </form>
+      <section class="delivery-card" id="email-delivery-card" aria-labelledby="email-delivery-title" hidden>
+        <div>
+          <span class="detail-kicker">Assignment email</span>
+          <h3 id="email-delivery-title">Delivery status</h3>
+          <p id="email-delivery-copy"></p>
+        </div>
+        <button class="small-button delivery-retry" id="email-delivery-retry" type="button" hidden>Retry delivery</button>
+        <div class="delivery-history" id="email-delivery-history" hidden>
+          <strong>Previous assignment emails cannot be recalled</strong>
+          <ul id="email-delivery-history-list"></ul>
+        </div>
+      </section>
       <div class="message-preview">
-        <span>Message preview</span>
+        <span>Selected email preview</span>
         <p id="email-detail-preview"></p>
       </div>
+      <section class="conversation-detail" id="conversation-detail" aria-labelledby="conversation-title">
+        <div class="conversation-detail-head">
+          <div>
+            <span class="detail-kicker">On-demand history</span>
+            <h3 id="conversation-title">Conversation</h3>
+          </div>
+          <span class="conversation-count" id="conversation-count"></span>
+        </div>
+        <div class="conversation-feedback" id="conversation-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
+        <ol class="conversation-timeline" id="conversation-list"></ol>
+        <button class="button conversation-retry" id="conversation-retry" type="button" hidden>Retry conversation</button>
+      </section>
       <p class="completion-note" id="email-completion-note" hidden></p>
     </div>
     <div class="dialog-actions detail-actions">
       <a class="button" id="outlook-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Open email</a>
       <button class="button primary" id="assign-button" type="submit" form="email-assignment-form" hidden><span class="button-label" data-button-label>Assign</span></button>
-      <button class="button primary" id="complete-button" type="button"><span class="button-label" data-button-label>Mark complete</span></button>
+      <button class="button primary" id="complete-button" type="button"><span class="button-label" data-button-label>Complete conversation</span></button>
+    </div>
+  </dialog>
+
+  <dialog class="dialog confirm-dialog" id="delivery-retry-dialog" aria-labelledby="delivery-retry-title">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">Duplicate-risk confirmation</p>
+        <h2 id="delivery-retry-title">Retry this assignment email?</h2>
+      </div>
+      <button class="icon-button dialog-close" type="button" data-close-dialog="delivery-retry-dialog" aria-label="Close retry confirmation">
+        <svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>
+      </button>
+    </div>
+    <div class="confirm-dialog-copy">
+      <p>The mailbox provider did not confirm the earlier result. The recipient may already have the assignment email, so retrying can send a duplicate.</p>
+      <p class="form-error" id="delivery-retry-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button class="button" type="button" data-close-dialog="delivery-retry-dialog">Cancel</button>
+      <button class="button primary" id="delivery-retry-confirm" type="button"><span class="button-label" data-button-label>Retry despite the risk</span></button>
     </div>
   </dialog>
 
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

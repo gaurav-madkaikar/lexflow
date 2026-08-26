@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
+    "reset-local-credentials": "node src/reset-local-credentials.js",
     "test": "node --test"
   },
   "dependencies": {
