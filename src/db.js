@@ -109,7 +109,13 @@ function migrateNotifications(db) {
   `).get()?.sql ?? '').toLocaleLowerCase();
   const supportsAllKinds = definition.includes('completion') && definition.includes('assigned_overdue');
   const blocksRepeats = definition.includes('unique(user_id, email_id, kind)');
-  if (supportsAllKinds && !blocksRepeats) return;
+  if (supportsAllKinds && !blocksRepeats) {
+    // A prior organization-aware build created this partial unique index for
+    // overdue notifications. Repeating hourly alerts are now tracked by
+    // alert_deliveries, so retaining it prevents legitimate repeat alerts.
+    db.exec('DROP INDEX IF EXISTS notifications_overdue_unique');
+    return;
+  }
 
   db.exec(`
     DROP TABLE IF EXISTS notifications_next;
@@ -130,6 +136,68 @@ function migrateNotifications(db) {
     FROM notifications;
     DROP TABLE notifications;
     ALTER TABLE notifications_next RENAME TO notifications;
+  `);
+
+  db.exec('DROP INDEX IF EXISTS notifications_overdue_unique');
+}
+
+function migrateWorkspaceSettings(db) {
+  if (tableHasColumn(db, 'workspace_settings', 'id')) return;
+
+  // Earlier local builds scoped this singleton row by organization_id. The
+  // current app has one workspace, so retain that row under the canonical key
+  // rather than requiring users to discard their existing local database.
+  db.exec('ALTER TABLE workspace_settings ADD COLUMN id INTEGER CHECK (id = 1)');
+  db.exec('UPDATE workspace_settings SET id = 1 WHERE id IS NULL');
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS workspace_settings_id_unique
+    ON workspace_settings (id)
+  `);
+}
+
+function migrateAlertDeliveries(db) {
+  // Organization-scoped local databases used a four-column primary key. Keep
+  // their rows, while adding the three-column conflict target used by the
+  // single-workspace alert runner.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS alert_deliveries_email_user_kind_unique
+    ON alert_deliveries (email_id, user_id, kind)
+  `);
+}
+
+function syncStateHasKeyPrimaryKey(db) {
+  return db.prepare('PRAGMA index_list(sync_state)').all().some(index => {
+    if (!index.unique) return false;
+    const columns = db.prepare(`PRAGMA index_info(${index.name})`).all();
+    return columns.length === 1 && columns[0].name === 'key';
+  });
+}
+
+function migrateSyncState(db) {
+  if (syncStateHasKeyPrimaryKey(db)) return;
+
+  // Older multi-connection builds could hold several values for the same
+  // source key. This app has one workspace, so retain the latest connection's
+  // value for each key and restore the key-level primary key its sync runner
+  // relies on.
+  db.exec(`
+    CREATE TABLE sync_state_next (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    INSERT INTO sync_state_next (key, value)
+    SELECT key, value
+    FROM (
+      SELECT key, value,
+        row_number() OVER (
+          PARTITION BY key
+          ORDER BY connection_id DESC, organization_id DESC
+        ) AS row_number
+      FROM sync_state
+    )
+    WHERE row_number = 1;
+    DROP TABLE sync_state;
+    ALTER TABLE sync_state_next RENAME TO sync_state;
   `);
 }
 
@@ -159,6 +227,9 @@ export function migrate(db) {
       WHERE status IN ('assigned', 'completed') AND assigned_at IS NULL
     `);
     migrateNotifications(db);
+    migrateWorkspaceSettings(db);
+    migrateAlertDeliveries(db);
+    migrateSyncState(db);
 
     const createdAt = new Date().toISOString();
     db.prepare(`
