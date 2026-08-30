@@ -76,6 +76,10 @@ function emailFromRow(row) {
   const provider = row.provider || 'outlook';
   return {
     id: Number(row.id),
+    conversationId: row.conversation_task_id == null ? null : Number(row.conversation_task_id),
+    messageCount: Number(row.conversation_message_count ?? 1),
+    reopened: row.conversation_reopened === 1,
+    searchText: row.conversation_search_text ?? '',
     subject: row.subject,
     sender: { name: row.sender_name, address: row.sender_address },
     preview: row.preview,
@@ -84,7 +88,7 @@ function emailFromRow(row) {
     mailboxAddress: row.mailbox_address ?? null,
     webUrl: row.outlook_url,
     outlookUrl: row.outlook_url,
-    status: row.status,
+    status: row.conversation_status ?? row.status,
     assignedAt: row.assigned_at,
     departmentId: row.department_id == null ? null : Number(row.department_id),
     department: row.email_department ?? row.assignee_department ?? null,
@@ -100,7 +104,7 @@ function emailFromRow(row) {
       id: Number(row.completed_by),
       name: row.completed_by_name
     } : null,
-    completedAt: row.completed_at
+    completedAt: row.conversation_completed_at ?? row.completed_at
   };
 }
 
@@ -110,7 +114,22 @@ function listEmails(db, user) {
     ? 'AND emails.department_id = ?'
     : 'AND emails.assignee_id = ?';
   const statement = db.prepare(`
-    SELECT emails.*,
+    SELECT latest.*,
+      conversations.id AS conversation_task_id,
+      conversations.status AS conversation_status,
+      conversations.message_count AS conversation_message_count,
+      conversations.completed_at AS conversation_completed_at,
+      (SELECT group_concat(
+        messages.subject || ' ' || messages.sender_name || ' ' || messages.sender_address || ' ' || messages.preview,
+        ' '
+      ) FROM emails messages WHERE messages.conversation_id = conversations.id) AS conversation_search_text,
+      CASE WHEN conversations.status <> 'completed'
+        AND EXISTS (
+          SELECT 1 FROM task_events completed_event
+          JOIN emails completed_email ON completed_email.id = completed_event.email_id
+          WHERE completed_email.conversation_id = conversations.id
+            AND completed_event.event_type = 'completed'
+        ) THEN 1 ELSE 0 END AS conversation_reopened,
       assignee.email AS assignee_email,
       assignee.name AS assignee_name,
       assignee.initials AS assignee_initials,
@@ -118,20 +137,33 @@ function listEmails(db, user) {
       departments.name AS email_department,
       departments.shared_mailbox AS department_mailbox,
       completed.name AS completed_by_name
-    FROM emails
-    LEFT JOIN users AS assignee ON assignee.id = emails.assignee_id
-    LEFT JOIN users AS completed ON completed.id = emails.completed_by
+    FROM conversations
+    JOIN emails AS latest ON latest.id = conversations.latest_email_id
+    LEFT JOIN users AS assignee ON assignee.id = conversations.assignee_id
+    LEFT JOIN users AS completed ON completed.id = latest.completed_by
     LEFT JOIN departments
-      ON departments.id = emails.department_id
-      AND departments.organization_id = emails.organization_id
-    WHERE emails.organization_id = ? ${ownership}
-    ORDER BY emails.received_at DESC, emails.id DESC
+      ON departments.id = conversations.department_id
+      AND departments.organization_id = conversations.organization_id
+    WHERE conversations.organization_id = ? ${ownership.replaceAll('emails.', 'conversations.')}
+    ORDER BY conversations.latest_received_at DESC, conversations.id DESC
   `);
   const rows = statement.all(
     user.organization_id,
     departmentAccess ? user.headed_department_id : user.id,
   );
   return rows.map(emailFromRow);
+}
+
+function visibleConversationRow(db, user, conversationId) {
+  if (user.effectiveRole === 'dep_admin' && user.headed_department_id) {
+    return db.prepare(`SELECT * FROM conversations WHERE id = ? AND organization_id = ? AND department_id = ?`)
+      .get(conversationId, user.organization_id, user.headed_department_id) ?? null;
+  }
+  if (user.effectiveRole === 'member') {
+    return db.prepare(`SELECT * FROM conversations WHERE id = ? AND organization_id = ? AND assignee_id = ?`)
+      .get(conversationId, user.organization_id, user.id) ?? null;
+  }
+  return null;
 }
 
 function visibleEmailRow(db, user, emailId) {
@@ -1135,6 +1167,30 @@ export function createApp({
       return;
     }
     response.status(204).end();
+  });
+
+  app.get('/api/conversations/:id/messages', (request, response) => {
+    const conversationId = resourceId(request.params.id);
+    if (!conversationId || !visibleConversationRow(db, request.user, conversationId)) {
+      return notFound(response, 'Conversation not found.');
+    }
+    const rows = db.prepare(`
+      SELECT emails.*,
+        departments.name AS email_department,
+        departments.shared_mailbox AS department_mailbox,
+        assignee.email AS assignee_email,
+        assignee.name AS assignee_name,
+        assignee.initials AS assignee_initials,
+        assignee.department AS assignee_department,
+        completed.name AS completed_by_name
+      FROM emails
+      LEFT JOIN departments ON departments.id = emails.department_id
+      LEFT JOIN users assignee ON assignee.id = emails.assignee_id
+      LEFT JOIN users completed ON completed.id = emails.completed_by
+      WHERE emails.conversation_id = ? AND emails.organization_id = ?
+      ORDER BY emails.received_at, emails.id
+    `).all(conversationId, request.user.organization_id);
+    response.json({ messages: rows.map(emailFromRow) });
   });
 
   app.get('/api/emails/:id/open-link', async (request, response, next) => {

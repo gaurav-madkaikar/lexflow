@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import {
+  attachEmailToConversation,
+  updateConversationAssignment,
+  updateConversationCompletion,
+} from './conversations.js';
 import { departmentHeadRecipient } from './department-access.js';
 import {
   finishGraphRun,
@@ -68,6 +73,8 @@ function recordAssignment(db, {
   allowReassignment = false,
   organizationId = 1,
   assignmentSource = 'manual',
+  conversationSource = assignmentSource,
+  reopened = false,
   rule = null,
 }) {
   const eligibleStatus = allowReassignment
@@ -102,7 +109,13 @@ function recordAssignment(db, {
       INSERT INTO notifications
       (user_id, email_id, kind, message, created_at, organization_id)
     VALUES (?, ?, 'assignment', ?, ?, ?)
-  `).run(assignee.id, email.id, `New assignment: ${email.subject}`, assignedAt, organizationId);
+  `).run(
+    assignee.id,
+    email.id,
+    `${reopened ? 'Reopened assignment' : 'New assignment'}: ${email.subject}`,
+    assignedAt,
+    organizationId,
+  );
 
   const previous = email.assignee_id
     ? db.prepare('SELECT name FROM users WHERE id = ?').get(email.assignee_id)
@@ -140,7 +153,18 @@ function recordAssignment(db, {
       occurredAt: assignedAt,
     });
   }
-  const message = previous
+  if (email.conversation_id != null) {
+    updateConversationAssignment(db, {
+      conversationId: Number(email.conversation_id),
+      assigneeId: Number(assignee.id),
+      source: conversationSource,
+      ruleId: assignmentSource === 'rule' ? rule?.id ?? null : null,
+      startedAt: assignedAt,
+    });
+  }
+  const message = reopened
+    ? `Reopened "${email.subject}" for ${assignee.name}`
+    : previous
     ? `Reassigned "${email.subject}" from ${previous.name} to ${assignee.name}`
     : `Assigned "${email.subject}" to ${assignee.name}`;
   db.prepare(`
@@ -151,7 +175,7 @@ function recordAssignment(db, {
   return true;
 }
 
-function assignEmailByRule(db, email, rule, assignedAt, organizationId = 1) {
+function assignEmailByRule(db, email, rule, assignedAt, organizationId = 1, reopened = false) {
   const assignee = db.prepare(`
     SELECT * FROM users
     WHERE id = ? AND organization_id = ? AND department_id = ?
@@ -165,6 +189,7 @@ function assignEmailByRule(db, email, rule, assignedAt, organizationId = 1) {
     organizationId,
     allowReassignment: false,
     assignmentSource: 'rule',
+    reopened,
     rule,
   });
 }
@@ -311,9 +336,55 @@ export async function syncMailbox({ db, source }) {
       }
 
       imported += 1;
-      const email = findEmail.get(message.providerId, organizationId);
+      let email = findEmail.get(message.providerId, organizationId);
+      const attached = attachEmailToConversation(db, email.id);
+      email = findEmail.get(message.providerId, organizationId);
+      if (attached.created) {
+        const rule = matchRule(message, rules);
+        if (rule && assignEmailByRule(db, email, rule, now, organizationId)) assigned += 1;
+        continue;
+      }
+      if (attached.conversation.status !== 'completed') continue;
+
+      db.prepare(`
+        UPDATE emails SET status = 'unassigned', assignee_id = NULL,
+          assigned_at = NULL, completed_by = NULL, completed_at = NULL
+        WHERE id = ?
+      `).run(email.id);
+      email = findEmail.get(message.providerId, organizationId);
+      const previous = attached.conversation.assignee_id == null ? null : db.prepare(`
+        SELECT * FROM users
+        WHERE id = ? AND organization_id = ? AND department_id = ?
+          AND role = 'member' AND account_status = 'active'
+      `).get(attached.conversation.assignee_id, organizationId, departmentId);
+      if (previous && recordAssignment(db, {
+        email, assignee: previous, assignedAt: now, organizationId,
+        assignmentSource: 'manual', conversationSource: 'reopen_previous', reopened: true,
+      })) {
+        assigned += 1;
+        continue;
+      }
       const rule = matchRule(message, rules);
-      if (rule && assignEmailByRule(db, email, rule, now, organizationId)) assigned += 1;
+      if (rule && assignEmailByRule(db, email, rule, now, organizationId, true)) {
+        assigned += 1;
+        continue;
+      }
+      db.prepare(`
+        UPDATE conversations
+        SET status = 'unassigned', assignee_id = NULL, completed_at = NULL,
+            version = version + 1, updated_at = ?
+        WHERE id = ?
+      `).run(now, attached.conversation.id);
+      db.prepare(`
+        UPDATE emails SET status = 'unassigned', assignee_id = NULL,
+          assigned_at = NULL, completed_by = NULL, completed_at = NULL
+        WHERE conversation_id = ?
+      `).run(attached.conversation.id);
+      const head = departmentHeadRecipient(db, { organizationId, departmentId });
+      if (head) db.prepare(`
+        INSERT INTO notifications (user_id, email_id, kind, message, created_at, organization_id)
+        VALUES (?, ?, 'assignment', ?, ?, ?)
+      `).run(head.id, email.id, `Reopened and awaiting assignment: ${email.subject}`, now, organizationId);
     }
 
     if (nextCursor === null) {
@@ -655,6 +726,11 @@ export function completeAssignedEmail({ db, emailId, userId, organizationId = 1,
 
     if (update.changes === 1) {
       const email = db.prepare('SELECT * FROM emails WHERE id = ? AND organization_id = ?').get(emailId, organizationId);
+      if (email.conversation_id != null) {
+        updateConversationCompletion(db, {
+          conversationId: Number(email.conversation_id), userId: Number(userId), completedAt,
+        });
+      }
       const actor = db.prepare('SELECT name FROM users WHERE id = ? AND organization_id = ?').get(userId, organizationId);
       const department = email.department_id
         ? db.prepare('SELECT name FROM departments WHERE id = ? AND organization_id = ?')

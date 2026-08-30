@@ -602,6 +602,23 @@ function rulePerformance(db, organizationId, departmentId, period, endpoint, gro
     }
   }
   if (manual.assignments) rows.set('manual', manual);
+  const historical = {
+    id: 'historical-unknown', label: 'Historical / unknown source', assignments: 0, completed: 0,
+    resolutionTimes: [], source: 'historical_unknown',
+  };
+  for (const events of grouped.values()) {
+    for (const event of events) {
+      if (event.assignment_source != null || !['assigned', 'reassigned'].includes(event.event_type)
+        || !inRange(event.occurred_at, period, endpoint)) continue;
+      historical.assignments += 1;
+      const completion = completionBefore(events, endpoint);
+      if (completion) {
+        historical.completed += 1;
+        historical.resolutionTimes.push(elapsed(event.received_at, completion.occurred_at));
+      }
+    }
+  }
+  if (historical.assignments) rows.set('historical-unknown', historical);
   return [...rows.values()].map(row => ({
     id: row.id,
     label: row.label,
@@ -611,7 +628,10 @@ function rulePerformance(db, organizationId, departmentId, period, endpoint, gro
     averageResolution: average(row.resolutionTimes),
     source: row.source,
   })).sort((left, right) => {
-    if (left.source !== right.source) return left.source === 'manual' ? 1 : -1;
+    if (left.source !== right.source) {
+      const order = { rule: 0, manual: 1, reopen_previous: 2, historical_unknown: 3 };
+      return (order[left.source] ?? 9) - (order[right.source] ?? 9);
+    }
     return right.assignments - left.assignments || left.label.localeCompare(right.label);
   });
 }

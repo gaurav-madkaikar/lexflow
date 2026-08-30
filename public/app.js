@@ -32,6 +32,8 @@ const state = {
   entryNoticeShown: false,
   lastGraphOutcomeSequence: null,
   expandedTeamGroups: new Set(),
+  expandedConversations: new Set(),
+  conversationMessages: new Map(),
   pollFailureActive: false,
 };
 
@@ -707,6 +709,7 @@ function emailMatchesSearch(email) {
   const searchable = [
     email.subject,
     email.preview,
+    email.searchText,
     sender,
     email.department,
     email.assignee?.name,
@@ -747,6 +750,10 @@ function renderEmailRow(email, { grouped = false, compact = false } = {}) {
   if (email.department) tags.append(node('span', 'tag department', email.department));
   const statusLabel = email.status === 'unassigned' ? 'Unassigned' : email.status === 'completed' ? 'Completed' : 'Assigned';
   tags.append(node('span', `tag ${email.status}`, statusLabel));
+  if (Number(email.messageCount) > 1) {
+    tags.append(node('span', 'tag thread-count', `${email.messageCount} messages`));
+  }
+  if (email.reopened) tags.append(node('span', 'tag reopened', 'Reopened'));
   copy.append(subject, meta);
   if (!compact) copy.append(preview);
   copy.append(tags);
@@ -760,6 +767,32 @@ function renderEmailRow(email, { grouped = false, compact = false } = {}) {
     row.append(person);
   }
   return row;
+}
+
+function renderConversationItem(email, options = {}) {
+  const row = renderEmailRow(email, options);
+  if (!email.conversationId || Number(email.messageCount) <= 1) return row;
+  const expanded = state.expandedConversations.has(email.conversationId);
+  const wrapper = node('section', `conversation-item${expanded ? ' is-expanded' : ''}`);
+  const heading = node('div', 'conversation-heading');
+  const toggle = node('button', 'conversation-toggle', expanded ? 'Collapse' : 'Expand');
+  toggle.type = 'button';
+  toggle.dataset.conversationId = String(email.conversationId);
+  toggle.setAttribute('aria-expanded', String(expanded));
+  toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${email.subject} thread, ${email.messageCount} messages`);
+  heading.append(row, toggle);
+  wrapper.append(heading);
+  if (expanded) {
+    const messages = state.conversationMessages.get(email.conversationId);
+    const list = node('div', 'conversation-messages');
+    if (messages) {
+      list.append(...messages.map(message => renderEmailRow(message, { grouped: true, compact: false })));
+    } else {
+      list.append(node('p', 'conversation-loading', 'Loading thread…'));
+    }
+    wrapper.append(list);
+  }
+  return wrapper;
 }
 
 function assignedEmployeeGroups(emails) {
@@ -801,7 +834,7 @@ function renderEmployeeGroup(group, index) {
   header.append(avatar, copy, count);
 
   const emailRows = node('div', 'employee-group-emails');
-  emailRows.append(...group.emails.map(email => renderEmailRow(email, { grouped: true })));
+  emailRows.append(...group.emails.map(email => renderConversationItem(email, { grouped: true })));
   section.append(header, emailRows);
   return section;
 }
@@ -842,7 +875,7 @@ function renderEmails() {
   elements.emailList.replaceChildren(...(emails.length
     ? groupedAssigned
       ? employeeGroups.map(renderEmployeeGroup)
-      : emails.map(email => renderEmailRow(email, { compact: isOverview }))
+      : emails.map(email => renderConversationItem(email, { compact: isOverview }))
     : [emptyState('Nothing here', emptyMessage)]));
 
   renderOverviewFooter({
@@ -1695,7 +1728,8 @@ async function prepareEmailLink(email, requestId) {
 }
 
 function openEmail(emailId, opener = document.activeElement) {
-  const email = (state.session.emails ?? []).find(item => item.id === Number(emailId));
+  const email = (state.session.emails ?? []).find(item => item.id === Number(emailId))
+    ?? [...state.conversationMessages.values()].flat().find(item => item.id === Number(emailId));
   if (!email) return;
   state.emailDialogOpener = opener instanceof HTMLElement ? opener : null;
   state.selectedEmailId = email.id;
@@ -2110,6 +2144,30 @@ elements.heroDateClear.addEventListener('click', () => {
 });
 
 elements.emailList.addEventListener('click', event => {
+  const toggle = event.target.closest('[data-conversation-id]');
+  if (toggle) {
+    const conversationId = Number(toggle.dataset.conversationId);
+    if (state.expandedConversations.has(conversationId)) {
+      state.expandedConversations.delete(conversationId);
+      renderEmails();
+      return;
+    }
+    state.expandedConversations.add(conversationId);
+    renderEmails();
+    if (!state.conversationMessages.has(conversationId)) {
+      api(`/api/conversations/${conversationId}/messages`)
+        .then(payload => {
+          state.conversationMessages.set(conversationId, payload.messages ?? []);
+          renderEmails();
+        })
+        .catch(error => {
+          state.expandedConversations.delete(conversationId);
+          reportError(error, 'The email thread could not be loaded.');
+          renderEmails();
+        });
+    }
+    return;
+  }
   const row = event.target.closest('[data-email-id]');
   if (row) openEmail(row.dataset.emailId);
 });
@@ -2448,6 +2506,10 @@ elements.emailAssignmentForm.addEventListener('submit', async event => {
   const wasAssigned = email.status === 'assigned';
   setButtonBusy(elements.assignButton, true, wasAssigned ? 'Reassigning…' : 'Assigning…');
   try {
+    if (email.conversationId) {
+      state.conversationMessages.delete(email.conversationId);
+      state.expandedConversations.delete(email.conversationId);
+    }
     const result = await mutate(`/api/emails/${email.id}/assign`, 'POST', { assigneeId });
     elements.emailDialog.close();
     state.selectedEmailId = null;
@@ -2467,6 +2529,11 @@ elements.completeButton.addEventListener('click', async () => {
   if (!state.selectedEmailId) return;
   setButtonBusy(elements.completeButton, true, 'Completing…');
   try {
+    const selected = (state.session.emails ?? []).find(item => item.id === state.selectedEmailId);
+    if (selected?.conversationId) {
+      state.conversationMessages.delete(selected.conversationId);
+      state.expandedConversations.delete(selected.conversationId);
+    }
     await mutate(`/api/emails/${state.selectedEmailId}/complete`);
     elements.emailDialog.close();
     elements.pageTitle.focus({ preventScroll: true });
