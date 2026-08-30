@@ -800,6 +800,151 @@
   .cfo-loading svg { animation: none; }
 }
 
+.cfo-theme-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin-left: auto;
+  background: #dedee2;
+  border-radius: 999px;
+  transition: background-color 180ms ease;
+}
+
+.cfo-theme-switch i {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  background: #77777d;
+  border-radius: 50%;
+  transition: transform 220ms cubic-bezier(.2,.8,.2,1), background-color 180ms ease;
+}
+
+.cfo-theme-switch.is-on { background: #2d8cff; }
+.cfo-theme-switch.is-on i { background: #fff; transform: translateX(14px); }
+
+/* CFO dark theme */
+html[data-theme="dark"] .cfo-view {
+  color: #f2f5fa;
+  background: #080c13;
+}
+
+html[data-theme="dark"] .cfo-workspace {
+  background:
+    radial-gradient(circle at 78% -6%, rgb(45 140 255 / 14%), transparent 30%),
+    radial-gradient(circle at 6% 92%, rgb(88 86 214 / 8%), transparent 28%),
+    linear-gradient(180deg, #080c13 0, #0b1018 48%, #080c13 100%);
+}
+
+html[data-theme="dark"] .cfo-header {
+  background: rgb(8 12 19 / 84%);
+  border-color: rgb(230 238 250 / 10%);
+}
+
+html[data-theme="dark"] .cfo-brand > span { background: linear-gradient(145deg, #2d8cff, #125eb8); }
+html[data-theme="dark"] .cfo-brand small,
+html[data-theme="dark"] .cfo-account-menu small,
+html[data-theme="dark"] .cfo-section-heading p,
+html[data-theme="dark"] .cfo-asof small,
+html[data-theme="dark"] .cfo-tile-heading,
+html[data-theme="dark"] .cfo-kpi-label,
+html[data-theme="dark"] .cfo-kpi-library-group p,
+html[data-theme="dark"] .cfo-module-card-head > span,
+html[data-theme="dark"] .cfo-module-note,
+html[data-theme="dark"] .cfo-module-legend,
+html[data-theme="dark"] .cfo-source-list small,
+html[data-theme="dark"] .cfo-sources small,
+html[data-theme="dark"] .cfo-kpi-heading > div:first-child > span,
+html[data-theme="dark"] .cfo-kpi-heading-actions small { color: #8f9bad; }
+
+html[data-theme="dark"] .cfo-demo-pill,
+html[data-theme="dark"] .cfo-periods,
+html[data-theme="dark"] .cfo-asof,
+html[data-theme="dark"] .cfo-module-tabs { color: #a8b3c3; background: #151c26; }
+html[data-theme="dark"] .cfo-periods button,
+html[data-theme="dark"] .cfo-module-tabs button { color: #8f9bad; }
+html[data-theme="dark"] .cfo-periods button:hover,
+html[data-theme="dark"] .cfo-module-tabs button:hover { color: #f4f7fb; background: rgb(255 255 255 / 7%); }
+html[data-theme="dark"] .cfo-periods button.active,
+html[data-theme="dark"] .cfo-module-tabs button.active { color: #fff; background: #2d8cff; box-shadow: 0 8px 22px rgb(0 84 190 / 30%); }
+
+html[data-theme="dark"] .cfo-round-action,
+html[data-theme="dark"] .cfo-account-menu,
+html[data-theme="dark"] .cfo-drawer-head button {
+  color: #f2f5fa;
+  background: #111720;
+  border-color: rgb(230 238 250 / 11%);
+}
+html[data-theme="dark"] .cfo-avatar { color: #d9eaff; background: #102b4c; }
+html[data-theme="dark"] .cfo-account-menu { box-shadow: 0 22px 60px rgb(0 0 0 / 48%); }
+html[data-theme="dark"] .cfo-account-menu > div { border-color: rgb(230 238 250 / 10%); }
+html[data-theme="dark"] .cfo-account-menu button { color: #f2f5fa; }
+html[data-theme="dark"] .cfo-account-menu button:hover { background: #1a2330; }
+
+html[data-theme="dark"] .cfo-tile,
+html[data-theme="dark"] .cfo-cash-tile,
+html[data-theme="dark"] .cfo-module-card,
+html[data-theme="dark"] .cfo-kpi,
+html[data-theme="dark"] .cfo-exception-list,
+html[data-theme="dark"] .cfo-drawer,
+html[data-theme="dark"] .cfo-module-table-wrap,
+html[data-theme="dark"] .cfo-table-wrap {
+  color: #f2f5fa;
+  background: #111720;
+  border-color: rgb(230 238 250 / 10%);
+}
+
+html[data-theme="dark"] .cfo-module-card-accent,
+html[data-theme="dark"] .cfo-ar-tile { background: linear-gradient(145deg, #10233c, #112c4a); }
+html[data-theme="dark"] .cfo-deep-dive-ap .cfo-module-card-accent,
+html[data-theme="dark"] .cfo-ap-tile { background: linear-gradient(145deg, #1b1930, #252149); }
+html[data-theme="dark"] .cfo-deep-dive-tax .cfo-module-card-accent,
+html[data-theme="dark"] .cfo-tax-tile { background: linear-gradient(145deg, #12251a, #173522); }
+html[data-theme="dark"] .cfo-deep-dive-invoicing .cfo-module-card-accent,
+html[data-theme="dark"] .cfo-invoice-tile { background: linear-gradient(145deg, #2a2015, #3b2915); }
+html[data-theme="dark"] .cfo-deep-dive-fx .cfo-module-card-accent,
+html[data-theme="dark"] .cfo-fx-tile { background: linear-gradient(145deg, #102331, #10324a); }
+
+html[data-theme="dark"] .cfo-kpi-paper,
+html[data-theme="dark"] .cfo-kpi-soft,
+html[data-theme="dark"] .cfo-kpi-compact.cfo-kpi-ink { color: #f2f5fa; background: #111720; border-color: rgb(230 238 250 / 10%); }
+html[data-theme="dark"] .cfo-kpi-coral { color: #f2f5fa; background: linear-gradient(145deg, #382019, #47281e); }
+html[data-theme="dark"] .cfo-kpi-compact.cfo-kpi-ink .cfo-kpi-label,
+html[data-theme="dark"] .cfo-kpi-compact.cfo-kpi-ink .cfo-kpi-trend { color: #9aa6b6; }
+html[data-theme="dark"] .cfo-kpi-library-group > header > span { color: #9aa6b6; background: #202a38; }
+html[data-theme="dark"] .cfo-kpi-heading-actions button { color: #d9eaff; background: #102b4c; border-color: rgb(45 140 255 / 20%); }
+html[data-theme="dark"] .cfo-kpi-heading-actions button:hover { background: #16395f; border-color: rgb(45 140 255 / 34%); }
+
+html[data-theme="dark"] .cfo-exception-list article,
+html[data-theme="dark"] .cfo-module-table-wrap td,
+html[data-theme="dark"] .cfo-table-wrap td,
+html[data-theme="dark"] .cfo-compliance-list > div,
+html[data-theme="dark"] .cfo-invoice-stats > div { border-color: rgb(230 238 250 / 9%); }
+html[data-theme="dark"] .cfo-module-table-wrap th,
+html[data-theme="dark"] .cfo-table-wrap th { color: #8f9bad; background: #171f2b; }
+html[data-theme="dark"] .cfo-module-table-wrap tbody tr:hover,
+html[data-theme="dark"] .cfo-exception-list article:hover { background: #172231; }
+html[data-theme="dark"] .cfo-module-alerts > div { color: #f2f5fa; background: #151c26; }
+html[data-theme="dark"] .cfo-source-list span { background: #202a38; }
+html[data-theme="dark"] .cfo-drawer { box-shadow: -24px 0 70px rgb(0 0 0 / 50%); }
+html[data-theme="dark"] .cfo-drawer-head p,
+html[data-theme="dark"] .cfo-drawer section > p { color: #9aa6b6; }
+
+html[data-theme="dark"] .cfo-fx-detail > div,
+html[data-theme="dark"] .cfo-fx-grid > div { background: rgb(255 255 255 / 5%); border-color: rgb(255 255 255 / 8%); }
+html[data-theme="dark"] .cfo-cash-bars b { background: #718096; }
+html[data-theme="dark"] .cfo-chart-legend,
+html[data-theme="dark"] .cfo-cash-bars small { color: #8f9bad; }
+
+html[data-theme="dark"] .cfo-workspace,
+html[data-theme="dark"] .cfo-header,
+html[data-theme="dark"] .cfo-tile,
+html[data-theme="dark"] .cfo-module-card,
+html[data-theme="dark"] .cfo-kpi,
+html[data-theme="dark"] .cfo-account-menu,
+html[data-theme="dark"] .cfo-drawer { transition: color 220ms ease, background-color 220ms ease, border-color 220ms ease, box-shadow 220ms ease; }
+
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);

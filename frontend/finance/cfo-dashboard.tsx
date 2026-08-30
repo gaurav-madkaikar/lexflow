@@ -14,9 +14,11 @@ import {
   Landmark,
   LayoutDashboard,
   LogOut,
+  Moon,
   ReceiptText,
   RefreshCw,
   ShieldCheck,
+  Sun,
   X,
 } from 'lucide-react';
 
@@ -403,6 +405,16 @@ export function CfoDashboard({ user }: { user: CfoUser }) {
   const [metricsExpanded, setMetricsExpanded] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [darkTheme, setDarkTheme] = useState(() => document.documentElement.dataset.theme === 'dark');
+
+  useEffect(() => {
+    const handleTheme = (event: Event) => {
+      setDarkTheme((event as CustomEvent<{ theme: 'light' | 'dark' }>).detail.theme === 'dark');
+    };
+    window.addEventListener('lexflow:theme-change', handleTheme);
+    setDarkTheme(document.documentElement.dataset.theme === 'dark');
+    return () => window.removeEventListener('lexflow:theme-change', handleTheme);
+  }, []);
   const modulePanelRef = useRef<HTMLDivElement>(null);
   const metricLibraryRef = useRef<HTMLDivElement>(null);
 
@@ -478,6 +490,12 @@ export function CfoDashboard({ user }: { user: CfoUser }) {
     }
   }
 
+  function toggleTheme() {
+    window.dispatchEvent(new CustomEvent('lexflow:request-theme', {
+      detail: { theme: darkTheme ? 'light' : 'dark' }
+    }));
+  }
+
   function handleModuleKeys(event: React.KeyboardEvent<HTMLDivElement>) {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
@@ -512,6 +530,11 @@ export function CfoDashboard({ user }: { user: CfoUser }) {
             {accountOpen && (
               <div className="cfo-account-menu" role="menu">
                 <div><strong>{user.name}</strong><small>CFO · {user.department}</small></div>
+                <button type="button" role="menuitem" aria-pressed={darkTheme} onClick={toggleTheme}>
+                  {darkTheme ? <Sun /> : <Moon />}
+                  <span>{darkTheme ? 'Light mode' : 'Dark mode'}</span>
+                  <span className={`cfo-theme-switch${darkTheme ? ' is-on' : ''}`} aria-hidden="true"><i /></span>
+                </button>
                 <button type="button" role="menuitem" disabled={signingOut} onClick={signOut}><LogOut />{signingOut ? 'Signing out…' : 'Sign out'}</button>
               </div>
             )}

@@ -20,6 +20,7 @@
 - Play the short descending read-confirmation chime only after a notification is successfully marked read.
 - Treat the notification panel as an active unread queue: read items disappear, opening an item marks it read, and completing an email retires every notification tied to it. Keep completion history in the activity audit trail instead of creating a fresh completion notification.
 - Keep the Open assigned, Completed, and Unread KPI cards linked to their matching workspace views whenever their count is above zero. Preserve native button semantics, keyboard access, and a non-interactive state for zero-value cards.
+- Keep the shared light/dark appearance available to admin, member, Vacation, and CFO workspaces. Use the account-menu theme control, persist the device-local preference, fall back to the operating-system preference, and build new surfaces from the shared theme tokens rather than fixed light colors.
 
 ## CFO finance workspace
 

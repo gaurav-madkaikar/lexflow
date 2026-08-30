@@ -130,10 +130,13 @@ const state = {
 };
 
 const elements = {
+  themeColor: document.querySelector('meta[name="theme-color"]'),
   skipLink: document.querySelector('#skip-link'),
   loginView: document.querySelector('#login-view'),
   loginForm: document.querySelector('#login-form'),
   loginError: document.querySelector('#login-error'),
+  passwordToggle: document.querySelector('#password-toggle'),
+  loginPointerGlow: document.querySelector('#login-pointer-glow'),
   cfoView: document.querySelector('#cfo-view'),
   appView: document.querySelector('#app-view'),
   navBackdrop: document.querySelector('#nav-backdrop'),
@@ -147,6 +150,7 @@ const elements = {
   topbarRole: document.querySelector('#topbar-role'),
   accountMenuButton: document.querySelector('#account-menu-button'),
   accountMenu: document.querySelector('#account-menu'),
+  themeToggle: document.querySelector('#theme-toggle'),
   modeChip: document.querySelector('#mode-chip'),
   adminNavigation: document.querySelector('#admin-navigation'),
   memberNavigation: document.querySelector('#member-navigation'),
@@ -238,6 +242,106 @@ const elements = {
   vacationSetupError: document.querySelector('#vacation-setup-error'),
   toastRegion: document.querySelector('#toast-region')
 };
+
+let loginAmbientStarted = false;
+const THEME_STORAGE_KEY = 'lexflow-theme';
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+
+function updateThemeColor() {
+  const isLogin = !elements.loginView.hidden;
+  elements.themeColor?.setAttribute('content', isLogin || currentTheme() === 'dark' ? '#05070b' : '#fbfbfa');
+}
+
+function syncThemeControls() {
+  const dark = currentTheme() === 'dark';
+  document.querySelectorAll('[data-theme-label]').forEach(label => {
+    label.textContent = dark ? 'Light mode' : 'Dark mode';
+  });
+  document.querySelectorAll('#theme-toggle').forEach(toggle => {
+    toggle.setAttribute('aria-pressed', String(dark));
+    toggle.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+  });
+}
+
+function applyTheme(theme, { persist = true } = {}) {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  document.documentElement.classList.toggle('dark', next === 'dark');
+  if (persist) {
+    try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch {}
+  }
+  syncThemeControls();
+  updateThemeColor();
+  window.dispatchEvent(new CustomEvent('lexflow:theme-change', { detail: { theme: next } }));
+}
+
+syncThemeControls();
+
+window.addEventListener('lexflow:request-theme', event => {
+  applyTheme(event.detail?.theme);
+});
+
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {
+  try {
+    if (localStorage.getItem(THEME_STORAGE_KEY)) return;
+  } catch {}
+  applyTheme(event.matches ? 'dark' : 'light', { persist: false });
+});
+
+function animateLoginEntrance() {
+  const targets = elements.loginView.querySelectorAll('[data-login-reveal]');
+  targets.forEach(target => {
+    target.style.removeProperty('opacity');
+    target.style.removeProperty('transform');
+  });
+  if (reducedMotion.matches) return;
+
+  window.requestAnimationFrame(() => {
+    animate(targets, {
+      opacity: { from: 0 },
+      translateY: { from: 18 },
+      delay: stagger(75),
+      duration: 620,
+      ease: 'out(4)'
+    });
+
+    if (!loginAmbientStarted) {
+      loginAmbientStarted = true;
+      animate('.login-flow-line i', {
+        translateX: ['0%', '460%'],
+        duration: 2800,
+        loop: true,
+        ease: 'inOutSine'
+      });
+      animate('.login-live-dot', {
+        scale: [1, 1.35, 1],
+        opacity: [0.75, 1, 0.75],
+        duration: 2200,
+        loop: true,
+        ease: 'inOutSine'
+      });
+    }
+  });
+}
+
+function animateLoginSuccess() {
+  if (reducedMotion.matches) return Promise.resolve();
+  animate(elements.loginForm.querySelector('.login-submit'), {
+    scale: [1, 1.02, 0.98],
+    duration: 280,
+    ease: 'out(3)'
+  });
+  animate(elements.loginView.querySelectorAll('.login-card, .login-intro'), {
+    opacity: [1, 0],
+    translateY: [0, -8],
+    duration: 300,
+    ease: 'in(3)'
+  });
+  return new Promise(resolve => window.setTimeout(resolve, 260));
+}
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
@@ -533,6 +637,11 @@ function showLogin() {
   elements.cfoView.hidden = true;
   elements.appView.hidden = true;
   elements.loginView.hidden = false;
+  updateThemeColor();
+  elements.loginForm.password.type = 'password';
+  elements.passwordToggle.textContent = 'Show';
+  elements.passwordToggle.setAttribute('aria-pressed', 'false');
+  animateLoginEntrance();
   elements.loginForm.email.focus();
 }
 
@@ -540,6 +649,7 @@ function showApp() {
   elements.loginView.hidden = true;
   elements.cfoView.hidden = true;
   elements.appView.hidden = false;
+  updateThemeColor();
   elements.skipLink.hidden = false;
 }
 
@@ -548,6 +658,7 @@ function showCfo() {
   elements.loginView.hidden = true;
   elements.appView.hidden = true;
   elements.cfoView.hidden = false;
+  updateThemeColor();
   elements.skipLink.hidden = true;
   window.__lexflowCfoUser = state.session.user;
   window.dispatchEvent(new CustomEvent('lexflow:cfo-session', {
@@ -1782,13 +1893,29 @@ elements.loginForm.addEventListener('submit', async event => {
       method: 'POST',
       body: { email: elements.loginForm.email.value.trim(), password: elements.loginForm.password.value }
     });
+    await animateLoginSuccess();
     await refresh({ quiet: true });
     elements.loginForm.reset();
   } catch (error) {
+    animateLoginEntrance();
     showFormError(elements.loginForm, elements.loginError, error);
   } finally {
     setButtonBusy(submit, false, 'Signing in…');
   }
+});
+
+elements.passwordToggle.addEventListener('click', () => {
+  const revealing = elements.loginForm.password.type === 'password';
+  elements.loginForm.password.type = revealing ? 'text' : 'password';
+  elements.passwordToggle.textContent = revealing ? 'Hide' : 'Show';
+  elements.passwordToggle.setAttribute('aria-pressed', String(revealing));
+  elements.loginForm.password.focus({ preventScroll: true });
+});
+
+elements.loginView.addEventListener('pointermove', event => {
+  if (reducedMotion.matches || event.pointerType === 'touch') return;
+  elements.loginView.style.setProperty('--login-pointer-x', `${event.clientX}px`);
+  elements.loginView.style.setProperty('--login-pointer-y', `${event.clientY}px`);
 });
 
 document.querySelector('#logout-button').addEventListener('click', async () => {
@@ -1918,6 +2045,17 @@ elements.vacationContent.addEventListener('click', event => {
 elements.accountMenuButton.addEventListener('click', event => {
   event.stopPropagation();
   toggleAccountMenu();
+});
+elements.themeToggle.addEventListener('click', () => {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  if (!reducedMotion.matches) {
+    animate(elements.themeToggle.querySelector('.theme-switch'), {
+      scale: [{ to: 1.08 }, { to: 1 }],
+      duration: 360,
+      ease: 'out(4)'
+    });
+  }
 });
 document.addEventListener('click', event => {
   if (!event.target.closest('.account-menu')) closeAccountMenu();

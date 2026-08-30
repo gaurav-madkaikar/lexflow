@@ -75,14 +75,14 @@ function WorkflowChart() {
   const completionRate = totals.received ? Math.round(totals.completed / totals.received * 100) : 0;
 
   return (
-    <section className="overflow-hidden rounded-[22px] border border-black/8 bg-white shadow-[0_1px_2px_rgba(29,29,31,0.03)]">
-      <header className="flex flex-wrap items-end justify-between gap-3 border-b border-black/8 px-5 py-4">
+    <section className="overflow-hidden rounded-[22px] border border-black/8 bg-white shadow-[0_1px_2px_rgba(29,29,31,0.03)] dark:border-white/10 dark:bg-[#111720] dark:shadow-[0_1px_0_rgba(255,255,255,0.03)]">
+      <header className="flex flex-wrap items-end justify-between gap-3 border-b border-black/8 px-5 py-4 dark:border-white/10">
         <div>
-          <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-neutral-500">Seven-day movement</p>
-          <h2 className="mt-1 text-lg font-semibold tracking-[-0.035em] text-neutral-950">Email flow trend</h2>
+          <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-neutral-500 dark:text-slate-400">Seven-day movement</p>
+          <h2 className="mt-1 text-lg font-semibold tracking-[-0.035em] text-neutral-950 dark:text-slate-100">Email flow trend</h2>
         </div>
-        <div className="flex flex-wrap items-center gap-4 text-xs font-semibold text-neutral-600" aria-label="Chart legend">
-          <span className="rounded-full bg-[#f5f5f7] px-3 py-1.5 text-neutral-800">{completionRate}% completion</span>
+        <div className="flex flex-wrap items-center gap-4 text-xs font-semibold text-neutral-600 dark:text-slate-400" aria-label="Chart legend">
+          <span className="rounded-full bg-[#f5f5f7] px-3 py-1.5 text-neutral-800 dark:bg-[#202a38] dark:text-slate-200">{completionRate}% completion</span>
           <span className="flex items-center gap-2"><i className="size-2 rounded-full bg-[#0071e3]" />Received {totals.received}</span>
           <span className="flex items-center gap-2"><i className="size-2 rounded-full bg-[#5856d6]" />Completed {totals.completed}</span>
         </div>
