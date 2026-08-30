@@ -257,8 +257,9 @@ export async function syncMailbox({ db, source }) {
     const insertEmail = db.prepare(`
       INSERT OR IGNORE INTO emails
         (provider_id, subject, sender_name, sender_address, preview, received_at,
-         outlook_url, provider, mailbox_address, status, created_at, organization_id, department_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned', ?, ?, ?)
+         outlook_url, provider, mailbox_address, provider_conversation_id,
+         internet_message_id, status, created_at, organization_id, department_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned', ?, ?, ?)
     `);
     const updateEmail = db.prepare(`
       UPDATE emails
@@ -285,6 +286,8 @@ export async function syncMailbox({ db, source }) {
         webUrl,
         provider,
         mailboxAddress,
+        message.conversationId ?? null,
+        message.internetMessageId ?? null,
         now,
         organizationId,
         departmentId,

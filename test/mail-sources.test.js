@@ -504,6 +504,8 @@ test('Outlook delta sync keeps pagination, removal, and provider mapping intact'
       value: [
         {
           id: 'graph-1',
+          conversationId: 'thread-1',
+          internetMessageId: '<graph-1@example.test>',
           subject: 'Graph message',
           from: { emailAddress: { name: 'Graph Sender', address: 'sender@graph.test' } },
           bodyPreview: 'Graph preview',
@@ -532,6 +534,8 @@ test('Outlook delta sync keeps pagination, removal, and provider mapping intact'
   ]);
   assert.deepEqual(result.messages[0], {
     providerId: 'outlook:shared@example.test:graph-1',
+    conversationId: 'thread-1',
+    internetMessageId: '<graph-1@example.test>',
     provider: 'outlook',
     mailboxAddress: 'Shared@Example.Test',
     subject: 'Graph message',
@@ -546,6 +550,10 @@ test('Outlook delta sync keeps pagination, removal, and provider mapping intact'
   assert.equal(result.messages[1].senderName, 'Unknown sender');
   const graphCalls = calls.filter(call => call.url.startsWith('https://graph.microsoft.com/'));
   assert.equal(graphCalls.length, 2);
+  assert.equal(
+    new URL(graphCalls[0].url).searchParams.get('$select'),
+    'id,conversationId,internetMessageId,subject,from,receivedDateTime,bodyPreview,webLink',
+  );
   assert.ok(graphCalls.every(call => call.options.headers.authorization === 'Bearer graph-access'));
   assert.ok(graphCalls.every(call => call.options.headers.prefer === 'IdType="ImmutableId"'));
 });

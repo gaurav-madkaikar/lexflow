@@ -63,6 +63,8 @@ const demoMessages = [
 function mapGraphMessage(item, mailbox) {
   return {
     providerId: `outlook:${mailbox.toLocaleLowerCase()}:${item.id}`,
+    conversationId: item.conversationId || null,
+    internetMessageId: item.internetMessageId || null,
     provider: 'outlook',
     mailboxAddress: mailbox,
     subject: item.subject || '(No subject)',
@@ -120,7 +122,7 @@ export class GraphMailSource {
 
   async fetchChanges(cursor) {
     const token = await this.accessToken();
-    let url = cursor || `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(this.mailbox)}/mailFolders/inbox/messages/delta?$select=id,subject,from,receivedDateTime,bodyPreview,webLink`;
+    let url = cursor || `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(this.mailbox)}/mailFolders/inbox/messages/delta?$select=id,conversationId,internetMessageId,subject,from,receivedDateTime,bodyPreview,webLink`;
     let nextCursor = cursor;
     let receivedDeltaLink = false;
     const messages = [];
