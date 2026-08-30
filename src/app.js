@@ -238,7 +238,12 @@ function pendingTaskSummary(db, user, unreadNotifications) {
         WHEN ? IS NOT NULL AND status = 'unassigned' AND department_id = ?
         THEN 1 ELSE 0
       END) AS unassigned_department
-    FROM emails
+    FROM (
+      SELECT status, assignee_id, department_id, organization_id FROM conversations
+      UNION ALL
+      SELECT status, assignee_id, department_id, organization_id
+      FROM emails WHERE conversation_id IS NULL
+    ) AS workflow_tasks
     WHERE organization_id = ?
   `).get(
     user.id,

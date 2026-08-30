@@ -77,6 +77,12 @@ OrgAdmins are responsible for ensuring members have the appropriate Full Access 
 - The last active OrgAdmin cannot be disabled or demoted.
 - Microsoft Graph synchronization runs automatically. DepAdmins do not configure Graph credentials, and LexFlow does not add per-user credentials to `.env`.
 
+## Conversation tasks
+
+LexFlow groups Outlook messages by the native Microsoft Graph `conversationId` within the organization, department, and shared mailbox. Inbox, assigned, completed, alert, and overview counts therefore represent conversation tasks rather than individual replies. A thread can be expanded in place to inspect its messages chronologically, and each message retains its own Open in Outlook action.
+
+A new provider message appended to a completed conversation reopens the task. LexFlow first restores the previous assignee when that member is still active in the department, then evaluates the department's current automation rules, and otherwise leaves the conversation unassigned for the DepAdmin. Updates or replayed delta pages for an existing provider message do not reopen work. Migration/backfill constructs conversation history without emitting reopen notifications; back up the SQLite database before deploying a schema upgrade.
+
 ## Metrics
 
 Every role has a tenant-safe **Metrics** module:
@@ -86,7 +92,7 @@ Every role has a tenant-safe **Metrics** module:
 - DepAdmins see assignment outcomes, employee workload, and automation-rule performance for their current department only.
 - Members see only their own assignments, completions, and handling-time trend.
 
-Metrics use append-only reporting events. Existing organization and task records are backfilled only where their stored timestamps provide reliable evidence; the UI labels older ranges as partial rather than inventing missing history. Date boundaries, daily/weekly/monthly buckets, and SLA status use the organization's configured IANA timezone. Chart.js is bundled and served locally, and every plot includes an exact data-table alternative.
+Metrics use append-only reporting events and conversation assignment cycles. Existing organization and task records are backfilled only where their stored timestamps provide reliable evidence; the UI labels older ranges as partial rather than inventing missing history. Assignment-source totals include explicit Manual assignment, Reopened to previous assignee, and Historical / unknown source categories where applicable, so the breakdown reconciles with the assignment summary without guessing old rule attribution. Date boundaries, daily/weekly/monthly buckets, and SLA status use the organization's configured IANA timezone. Chart.js is bundled and served locally, and every plot includes an exact data-table alternative.
 
 ## Verification
 

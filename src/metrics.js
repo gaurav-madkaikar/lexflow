@@ -561,6 +561,15 @@ function rulePerformance(db, organizationId, departmentId, period, endpoint, gro
     resolutionTimes: [],
     source: 'rule',
   }]));
+  const reopenedCycles = db.prepare(`
+    SELECT assignee_id, started_at, completed_at
+    FROM assignment_cycles
+    WHERE organization_id = ? AND department_id = ?
+      AND assignment_source = 'reopen_previous'
+      AND started_at >= ? AND started_at < ?
+    ORDER BY started_at, id
+  `).all(organizationId, departmentId, period.from, endpoint);
+  const reopenedKeys = new Set(reopenedCycles.map(cycle => `${cycle.assignee_id ?? ''}|${cycle.started_at}`));
   for (const attribution of attributions) {
     const linked = taskByEvent.get(Number(attribution.task_event_id));
     const currentKey = attribution.rule_id == null ? null : `rule:${Number(attribution.rule_id)}`;
@@ -593,6 +602,7 @@ function rulePerformance(db, organizationId, departmentId, period, endpoint, gro
     for (const event of events) {
       if (event.assignment_source !== 'manual' || !['assigned', 'reassigned'].includes(event.event_type)
         || !inRange(event.occurred_at, period, endpoint)) continue;
+      if (reopenedKeys.has(`${event.assignee_id ?? ''}|${event.occurred_at}`)) continue;
       manual.assignments += 1;
       const completion = completionBefore(events, endpoint);
       if (completion) {
@@ -602,6 +612,16 @@ function rulePerformance(db, organizationId, departmentId, period, endpoint, gro
     }
   }
   if (manual.assignments) rows.set('manual', manual);
+  if (reopenedCycles.length) rows.set('reopen-previous', {
+    id: 'reopen-previous',
+    label: 'Reopened to previous assignee',
+    assignments: reopenedCycles.length,
+    completed: reopenedCycles.filter(cycle => cycle.completed_at != null).length,
+    resolutionTimes: reopenedCycles
+      .filter(cycle => cycle.completed_at != null)
+      .map(cycle => elapsed(cycle.started_at, cycle.completed_at)),
+    source: 'reopen_previous',
+  });
   const historical = {
     id: 'historical-unknown', label: 'Historical / unknown source', assignments: 0, completed: 0,
     resolutionTimes: [], source: 'historical_unknown',
