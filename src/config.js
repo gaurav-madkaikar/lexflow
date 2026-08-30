@@ -56,14 +56,15 @@ export function loadConfig(env = process.env) {
     throw new RangeError('SYNC_INTERVAL_SECONDS must be 0 or between 60 and 86400');
   }
 
-  const graph = {
-    tenantId: String(env.GRAPH_TENANT_ID ?? '').trim(),
-    clientId: String(env.GRAPH_CLIENT_ID ?? '').trim(),
-    clientSecret: String(env.GRAPH_CLIENT_SECRET ?? '').trim(),
-    mailbox: String(env.GRAPH_MAILBOX ?? '').trim()
-  };
-
   const appBaseUrl = applicationBaseUrl(env, port);
+  const entraClientId = String(env.ENTRA_CLIENT_ID ?? '').trim();
+  const entraClientSecret = String(env.ENTRA_CLIENT_SECRET ?? '').trim();
+  const entraParts = [entraClientId, entraClientSecret];
+  const suppliedEntraParts = entraParts.filter(Boolean).length;
+  if (suppliedEntraParts > 0 && suppliedEntraParts !== entraParts.length) {
+    throw new Error('ENTRA_CLIENT_ID and ENTRA_CLIENT_SECRET must be configured together');
+  }
+  const entraConfigured = suppliedEntraParts === entraParts.length;
   const googleClientId = String(env.GOOGLE_CLIENT_ID ?? '').trim();
   const googleClientSecret = String(env.GOOGLE_CLIENT_SECRET ?? '').trim();
   const tokenEncryptionKeyRaw = String(env.TOKEN_ENCRYPTION_KEY ?? '').trim();
@@ -76,8 +77,7 @@ export function loadConfig(env = process.env) {
   }
   const gmailConfigured = suppliedGmailParts === gmailParts.length;
   const tokenEncryptionKey = encryptionKey(tokenEncryptionKeyRaw);
-  const graphConfigured = Object.values(graph).every(Boolean);
-  const mode = graphConfigured
+  const mode = entraConfigured
     ? (gmailConfigured ? 'mixed' : 'graph')
     : (gmailConfigured ? 'gmail' : 'demo');
 
@@ -86,7 +86,19 @@ export function loadConfig(env = process.env) {
     databasePath: String(env.DATABASE_PATH ?? '').trim() || 'data/lexflow.db',
     syncIntervalSeconds,
     mode,
-    graph,
+    entra: {
+      configured: entraConfigured,
+      clientId: entraClientId,
+      clientSecret: entraClientSecret,
+      authority: String(env.ENTRA_AUTHORITY ?? 'https://login.microsoftonline.com/organizations').trim(),
+      redirectUri: `${appBaseUrl}/api/auth/outlook/callback`,
+    },
+    outlook: {
+      configured: entraConfigured,
+      clientId: entraClientId,
+      clientSecret: entraClientSecret,
+      redirectUri: `${appBaseUrl}/api/integrations/outlook/callback`,
+    },
     gmail: {
       configured: gmailConfigured,
       clientId: googleClientId,
@@ -94,11 +106,6 @@ export function loadConfig(env = process.env) {
       redirectUri: `${appBaseUrl}/api/integrations/gmail/callback`,
       tokenEncryptionKey
     },
-    liveMailConfigured: graphConfigured || gmailConfigured,
-    bootstrapPasswords: {
-      admin: String(env.BOOTSTRAP_ADMIN_PASSWORD ?? ''),
-      maya: String(env.BOOTSTRAP_MAYA_PASSWORD ?? ''),
-      priya: String(env.BOOTSTRAP_PRIYA_PASSWORD ?? '')
-    }
+    liveMailConfigured: entraConfigured || gmailConfigured,
   };
 }

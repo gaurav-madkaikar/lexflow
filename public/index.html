@@ -12,6 +12,7 @@
   <svg class="icon-sprite" aria-hidden="true">
     <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
     <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="icon-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
     <symbol id="icon-inbox" viewBox="0 0 24 24"><path d="M5 4h14l2 11v5H3v-5L5 4Z"/><path d="M3.5 15h4.3l1.7 2.5h5L16.2 15h4.3"/></symbol>
     <symbol id="icon-assigned" viewBox="0 0 24 24"><path d="M5 12h12M13 8l4 4-4 4"/><path d="M5 5v14"/></symbol>
     <symbol id="icon-complete" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.7 2.7L16.5 9"/></symbol>
@@ -28,6 +29,7 @@
     <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></symbol>
     <symbol id="icon-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/></symbol>
     <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></symbol>
+    <symbol id="icon-metrics" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/><path d="m3 7 6-4 6 6 6-5"/></symbol>
   </svg>
 
   <a class="skip-link" id="skip-link" href="#main-content" hidden>Skip to main content</a>
@@ -56,19 +58,11 @@
         <p class="login-copy">Sign in to review and manage assigned email work.</p>
 
         <form id="login-form" novalidate>
-          <label class="field">
-            <span>Email address</span>
-            <input id="login-email" name="email" type="email" autocomplete="username" required>
-          </label>
-          <label class="field">
-            <span>Password</span>
-            <input id="login-password" name="password" type="password" autocomplete="current-password" minlength="8" required>
-          </label>
           <p class="form-error" id="login-error" role="alert" hidden></p>
-          <button class="button primary login-submit" type="submit"><span class="button-label" data-button-label>Sign in</span></button>
+          <button class="button primary login-submit" type="submit"><span class="button-label" data-button-label>Continue with Microsoft</span></button>
         </form>
 
-        <p class="demo-note">Local demo credentials are listed in the project README.</p>
+        <p class="demo-note">Use your organization’s enterprise Microsoft account.</p>
       </div>
     </div>
   </section>
@@ -78,9 +72,9 @@
 
     <aside class="side" id="sidebar" aria-label="Workspace navigation">
       <div class="brand side-brand">
-        <span class="logo" aria-hidden="true">L</span>
+        <span class="logo" id="sidebar-brand-logo" aria-hidden="true">L</span>
         <span class="brand-lockup">
-          <span class="brand-name">LexFlow</span>
+          <span class="brand-name" id="sidebar-brand-name">LexFlow</span>
           <small>Mailbox operations</small>
         </span>
         <button class="icon-button side-close" id="nav-close" type="button" aria-label="Close navigation">
@@ -89,9 +83,13 @@
       </div>
 
       <nav aria-label="Primary">
-        <div class="nav-section" id="admin-navigation" hidden>
+        <div class="nav-section" id="dep-admin-navigation" hidden>
           <p class="nav-label">Workspace</p>
           <div class="nav-list">
+            <button class="nav-item" type="button" data-view="overview">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-overview"></use></svg>
+              <span>Overview</span>
+            </button>
             <button class="nav-item" type="button" data-view="inbox">
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-inbox"></use></svg>
               <span>Inbox</span>
@@ -107,13 +105,10 @@
               <span>Completed</span>
               <span class="nav-badge" data-badge="completed">0</span>
             </button>
-          </div>
-
-          <div class="department-picker">
-            <label for="sidebar-department">Department</label>
-            <select id="sidebar-department">
-              <option value="All">All departments</option>
-            </select>
+            <button class="nav-item" type="button" data-view="metrics">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-metrics"></use></svg>
+              <span>Metrics</span>
+            </button>
           </div>
 
           <p class="nav-label">Management</p>
@@ -127,11 +122,35 @@
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-activity"></use></svg>
               <span>Activity</span>
             </button>
+            <button class="nav-item" type="button" data-view="notifications">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-bell"></use></svg>
+              <span>Notifications</span>
+              <span class="nav-badge" data-badge="notifications">0</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="nav-section" id="org-admin-navigation" hidden>
+          <p class="nav-label">Workspace administration</p>
+          <div class="nav-list">
             <button class="nav-item" type="button" data-view="settings">
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>
               <span>Settings</span>
             </button>
+            <button class="nav-item" type="button" data-view="departments">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-building"></use></svg>
+              <span>Team</span>
+            </button>
+            <button class="nav-item" type="button" data-view="metrics">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-metrics"></use></svg>
+              <span>Metrics</span>
+            </button>
           </div>
+        </div>
+
+        <div class="department-picker" hidden>
+          <label for="sidebar-department">Department</label>
+          <select id="sidebar-department"><option value="All">All departments</option></select>
         </div>
 
         <div class="nav-section" id="member-navigation" hidden>
@@ -147,10 +166,28 @@
               <span>Completed</span>
               <span class="nav-badge" data-badge="completed">0</span>
             </button>
+            <button class="nav-item" type="button" data-view="metrics">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-metrics"></use></svg>
+              <span>Metrics</span>
+            </button>
             <button class="nav-item" type="button" data-view="notifications">
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-bell"></use></svg>
               <span>Notifications</span>
               <span class="nav-badge" data-badge="notifications">0</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="nav-section" id="platform-navigation" hidden>
+          <p class="nav-label">Platform</p>
+          <div class="nav-list">
+            <button class="nav-item" type="button" data-view="platform">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-building"></use></svg>
+              <span>Organizations</span>
+            </button>
+            <button class="nav-item" type="button" data-view="metrics">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-metrics"></use></svg>
+              <span>Metrics</span>
             </button>
           </div>
         </div>
@@ -160,7 +197,7 @@
         <div class="mailbox-card">
           <div class="mailbox-state">
             <span class="connection-dot" aria-hidden="true"></span>
-            <strong id="sidebar-mode">Demo mailbox</strong>
+            <strong id="sidebar-mode">No mailbox connected</strong>
           </div>
           <p id="sidebar-sync">Waiting for first sync</p>
         </div>
@@ -181,9 +218,9 @@
             <svg class="icon" aria-hidden="true"><use href="#icon-menu"></use></svg>
           </button>
           <div class="topbar-brand">
-            <span class="logo" aria-hidden="true">L</span>
+            <span class="logo" id="topbar-brand-logo" aria-hidden="true">L</span>
             <div>
-              <p class="topbar-kicker">LexFlow</p>
+              <p class="topbar-kicker" id="topbar-brand-name">LexFlow</p>
               <h1 id="page-title" tabindex="-1">Unified intake</h1>
             </div>
           </div>
@@ -222,6 +259,85 @@
       <main class="content" id="main-content" tabindex="-1">
         <div class="status-banner" id="status-banner" role="alert" hidden></div>
 
+        <section class="metrics-page" id="metrics-page" aria-labelledby="metrics-page-title" hidden>
+          <header class="metrics-page-head">
+            <div>
+              <p class="card-kicker" id="metrics-page-kicker">Reporting</p>
+              <h2 id="metrics-page-title">Metrics</h2>
+              <p id="metrics-page-summary">Role-aware operational reporting.</p>
+            </div>
+            <div class="metrics-page-meta">
+              <span class="metrics-timezone" id="metrics-timezone">UTC</span>
+              <button class="button metrics-refresh" id="metrics-refresh" type="button">
+                <svg class="icon" aria-hidden="true"><use href="#icon-sync"></use></svg>
+                <span class="button-label" data-button-label>Refresh</span>
+              </button>
+            </div>
+          </header>
+
+          <form class="metrics-controls" id="metrics-filter-form">
+            <fieldset class="metrics-presets">
+              <legend>Date range</legend>
+              <div class="metrics-segmented" aria-label="Metrics date range">
+                <button type="button" data-metrics-preset="this-week">This week</button>
+                <button type="button" data-metrics-preset="30-days">Last 30 days</button>
+                <button type="button" data-metrics-preset="6-months">Last 6 months</button>
+                <button type="button" data-metrics-preset="custom">Custom</button>
+              </div>
+            </fieldset>
+            <div class="metrics-custom-range" id="metrics-custom-range" hidden>
+              <label class="field"><span>From</span><input id="metrics-from" name="from" type="date"></label>
+              <label class="field"><span>To</span><input id="metrics-to" name="to" type="date"></label>
+              <button class="button primary" type="submit"><span class="button-label" data-button-label>Apply</span></button>
+            </div>
+            <label class="field metrics-filter" id="metrics-department-field" hidden>
+              <span>Department</span>
+              <select id="metrics-department" name="departmentId"></select>
+            </label>
+            <label class="field metrics-filter" id="metrics-employee-field" hidden>
+              <span>Employee</span>
+              <select id="metrics-employee" name="employeeId"></select>
+            </label>
+          </form>
+
+          <div class="metrics-state" id="metrics-state" role="status" aria-live="polite" aria-atomic="true"></div>
+          <div class="metrics-completeness" id="metrics-completeness" hidden></div>
+          <div class="metrics-kpis" id="metrics-kpis" aria-label="Metrics summary"></div>
+
+          <div class="metrics-chart-grid" id="metrics-chart-grid">
+            <section class="card metrics-chart-card" id="metrics-chart-card-1" aria-labelledby="metrics-chart-title-1">
+              <header class="metrics-chart-head">
+                <div><p class="card-kicker">Trend</p><h3 id="metrics-chart-title-1"></h3><p id="metrics-chart-summary-1"></p></div>
+                <div class="metrics-chart-tabs" id="metrics-performance-tabs" hidden>
+                  <button type="button" data-metrics-view="employees">Employees</button>
+                  <button type="button" data-metrics-view="rules">Rules</button>
+                </div>
+              </header>
+              <div class="metrics-chart-legend" id="metrics-chart-legend-1" aria-label="Chart series"></div>
+              <div class="metrics-chart-empty" role="status" hidden>No data available for this period</div>
+              <div class="metrics-canvas-wrap"><canvas id="metrics-chart-1" aria-hidden="true"></canvas></div>
+              <details class="metrics-data-disclosure"><summary>View data</summary><div class="metrics-data-table" id="metrics-data-table-1"></div></details>
+            </section>
+            <section class="card metrics-chart-card" id="metrics-chart-card-2" aria-labelledby="metrics-chart-title-2">
+              <header class="metrics-chart-head">
+                <div><p class="card-kicker">Breakdown</p><h3 id="metrics-chart-title-2"></h3><p id="metrics-chart-summary-2"></p></div>
+                <div class="metrics-chart-tabs" id="metrics-performance-tabs-2" hidden>
+                  <button type="button" data-metrics-view="employees">Employees</button>
+                  <button type="button" data-metrics-view="rules">Rules</button>
+                </div>
+              </header>
+              <div class="metrics-chart-legend" id="metrics-chart-legend-2" aria-label="Chart series"></div>
+              <div class="metrics-chart-empty" role="status" hidden>No data available for this period</div>
+              <div class="metrics-canvas-wrap"><canvas id="metrics-chart-2" aria-hidden="true"></canvas></div>
+              <details class="metrics-data-disclosure"><summary>View data</summary><div class="metrics-data-table" id="metrics-data-table-2"></div></details>
+            </section>
+          </div>
+          <section class="card metrics-detail-panel" id="metrics-detail-panel" aria-labelledby="metrics-detail-title" hidden>
+            <header class="metrics-detail-head"><div><p class="card-kicker">Details</p><h3 id="metrics-detail-title">Reporting details</h3></div></header>
+            <div class="metrics-detail-content" id="metrics-detail-content"></div>
+          </section>
+        </section>
+
         <section class="dashboard-hero" id="dashboard-hero" aria-labelledby="hero-title">
           <div class="hero-actions">
             <time class="hero-date" id="hero-date">
@@ -249,7 +365,7 @@
           </div>
 
           <div class="hero-copy">
-            <span class="mode-chip" id="mode-chip">Demo mailbox</span>
+            <span class="mode-chip" id="mode-chip">No mailbox connected</span>
             <p class="eyebrow" id="hero-eyebrow">Today’s workflow</p>
             <h2 id="hero-title">Keep every email moving.</h2>
             <p id="hero-summary">Loading the latest mailbox activity…</p>
@@ -279,6 +395,10 @@
               <span class="count-chip" id="email-count" role="status" aria-live="polite" aria-atomic="true">0 emails</span>
             </div>
             <div class="email-list" id="email-list"></div>
+            <footer class="overview-card-footer" id="inbox-overview-footer" hidden>
+              <span id="inbox-overview-summary">Showing all 0</span>
+              <button class="small-button" type="button" data-overview-view="inbox" hidden>View all 0</button>
+            </footer>
           </section>
 
           <aside class="right-rail" id="right-rail" aria-label="Workspace details">
@@ -295,6 +415,10 @@
                 </button>
               </div>
               <div id="rule-list"></div>
+              <footer class="overview-card-footer" id="rules-overview-footer" hidden>
+                <span id="rules-overview-summary">Showing all 0</span>
+                <button class="small-button" type="button" data-overview-view="rules" hidden>View all 0</button>
+              </footer>
             </section>
 
             <section class="card panel" id="activity-panel" aria-labelledby="activity-title" hidden>
@@ -319,25 +443,112 @@
               <div class="notification-list" id="notification-list"></div>
             </section>
 
+            <section class="card panel" id="platform-panel" aria-labelledby="platform-title" hidden>
+              <div class="card-head">
+                <div>
+                  <p class="card-kicker">Platform administration</p>
+                  <h2 id="platform-title">Organizations</h2>
+                  <p>Configure customer tenants and preserve their data through reversible archiving.</p>
+                </div>
+                <button class="small-button" id="new-organization-button" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg>
+                  <span>New organization</span>
+                </button>
+              </div>
+              <form class="organization-form" id="organization-form" novalidate hidden>
+                <input name="id" type="hidden">
+                <div class="settings-form-grid">
+                  <label class="field"><span>Name</span><input name="name" maxlength="120" required></label>
+                  <label class="field"><span>Domain</span><input name="domain" maxlength="253" placeholder="example.com" required></label>
+                  <label class="field"><span>Entra tenant ID</span><input name="entraTenantId" maxlength="36" required></label>
+                  <label class="field"><span>Initial OrgAdmin email</span><input name="initialAdminEmail" type="email" required></label>
+                  <label class="field"><span>Logo <em>optional PNG, JPG, or WebP</em></span><input name="logo" type="file" accept="image/png,image/jpeg,image/webp"></label>
+                </div>
+                <p class="form-error" id="organization-error" role="alert" hidden></p>
+                <div class="settings-actions">
+                  <button class="button" id="cancel-organization-button" type="button">Cancel</button>
+                  <button class="button primary" type="submit"><span class="button-label" data-button-label>Create organization</span></button>
+                </div>
+              </form>
+              <div class="organization-list" id="organization-list"></div>
+            </section>
+
+            <section class="card panel" id="departments-panel" aria-labelledby="departments-panel-title" hidden>
+              <div class="card-head">
+                <div>
+                  <p class="card-kicker">Workspace</p>
+                  <h2 id="departments-panel-title">Team</h2>
+                  <p>Manage people, department shared mailboxes, and department administrators.</p>
+                </div>
+              </div>
+              <div class="team-management-tools">
+                <section class="team-management-tool" aria-labelledby="team-add-member-title">
+                  <div class="team-tool-heading"><h3 id="team-add-member-title">Add a person</h3><p>Pre-provision their corporate email before first sign-in.</p></div>
+                  <form class="department-form" id="member-form" novalidate>
+                    <label class="field"><span>Corporate email</span><input name="email" type="email" required></label>
+                    <label class="field"><span>Role</span><select name="role"><option value="member">Member</option><option value="org_admin">OrgAdmin</option></select></label>
+                    <button class="button" type="submit"><span class="button-label" data-button-label>Add person</span></button>
+                  </form>
+                  <p class="form-error" id="member-error" role="alert" hidden></p>
+                </section>
+                <section class="team-management-tool" aria-labelledby="team-add-department-title">
+                  <div class="team-tool-heading"><h3 id="team-add-department-title">Add a department</h3><p>Every department requires one shared mailbox.</p></div>
+                  <form class="department-form department-management-form" id="department-management-form" novalidate>
+                    <label class="field"><span>Department name</span><input name="name" maxlength="60" required></label>
+                    <label class="field"><span>Shared mailbox</span><input name="sharedMailbox" type="email" placeholder="support@example.com" required></label>
+                    <button class="button primary" type="submit"><span class="button-label" data-button-label>Add department</span></button>
+                  </form>
+                  <p class="form-error" id="department-management-error" role="alert" hidden></p>
+                </section>
+              </div>
+              <div class="department-management-list" id="department-management-list"></div>
+            </section>
+
             <section class="card panel settings-panel" id="settings-panel" aria-labelledby="settings-title" hidden>
               <div class="card-head settings-head">
                 <div>
                   <p class="card-kicker">Administration</p>
                   <h2 id="settings-title">Workflow controls</h2>
-                  <p>Email connections, departments, and response windows</p>
+                  <p>Organization profile, administrators, Graph integration, and response windows</p>
                 </div>
               </div>
               <div class="settings-sections">
+                <section class="settings-section organization-profile-section" aria-labelledby="organization-profile-title">
+                  <div class="section-heading">
+                    <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-building"></use></svg></span>
+                    <div><h3 id="organization-profile-title" tabindex="-1">Organization profile</h3><p>Keep the identity shown to your team current.</p></div>
+                  </div>
+                  <form id="organization-profile-form" novalidate>
+                    <div class="settings-form-grid">
+                      <label class="field"><span>Name</span><input name="name" maxlength="120" required></label>
+                      <label class="field"><span>Approved email domain</span><input name="domain" maxlength="253" required></label>
+                      <label class="field"><span>Reporting timezone</span><input name="timezone" list="timezone-options" maxlength="80" autocomplete="off" required><small>Use an IANA timezone such as Asia/Kolkata.</small></label>
+                      <label class="field"><span>Logo <em>optional PNG, JPG, or WebP</em></span><input name="logo" type="file" accept="image/png,image/jpeg,image/webp"></label>
+                    </div>
+                    <datalist id="timezone-options"><option value="UTC"><option value="Asia/Kolkata"><option value="Europe/London"><option value="America/New_York"><option value="America/Los_Angeles"><option value="Australia/Sydney"></datalist>
+                    <p class="form-error" id="organization-profile-error" role="alert" hidden></p>
+                    <div class="settings-actions"><button class="button primary" type="submit"><span class="button-label" data-button-label>Save organization</span></button></div>
+                  </form>
+                </section>
+
+                <section class="settings-section member-management-section" aria-labelledby="member-management-title">
+                  <div class="section-heading">
+                    <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-assigned"></use></svg></span>
+                    <div class="section-heading-copy"><h3 id="member-management-title">Administrators</h3><p>Active OrgAdmins with organization-wide management access.</p></div>
+                    <button class="button section-link" type="button" data-view-link="departments">Manage team</button>
+                  </div>
+                  <div class="settings-summary-list" id="settings-admin-list"></div>
+                </section>
+
                 <section class="settings-section integration-section" aria-labelledby="integrations-title">
                   <div class="section-heading">
                     <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-mail"></use></svg></span>
                     <div>
-                      <h3 id="integrations-title" tabindex="-1">Email connections</h3>
-                      <p>Connect inboxes that feed the unified work queue.</p>
+                      <h3 id="integrations-title" tabindex="-1">Microsoft Graph integration</h3>
+                      <p>Connect Microsoft Graph once to synchronize this organization's department shared mailboxes.</p>
                     </div>
                   </div>
                   <div class="integration-list" id="integration-list"></div>
-                  <p class="integration-feedback" id="integration-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
                 </section>
 
                 <section class="settings-section timing-section" aria-labelledby="timing-title">
@@ -371,20 +582,13 @@
                 <section class="settings-section" aria-labelledby="departments-title">
                   <div class="section-heading">
                     <span class="section-mark" aria-hidden="true"><svg class="icon"><use href="#icon-building"></use></svg></span>
-                    <div>
-                      <h3 id="departments-title">Departments and team</h3>
-                      <p>Add a department, then place existing members in it.</p>
+                    <div class="section-heading-copy">
+                      <h3 id="departments-title">Department leads</h3>
+                      <p>DepAdmins responsible for each shared mailbox workflow.</p>
                     </div>
+                    <button class="button section-link" type="button" data-view-link="departments">Manage team</button>
                   </div>
-                  <form class="department-form" id="department-form" novalidate>
-                    <label class="field">
-                      <span>New department</span>
-                      <input name="name" maxlength="60" autocomplete="off" placeholder="Compliance" required>
-                    </label>
-                    <button class="button" type="submit"><span class="button-label" data-button-label>Add department</span></button>
-                  </form>
-                  <p class="form-error" id="department-error" role="alert" hidden></p>
-                  <div class="team-list" id="team-department-list"></div>
+                  <div class="settings-summary-list" id="department-leads-list"></div>
                 </section>
               </div>
             </section>
@@ -397,7 +601,7 @@
   <dialog class="dialog rule-dialog" id="rule-dialog" aria-labelledby="rule-dialog-title" aria-describedby="rule-form-help">
     <div class="dialog-head">
       <div>
-        <p class="eyebrow" id="rule-dialog-eyebrow">Admin only</p>
+        <p class="eyebrow" id="rule-dialog-eyebrow">DepAdmin only</p>
         <h2 id="rule-dialog-title">Create automation rule</h2>
       </div>
       <button class="icon-button dialog-close" type="button" data-close-dialog="rule-dialog" aria-label="Close rule dialog">
@@ -427,7 +631,12 @@
         </label>
         <label class="field">
           <span>Priority</span>
-          <input name="priority" type="number" min="1" max="999" value="30" required>
+          <select name="priority" required>
+            <option value="40">Low</option>
+            <option value="30" selected>Medium</option>
+            <option value="20">High</option>
+            <option value="10">Critical</option>
+          </select>
         </label>
       </div>
       <p class="form-error" id="rule-error" role="alert" hidden></p>
@@ -467,6 +676,7 @@
         <p id="email-detail-preview"></p>
       </div>
       <p class="completion-note" id="email-completion-note" hidden></p>
+      <p class="form-error email-link-error" id="email-link-error" role="alert" hidden></p>
     </div>
     <div class="dialog-actions detail-actions">
       <a class="button" id="outlook-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Open email</a>
@@ -475,7 +685,8 @@
     </div>
   </dialog>
 
-  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/app.js"></script>
+  <div class="toast-region" id="toast-region" aria-label="Notifications"></div>
+  <script src="/vendor/chart.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

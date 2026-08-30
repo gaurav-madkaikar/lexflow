@@ -19,6 +19,10 @@ const MAX_RATE_LIMIT_RETRIES = 2;
 const MAX_RETRY_AFTER_MS = 30_000;
 const ENCRYPTION_AAD = Buffer.from('lexflow:gmail-refresh-token:v1');
 
+function scopedKey(key, organizationId = 1) {
+  return Number(organizationId) === 1 ? key : `organization:${organizationId}:${key}`;
+}
+
 function defaultDelay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
@@ -204,6 +208,7 @@ export class GmailMailSource {
 
   constructor({
     accountEmail,
+    organizationId = 1,
     clientId,
     clientSecret,
     refreshToken,
@@ -215,6 +220,7 @@ export class GmailMailSource {
   }) {
     Object.assign(this, {
       accountEmail,
+      organizationId,
       clientId,
       fetchImpl,
       requestTimeoutMs,
@@ -490,7 +496,7 @@ export function createGmailIntegration({
   function requireAdminSession(sessionId) {
     const session = typeof sessionId === 'string' && sessionId
       ? db.prepare(`
-          SELECT users.role, sessions.expires_at
+          SELECT users.role, sessions.organization_id, sessions.expires_at
           FROM sessions
           JOIN users ON users.id = sessions.user_id
           WHERE sessions.id = ?
@@ -503,13 +509,14 @@ export function createGmailIntegration({
     if (session.role !== 'admin') {
       throw integrationError(403, 'FORBIDDEN', 'Administrator access is required.');
     }
+    return session;
   }
 
-  function clearSyncState() {
-    const remove = db.prepare('DELETE FROM sync_state WHERE key = ?');
-    remove.run(GMAIL_CURSOR_KEY);
-    remove.run(GMAIL_LAST_SUCCESS_KEY);
-    remove.run(GMAIL_LAST_ERROR_KEY);
+  function clearSyncState(organizationId = 1) {
+    const remove = db.prepare('DELETE FROM sync_state WHERE key = ? AND organization_id = ?');
+    remove.run(scopedKey(GMAIL_CURSOR_KEY, organizationId), organizationId);
+    remove.run(scopedKey(GMAIL_LAST_SUCCESS_KEY, organizationId), organizationId);
+    remove.run(scopedKey(GMAIL_LAST_ERROR_KEY, organizationId), organizationId);
   }
 
   async function fetchProfile(accessToken) {
@@ -560,33 +567,37 @@ export function createGmailIntegration({
     cachedSourceVersion = null;
   }
 
-  function status() {
+  function status(organizationId = null) {
+    const scopedOrganizationId = organizationId == null ? null : Number(organizationId);
     const connection = db.prepare(`
-      SELECT account_email, connected_at, updated_at
+      SELECT account_email, connected_at, updated_at, organization_id
       FROM gmail_connection
-      WHERE id = 1
-    `).get();
+      WHERE id = 1 ${scopedOrganizationId == null ? '' : 'AND organization_id = ?'}
+    `).get(...(scopedOrganizationId == null ? [] : [scopedOrganizationId]));
+    const statusOrganizationId = scopedOrganizationId ?? connection?.organization_id ?? 1;
     const syncValues = Object.fromEntries(
       db.prepare(`
         SELECT key, value FROM sync_state
-        WHERE key IN (?, ?)
-      `).all(GMAIL_LAST_SUCCESS_KEY, GMAIL_LAST_ERROR_KEY).map(row => [row.key, row.value]),
+        WHERE organization_id = ? AND key IN (?, ?)
+      `).all(statusOrganizationId,
+        scopedKey(GMAIL_LAST_SUCCESS_KEY, statusOrganizationId),
+        scopedKey(GMAIL_LAST_ERROR_KEY, statusOrganizationId)).map(row => [row.key, row.value]),
     );
     const connected = configured && Boolean(connection);
     return {
       configured,
       connected,
       accountEmail: connected ? connection.account_email : null,
-      lastSuccessAt: connected ? (syncValues[GMAIL_LAST_SUCCESS_KEY] ?? null) : null,
+      lastSuccessAt: connected ? (syncValues[scopedKey(GMAIL_LAST_SUCCESS_KEY, statusOrganizationId)] ?? null) : null,
       lastError: connected
-        ? (safeErrorMessage(syncValues[GMAIL_LAST_ERROR_KEY]) || null)
+        ? (safeErrorMessage(syncValues[scopedKey(GMAIL_LAST_ERROR_KEY, statusOrganizationId)]) || null)
         : null,
     };
   }
 
   function authorizationUrl({ sessionId } = {}) {
     requireConfigured();
-    requireAdminSession(sessionId);
+    const session = requireAdminSession(sessionId);
     const state = randomBytes(32).toString('base64url');
     const digest = createHash('sha256').update(state).digest('hex');
     const now = nowFrom(clock);
@@ -595,9 +606,9 @@ export function createGmailIntegration({
       db.prepare('DELETE FROM gmail_oauth_states WHERE expires_at <= ?').run(now.toISOString());
       db.prepare('DELETE FROM gmail_oauth_states WHERE session_id = ?').run(sessionId);
       db.prepare(`
-        INSERT INTO gmail_oauth_states (state_digest, session_id, expires_at)
-        VALUES (?, ?, ?)
-      `).run(digest, sessionId, expiresAt);
+        INSERT INTO gmail_oauth_states (state_digest, session_id, expires_at, organization_id)
+        VALUES (?, ?, ?, ?)
+      `).run(digest, sessionId, expiresAt, session.organization_id);
     });
 
     const url = new URL(AUTHORIZATION_ENDPOINT);
@@ -621,15 +632,17 @@ export function createGmailIntegration({
 
     const digest = createHash('sha256').update(state).digest('hex');
     const now = nowFrom(clock);
+    let savedOrganizationId;
     runTransaction(db, () => {
       const saved = db.prepare(`
-        SELECT session_id, expires_at
+        SELECT session_id, expires_at, organization_id
         FROM gmail_oauth_states
         WHERE state_digest = ?
       `).get(digest);
       if (!saved || saved.session_id !== sessionId || saved.expires_at <= now.toISOString()) {
         throw integrationError(400, 'INVALID_OAUTH_STATE', 'The Gmail authorization request is invalid or expired.');
       }
+      savedOrganizationId = saved.organization_id;
       db.prepare('DELETE FROM gmail_oauth_states WHERE state_digest = ?').run(digest);
     });
     if (typeof code !== 'string' || !code || code.length > 4096) {
@@ -686,34 +699,35 @@ export function createGmailIntegration({
     runTransaction(db, () => {
       db.prepare(`
         INSERT INTO gmail_connection
-          (id, account_email, encrypted_refresh_token, connected_at, updated_at)
-        VALUES (1, ?, ?, ?, ?)
+          (id, account_email, encrypted_refresh_token, connected_at, updated_at, organization_id)
+        VALUES (1, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           account_email = excluded.account_email,
           encrypted_refresh_token = excluded.encrypted_refresh_token,
           connected_at = excluded.connected_at,
-          updated_at = excluded.updated_at
-      `).run(accountEmail, encryptedRefreshToken, timestamp, timestamp);
-      clearSyncState();
+          updated_at = excluded.updated_at,
+          organization_id = excluded.organization_id
+      `).run(accountEmail, encryptedRefreshToken, timestamp, timestamp, savedOrganizationId ?? 1);
+      clearSyncState(savedOrganizationId ?? 1);
     });
     invalidateCachedSource();
-    return status();
+    return status(savedOrganizationId ?? 1);
   }
 
   function completeAuthorization(options) {
     return mutateConnection(() => completeAuthorizationNow(options));
   }
 
-  async function disconnectNow() {
+  async function disconnectNow({ organizationId = null } = {}) {
     disconnecting = true;
     invalidateCachedSource();
     try {
       const connection = configured
         ? db.prepare(`
-            SELECT encrypted_refresh_token
+            SELECT encrypted_refresh_token, organization_id
             FROM gmail_connection
-            WHERE id = 1
-          `).get()
+            WHERE id = 1 ${organizationId == null ? '' : 'AND organization_id = ?'}
+          `).get(...(organizationId == null ? [] : [organizationId]))
         : null;
       let refreshToken = null;
       if (connection) {
@@ -725,24 +739,26 @@ export function createGmailIntegration({
       }
       if (refreshToken) await revokeRefreshToken(refreshToken);
       runTransaction(db, () => {
-        db.prepare('DELETE FROM gmail_connection WHERE id = 1').run();
-        db.prepare('DELETE FROM gmail_oauth_states').run();
-        clearSyncState();
+        db.prepare(`DELETE FROM gmail_connection WHERE id = 1 ${organizationId == null ? '' : 'AND organization_id = ?'}`)
+          .run(...(organizationId == null ? [] : [organizationId]));
+        db.prepare(`DELETE FROM gmail_oauth_states ${organizationId == null ? '' : 'WHERE organization_id = ?'}`)
+          .run(...(organizationId == null ? [] : [organizationId]));
+        clearSyncState(connection?.organization_id ?? 1);
       });
-      return status();
+      return status(connection?.organization_id ?? organizationId ?? 1);
     } finally {
       disconnecting = false;
     }
   }
 
-  function disconnect() {
-    return mutateConnection(disconnectNow);
+  function disconnect(options) {
+    return mutateConnection(() => disconnectNow(options));
   }
 
   function sources() {
     if (!configured || disconnecting) return [];
     const connection = db.prepare(`
-      SELECT account_email, encrypted_refresh_token, updated_at
+      SELECT account_email, encrypted_refresh_token, updated_at, organization_id
       FROM gmail_connection
       WHERE id = 1
     `).get();
@@ -755,7 +771,7 @@ export function createGmailIntegration({
     const isCurrentConnection = () => {
       if (sourceGeneration !== connectionGeneration) return false;
       const current = db.prepare(`
-        SELECT account_email, encrypted_refresh_token, updated_at
+        SELECT account_email, encrypted_refresh_token, updated_at, organization_id
         FROM gmail_connection
         WHERE id = 1
       `).get();
@@ -764,10 +780,12 @@ export function createGmailIntegration({
         && current.account_email.toLocaleLowerCase() === connection.account_email.toLocaleLowerCase()
         && current.encrypted_refresh_token === connection.encrypted_refresh_token
         && current.updated_at === connection.updated_at
+        && current.organization_id === connection.organization_id
       );
     };
     cachedSource = new GmailMailSource({
       accountEmail: connection.account_email,
+      organizationId: connection.organization_id,
       clientId: settings.clientId,
       clientSecret: settings.clientSecret,
       refreshToken,

@@ -5,11 +5,9 @@ import { loadConfig } from '../src/config.js';
 
 const encryptionKey = Buffer.alloc(32, 0x2a).toString('base64');
 
-const graphEnv = {
-  GRAPH_TENANT_ID: 'tenant-id',
-  GRAPH_CLIENT_ID: 'graph-client-id',
-  GRAPH_CLIENT_SECRET: 'graph-client-secret',
-  GRAPH_MAILBOX: 'shared@example.test',
+const entraEnv = {
+  ENTRA_CLIENT_ID: 'entra-client-id',
+  ENTRA_CLIENT_SECRET: 'entra-client-secret',
 };
 
 const gmailEnv = {
@@ -49,17 +47,17 @@ test('complete Gmail settings enable OAuth with an exact redirect origin', () =>
   );
 });
 
-test('Outlook and Gmail settings can coexist', () => {
-  const config = loadConfig({ ...graphEnv, ...gmailEnv });
+test('Microsoft 365 tenant connections use the Entra application credentials', () => {
+  const config = loadConfig({ ...entraEnv, ...gmailEnv, APP_BASE_URL: 'https://lexflow.example.test' });
 
   assert.equal(config.mode, 'mixed');
   assert.equal(config.liveMailConfigured, true);
   assert.equal(config.gmail.configured, true);
-  assert.deepEqual(config.graph, {
-    tenantId: 'tenant-id',
-    clientId: 'graph-client-id',
-    clientSecret: 'graph-client-secret',
-    mailbox: 'shared@example.test',
+  assert.deepEqual(config.outlook, {
+    configured: true,
+    clientId: 'entra-client-id',
+    clientSecret: 'entra-client-secret',
+    redirectUri: 'https://lexflow.example.test/api/integrations/outlook/callback',
   });
 });
 

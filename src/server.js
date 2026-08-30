@@ -3,11 +3,10 @@ import { dirname, resolve } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { createApp } from './app.js';
 import { createAlertRunner } from './alerts.js';
-import { hashPassword } from './auth.js';
 import { loadConfig } from './config.js';
-import { createDatabase, seedDemoData } from './db.js';
+import { assertNoLocalAccounts, createDatabase } from './db.js';
 import { createGmailIntegration } from './gmail.js';
-import { createMailSource } from './mail-sources.js';
+import { createOutlookIntegration } from './outlook.js';
 import { createSyncRunner } from './workflows.js';
 
 if (existsSync('.env')) loadEnvFile('.env');
@@ -18,42 +17,14 @@ if (config.databasePath !== ':memory:') {
 }
 
 const db = createDatabase(config.databasePath);
-const userCount = Number(db.prepare('SELECT count(*) AS count FROM users').get().count);
-const passwords = config.liveMailConfigured
-  ? config.bootstrapPasswords
-  : { admin: 'admin123', maya: 'welcome123', priya: 'welcome123' };
-if (config.liveMailConfigured && Object.values(passwords).some(password => password.length < 8)) {
+assertNoLocalAccounts(db);
+if (!config.entra.configured) {
   db.close();
-  throw new Error('Live mail connections require all BOOTSTRAP_*_PASSWORD values (minimum 8 characters).');
-}
-if (userCount === 0 || config.liveMailConfigured) {
-  const [adminPasswordHash, mayaPasswordHash, priyaPasswordHash] = await Promise.all([
-    hashPassword(passwords.admin),
-    hashPassword(passwords.maya),
-    hashPassword(passwords.priya)
-  ]);
-  if (userCount === 0) {
-    seedDemoData(db, { adminPasswordHash, mayaPasswordHash, priyaPasswordHash });
-  } else {
-    const updatePassword = db.prepare('UPDATE users SET password_hash = ? WHERE email = ?');
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      updatePassword.run(adminPasswordHash, 'admin@lexflow.local');
-      updatePassword.run(mayaPasswordHash, 'maya@lexflow.local');
-      updatePassword.run(priyaPasswordHash, 'priya@lexflow.local');
-      db.prepare('DELETE FROM sessions').run();
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      db.close();
-      throw error;
-    }
-  }
+  throw new Error('ENTRA_CLIENT_ID and ENTRA_CLIENT_SECRET are required; local account login is disabled.');
 }
 
-const primarySource = createMailSource(config);
 const gmailIntegration = createGmailIntegration({ db, gmail: config.gmail });
-const outlookConfigured = ['graph', 'mixed'].includes(config.mode);
+const outlookIntegration = createOutlookIntegration({ db, config: config.outlook });
 const sources = () => {
   let gmailSources;
   try {
@@ -66,23 +37,22 @@ const sources = () => {
       async fetchChanges() { throw error; },
     }];
   }
-  if (outlookConfigured) return [primarySource, ...gmailSources];
-  return config.mode === 'demo' ? [primarySource] : gmailSources;
+  return [...outlookIntegration.sources(), ...gmailSources];
 };
 const syncRunner = createSyncRunner({ db, sources });
-const alertRunner = createAlertRunner({ db });
+const alertRunner = createAlertRunner({
+  db,
+  organizationIds: () => db.prepare("SELECT id FROM organizations WHERE status = 'active'").all().map(row => Number(row.id)),
+});
 const app = createApp({
   db,
   syncRunner,
   mode: config.mode,
   integrations: {
-    outlook: {
-      configured: outlookConfigured,
-      accountEmail: outlookConfigured ? config.graph.mailbox : null,
-      cursorKey: outlookConfigured ? primarySource.cursorKey : null,
-    },
+    outlook: outlookIntegration,
     gmail: gmailIntegration,
   },
+  entraConfig: config.entra,
 });
 const server = app.listen(config.port, '127.0.0.1', () => {
   console.log(`LexFlow listening at http://127.0.0.1:${config.port} (${config.mode} mode)`);

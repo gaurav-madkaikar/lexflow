@@ -1,41 +1,16 @@
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
-
-const scrypt = promisify(scryptCallback);
+import { randomBytes } from 'node:crypto';
+import { effectiveWorkspaceRole, headedDepartment } from './department-access.js';
 const SESSION_COOKIE = 'lexflow_session';
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 
-export async function hashPassword(password) {
-  if (typeof password !== 'string' || password.length < 8) {
-    throw new TypeError('Password must have at least 8 characters');
-  }
-
-  const salt = randomBytes(16);
-  const key = Buffer.from(await scrypt(password, salt, 64));
-  return `scrypt$${salt.toString('hex')}$${key.toString('hex')}`;
-}
-
-export async function verifyPassword(password, encoded) {
-  const [algorithm, saltHex, keyHex, extra] = String(encoded).split('$');
-  if (
-    algorithm !== 'scrypt'
-    || extra !== undefined
-    || !/^[a-f0-9]{32}$/i.test(saltHex ?? '')
-    || !/^[a-f0-9]{128}$/i.test(keyHex ?? '')
-  ) {
-    return false;
-  }
-
-  const expected = Buffer.from(keyHex, 'hex');
-  const actual = Buffer.from(await scrypt(password, Buffer.from(saltHex, 'hex'), expected.length));
-  return timingSafeEqual(actual, expected);
-}
-
-export function createSession(db, userId, now = new Date()) {
+export function createSession(db, userId, now = new Date(), organizationId = undefined) {
   const id = randomBytes(32).toString('hex');
   const expiresAt = new Date(now.getTime() + SESSION_TTL_SECONDS * 1000).toISOString();
-  db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)')
-    .run(id, userId, expiresAt);
+  const org = organizationId === undefined
+    ? db.prepare('SELECT organization_id FROM users WHERE id = ?').get(userId)?.organization_id ?? null
+    : organizationId;
+  db.prepare('INSERT INTO sessions (id, user_id, organization_id, expires_at) VALUES (?, ?, ?, ?)')
+    .run(id, userId, org, expiresAt);
   return { id, expiresAt };
 }
 
@@ -49,13 +24,17 @@ export function sessionUser(db, sessionId, now = new Date()) {
   if (!sessionId) return null;
 
   const row = db.prepare(`
-    SELECT users.*, sessions.expires_at
+    SELECT users.*, sessions.organization_id AS session_organization_id, sessions.expires_at,
+      organizations.name AS organization_name, organizations.domain AS organization_domain,
+      organizations.status AS organization_status, organizations.timezone AS organization_timezone,
+      organizations.logo_asset_id
     FROM sessions
     JOIN users ON users.id = sessions.user_id
+    LEFT JOIN organizations ON organizations.id = sessions.organization_id
     WHERE sessions.id = ?
   `).get(sessionId);
 
-  if (!row || row.expires_at <= now.toISOString()) {
+  if (!row || row.expires_at <= now.toISOString() || row.account_status === 'disabled' || row.organization_status === 'archived') {
     if (row) deleteSession(db, sessionId);
     return null;
   }
@@ -98,6 +77,13 @@ export function requireUser(db) {
       return;
     }
 
+    user.organization_id = user.session_organization_id ?? user.organization_id;
+    const department = headedDepartment(db, {
+      userId: user.id,
+      organizationId: user.organization_id,
+    });
+    user.headed_department_id = department ? Number(department.id) : null;
+    user.effectiveRole = effectiveWorkspaceRole(user, department);
     request.user = user;
     request.sessionId = sessionId;
     next();
@@ -105,9 +91,39 @@ export function requireUser(db) {
 }
 
 export function requireAdmin(request, response, next) {
-  if (request.user.role !== 'admin') {
+  if (!['org_admin', 'admin'].includes(request.user.effectiveRole)) {
     response.status(403).json({
       error: { code: 'FORBIDDEN', message: 'Administrator access is required.' }
+    });
+    return;
+  }
+  next();
+}
+
+export function requireOrgAdmin(request, response, next) {
+  if (request.user.effectiveRole !== 'org_admin') {
+    response.status(403).json({
+      error: { code: 'FORBIDDEN', message: 'Organization administrator access is required.' }
+    });
+    return;
+  }
+  next();
+}
+
+export function requireDepAdmin(request, response, next) {
+  if (request.user.effectiveRole !== 'dep_admin') {
+    response.status(403).json({
+      error: { code: 'FORBIDDEN', message: 'Department administrator access is required.' }
+    });
+    return;
+  }
+  next();
+}
+
+export function requirePlatformAdmin(request, response, next) {
+  if (!request.user.is_platform_admin) {
+    response.status(403).json({
+      error: { code: 'FORBIDDEN', message: 'Platform administrator access is required.' }
     });
     return;
   }

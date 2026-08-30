@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 
 import { createApp } from '../src/app.js';
-import { hashPassword } from '../src/auth.js';
+import { createSession, sessionCookie } from '../src/auth.js';
 import { createDatabase, seedDemoData } from '../src/db.js';
 import { createGmailIntegration } from '../src/gmail.js';
 import { createSyncRunner, syncMailbox } from '../src/workflows.js';
@@ -38,13 +38,31 @@ const generalMessage = {
   outlookUrl: 'https://outlook.office.com/mail/mock-general-1',
 };
 
-function fixedSource(messages, cursorKey = 'mail_cursor') {
+function fixedSource(messages, cursorKey = 'mail_cursor', scope = {}) {
   return {
     cursorKey,
+    ...scope,
     async fetchChanges() {
       return { messages, nextCursor: 'mock-cursor-1' };
     },
   };
+}
+
+function sourceFor(db, departmentName, messages, cursorKey = null) {
+  const department = one(
+    db,
+    'SELECT id, shared_mailbox FROM departments WHERE organization_id = 1 AND name = ?',
+    departmentName,
+  );
+  return fixedSource(
+    messages,
+    cursorKey ?? `mail_cursor:test:${department.shared_mailbox}`,
+    {
+      organizationId: 1,
+      departmentId: Number(department.id),
+      mailboxAddress: department.shared_mailbox,
+    },
+  );
 }
 
 function one(db, sql, ...parameters) {
@@ -65,19 +83,27 @@ async function createApiHarness(
   } = {},
 ) {
   const db = createDatabase(':memory:');
-  const [adminPasswordHash, memberPasswordHash] = await Promise.all([
-    hashPassword('admin123'),
-    hashPassword('welcome123'),
-  ]);
-  seedDemoData(db, { adminPasswordHash, memberPasswordHash });
+  seedDemoData(db);
+  const legal = one(db, "SELECT id FROM departments WHERE name = 'Legal'");
+  db.prepare(`
+    INSERT INTO users
+      (email, name, initials, department, role, organization_id, auth_provider, account_status, department_id)
+    VALUES ('noah@lexflow.local', 'Noah Singh', 'NS', 'Legal', 'member', 1, 'local', 'active', ?)
+  `).run(legal.id);
 
-  const sourceMessages = [ndaMessage, invoiceMessage];
-  if (includeUnassigned) sourceMessages.push(generalMessage);
-  const source = fixedSource(sourceMessages);
-  const syncRunner = createSyncRunner({ db, source });
+  const legalMessages = [ndaMessage];
+  if (includeUnassigned) legalMessages.push(generalMessage);
+  const sources = [
+    sourceFor(db, 'Legal', legalMessages),
+    sourceFor(db, 'Finance', [invoiceMessage]),
+  ];
+  const syncRunner = createSyncRunner({ db, sources });
   await syncRunner.run();
   const integrations = integrationFactory(db);
-  const server = createApp({ db, syncRunner, mode, integrations, clock })
+  const server = createApp({ db, syncRunner, mode, integrations, clock, entraAuth: {
+    async authorizationUrl() { return '/'; },
+    async callback() { throw new Error('not used in injected-session tests'); },
+  } })
     .listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
@@ -122,10 +148,11 @@ async function createApiHarness(
       return Number(db.prepare('SELECT id FROM users WHERE email = ?').get(email).id);
     },
     async login(email, password) {
-      const response = await request('POST', '/api/login', { email, password });
-      assert.equal(response.status, 200);
-      assert.ok(response.cookie);
-      return response.cookie;
+      void password;
+      const user = db.prepare('SELECT id, organization_id FROM users WHERE email = ?').get(email);
+      assert.ok(user);
+      const session = createSession(db, user.id, new Date(), user.organization_id);
+      return sessionCookie(session.id);
     },
     emailAssignedTo(email) {
       return db.prepare(`
@@ -142,17 +169,21 @@ test('first matching enabled rule assigns once and notifies once', async (contex
   const db = createDatabase(':memory:');
   context.after(() => db.close());
   seedDemoData(db);
-  const priyaId = one(db, 'SELECT id FROM users WHERE email = ?', 'priya@lexflow.local').id;
+  const maya = one(db, `
+    SELECT users.id, users.department_id
+    FROM users WHERE users.email = ?
+  `, 'maya@lexflow.local');
   db.prepare(`
-    INSERT INTO rules (name, keywords, sender_filter, assignee_id, priority, enabled, created_at)
-    VALUES ('Priority NDA route', 'ACME,NDA', '', ?, 5, 1, ?)
-  `).run(priyaId, new Date().toISOString());
-  const source = fixedSource([ndaMessage]);
+    INSERT INTO rules
+      (name, keywords, sender_filter, assignee_id, priority, enabled, created_at, organization_id, department_id)
+    VALUES ('Priority NDA route', 'ACME,NDA', '', ?, 5, 1, ?, 1, ?)
+  `).run(maya.id, new Date().toISOString(), maya.department_id);
+  const source = sourceFor(db, 'Legal', [ndaMessage]);
 
   const result = await syncMailbox({ db, source });
 
   assert.deepEqual(result, { imported: 1, assigned: 1 });
-  assert.equal(one(db, 'SELECT assignee_id FROM emails').assignee_id, priyaId);
+  assert.equal(one(db, 'SELECT assignee_id FROM emails').assignee_id, maya.id);
   assert.equal(one(db, 'SELECT count(*) AS count FROM notifications').count, 1);
 });
 
@@ -160,7 +191,7 @@ test('re-importing is idempotent and mail-source cursors stay isolated', async (
   const db = createDatabase(':memory:');
   context.after(() => db.close());
   seedDemoData(db);
-  const source = fixedSource([ndaMessage], 'mail_cursor:demo');
+  const source = sourceFor(db, 'Legal', [ndaMessage], 'mail_cursor:demo');
 
   await syncMailbox({ db, source });
   const result = await syncMailbox({ db, source });
@@ -168,7 +199,7 @@ test('re-importing is idempotent and mail-source cursors stay isolated', async (
   await syncMailbox({
     db,
     source: {
-      cursorKey: 'mail_cursor:graph:shared@example.test',
+      ...sourceFor(db, 'Finance', [], 'mail_cursor:graph:finance@lexflow.local'),
       async fetchChanges(cursor) {
         graphCursor = cursor;
         return { messages: [], nextCursor: 'graph-delta-1' };
@@ -184,12 +215,12 @@ test('re-importing is idempotent and mail-source cursors stay isolated', async (
 
 test('a member cannot read or complete another member email', async (context) => {
   const harness = await createApiHarness(context);
-  const mayaCookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const mayaCookie = await harness.login('noah@lexflow.local', 'welcome123');
   const priyaEmail = harness.emailAssignedTo('priya@lexflow.local');
 
   const bootstrap = await harness.get('/api/bootstrap', mayaCookie);
   assert.equal(bootstrap.status, 200);
-  assert.ok(bootstrap.body.emails.every(email => email.assignee.email === 'maya@lexflow.local'));
+  assert.ok(bootstrap.body.emails.every(email => email.assignee.email === 'noah@lexflow.local'));
 
   const completion = await harness.post(`/api/emails/${priyaEmail.id}/complete`, {}, mayaCookie);
   assert.equal(completion.status, 403);
@@ -197,7 +228,7 @@ test('a member cannot read or complete another member email', async (context) =>
 
 test('a member cannot mutate rules or trigger sync', async (context) => {
   const harness = await createApiHarness(context);
-  const cookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const cookie = await harness.login('noah@lexflow.local', 'welcome123');
   const assigneeId = mayaId(harness.db);
   const existingRuleId = one(harness.db, 'SELECT id FROM rules ORDER BY id').id;
 
@@ -216,9 +247,9 @@ test('a member cannot mutate rules or trigger sync', async (context) => {
   assert.equal(sync.status, 403);
 });
 
-test('admin partially updates a rule and applies its final criteria immediately', async (context) => {
+test('DepAdmin partially updates a rule and applies its final criteria immediately', async (context) => {
   const harness = await createApiHarness(context, { includeUnassigned: true });
-  const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
+  const adminCookie = await harness.login('maya@lexflow.local', 'welcome123');
   const ruleBefore = one(harness.db, "SELECT * FROM rules WHERE name = 'ACME NDA review'");
   const unassigned = one(harness.db, "SELECT * FROM emails WHERE status = 'unassigned'");
 
@@ -271,10 +302,10 @@ test('admin partially updates a rule and applies its final criteria immediately'
   );
 });
 
-test('admin creates a sender-only rule and it assigns matching unassigned email', async (context) => {
+test('DepAdmin creates a sender-only rule and it assigns matching unassigned email', async (context) => {
   const harness = await createApiHarness(context, { includeUnassigned: true });
-  const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
-  const assigneeId = harness.userId('priya@lexflow.local');
+  const adminCookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const assigneeId = harness.userId('noah@lexflow.local');
   const unassigned = one(harness.db, "SELECT * FROM emails WHERE status = 'unassigned'");
 
   const created = await harness.post('/api/rules', {
@@ -294,7 +325,7 @@ test('admin creates a sender-only rule and it assigns matching unassigned email'
 
 test('rule creation and updates roll back when immediate assignment fails', async (context) => {
   const harness = await createApiHarness(context, { includeUnassigned: true });
-  const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
+  const adminCookie = await harness.login('maya@lexflow.local', 'welcome123');
   const ruleBefore = one(harness.db, "SELECT * FROM rules WHERE name = 'ACME NDA review'");
   const unassigned = one(harness.db, "SELECT * FROM emails WHERE status = 'unassigned'");
   const ruleCountBefore = one(harness.db, 'SELECT count(*) AS count FROM rules').count;
@@ -316,7 +347,7 @@ test('rule creation and updates roll back when immediate assignment fails', asyn
     name: 'Second customer sender route',
     keywords: '',
     senderFilter: 'customer@example.test',
-    assigneeId: harness.userId('priya@lexflow.local'),
+    assigneeId: harness.userId('noah@lexflow.local'),
     priority: 30,
   }, adminCookie);
 
@@ -339,7 +370,7 @@ test('rule creation and updates roll back when immediate assignment fails', asyn
 
 test('rule updates reject empty patches and invalid final rules without mutating data', async (context) => {
   const harness = await createApiHarness(context);
-  const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
+  const adminCookie = await harness.login('maya@lexflow.local', 'welcome123');
   const ruleBefore = one(harness.db, 'SELECT * FROM rules ORDER BY id');
 
   const emptyPatch = await harness.patch(`/api/rules/${ruleBefore.id}`, {}, adminCookie);
@@ -380,36 +411,76 @@ test('rule updates reject empty patches and invalid final rules without mutating
   );
 });
 
-test('admin assigns and reassigns open email while members cannot assign', async (context) => {
+test('DepAdmin rule writes allow only the four canonical priorities', async (context) => {
+  const harness = await createApiHarness(context);
+  const cookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const assigneeId = harness.userId('noah@lexflow.local');
+
+  for (const priority of [10, 20, 30, 40]) {
+    const response = await harness.post('/api/rules', {
+      name: `Priority ${priority}`,
+      keywords: `priority-${priority}`,
+      senderFilter: '',
+      assigneeId,
+      priority,
+    }, cookie);
+    assert.equal(response.status, 201);
+  }
+
+  const countBefore = one(harness.db, 'SELECT count(*) AS count FROM rules').count;
+  const invalidCreate = await harness.post('/api/rules', {
+    name: 'Invalid priority',
+    keywords: 'invalid-priority',
+    senderFilter: '',
+    assigneeId,
+    priority: 25,
+  }, cookie);
+  const existing = one(harness.db, 'SELECT * FROM rules ORDER BY id');
+  const invalidPatch = await harness.patch(`/api/rules/${existing.id}`, { priority: 25 }, cookie);
+
+  assert.equal(invalidCreate.status, 400);
+  assert.equal(invalidCreate.body.error.fields.priority, 'Choose Low, Medium, High, or Critical.');
+  assert.equal(invalidPatch.status, 400);
+  assert.equal(invalidPatch.body.error.fields.priority, 'Choose Low, Medium, High, or Critical.');
+  assert.equal(one(harness.db, 'SELECT count(*) AS count FROM rules').count, countBefore);
+  assert.deepEqual(one(harness.db, 'SELECT * FROM rules WHERE id = ?', existing.id), existing);
+});
+
+test('DepAdmin assigns and reassigns open email while members and OrgAdmin cannot assign', async (context) => {
   let now = new Date('2026-08-14T10:00:00.000Z');
   const harness = await createApiHarness(context, {
     includeUnassigned: true,
     clock: () => now,
   });
-  const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
-  const mayaCookie = await harness.login('maya@lexflow.local', 'welcome123');
-  const priyaCookie = await harness.login('priya@lexflow.local', 'welcome123');
+  const depAdminCookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const memberCookie = await harness.login('noah@lexflow.local', 'welcome123');
+  const orgAdminCookie = await harness.login('admin@lexflow.local', 'admin123');
   const email = harness.db.prepare("SELECT * FROM emails WHERE status = 'unassigned'").get();
-  const adminId = harness.userId('admin@lexflow.local');
+  const depAdminId = harness.userId('maya@lexflow.local');
   const mayaId = harness.userId('maya@lexflow.local');
-  const priyaId = harness.userId('priya@lexflow.local');
+  const noahId = harness.userId('noah@lexflow.local');
 
   const forbidden = await harness.post(
     `/api/emails/${email.id}/assign`,
-    { assigneeId: mayaId },
-    mayaCookie,
+    { assigneeId: noahId },
+    memberCookie,
   );
   assert.equal(forbidden.status, 403);
+  assert.equal((await harness.post(
+    `/api/emails/${email.id}/assign`,
+    { assigneeId: noahId },
+    orgAdminCookie,
+  )).status, 403);
 
   const assigned = await harness.post(
     `/api/emails/${email.id}/assign`,
-    { assigneeId: mayaId },
-    adminCookie,
+    { assigneeId: noahId },
+    depAdminCookie,
   );
   assert.equal(assigned.status, 200);
   assert.equal(assigned.body.changed, true);
   assert.equal(assigned.body.assignedAt, '2026-08-14T10:00:00.000Z');
-  assert.ok((await harness.get('/api/bootstrap', mayaCookie)).body.emails
+  assert.ok((await harness.get('/api/bootstrap', memberCookie)).body.emails
     .some(item => item.id === email.id));
 
   const countsBeforeNoOp = harness.db.prepare(`
@@ -420,8 +491,8 @@ test('admin assigns and reassigns open email while members cannot assign', async
   now = new Date('2026-08-14T11:00:00.000Z');
   const noOp = await harness.post(
     `/api/emails/${email.id}/assign`,
-    { assigneeId: mayaId },
-    adminCookie,
+    { assigneeId: noahId },
+    depAdminCookie,
   );
   assert.equal(noOp.status, 200);
   assert.equal(noOp.body.changed, false);
@@ -435,57 +506,57 @@ test('admin assigns and reassigns open email while members cannot assign', async
   now = new Date('2026-08-14T12:00:00.000Z');
   const reassigned = await harness.post(
     `/api/emails/${email.id}/assign`,
-    { assigneeId: priyaId },
-    adminCookie,
+    { assigneeId: mayaId },
+    depAdminCookie,
   );
   assert.equal(reassigned.status, 200);
   assert.equal(reassigned.body.changed, true);
   assert.equal(reassigned.body.assignedAt, '2026-08-14T12:00:00.000Z');
-  assert.ok(!(await harness.get('/api/bootstrap', mayaCookie)).body.emails
+  assert.ok(!(await harness.get('/api/bootstrap', memberCookie)).body.emails
     .some(item => item.id === email.id));
-  assert.ok((await harness.get('/api/bootstrap', priyaCookie)).body.emails
+  assert.ok((await harness.get('/api/bootstrap', depAdminCookie)).body.emails
     .some(item => item.id === email.id));
   assert.equal(harness.db.prepare(`
     SELECT count(*) AS count FROM notifications
     WHERE email_id = ? AND user_id = ? AND kind = 'assignment'
-  `).get(email.id, mayaId).count, 0);
+  `).get(email.id, noahId).count, 0);
   assert.equal(harness.db.prepare(`
     SELECT count(*) AS count FROM notifications
     WHERE email_id = ? AND user_id = ? AND kind = 'assignment'
-  `).get(email.id, priyaId).count, 1);
+  `).get(email.id, mayaId).count, 1);
 
   const latest = harness.db.prepare(`
     SELECT * FROM activity WHERE email_id = ? ORDER BY id DESC LIMIT 1
   `).get(email.id);
-  assert.equal(Number(latest.actor_id), adminId);
-  assert.match(latest.message, /Reassigned.*Maya Shah.*Priya Menon/);
+  assert.equal(Number(latest.actor_id), depAdminId);
+  assert.match(latest.message, /Reassigned.*Noah Singh.*Maya Shah/);
 
   assert.equal((await harness.post(
     `/api/emails/${email.id}/complete`,
     {},
-    priyaCookie,
+    depAdminCookie,
   )).status, 200);
   const completedConflict = await harness.post(
     `/api/emails/${email.id}/assign`,
-    { assigneeId: mayaId },
-    adminCookie,
+    { assigneeId: noahId },
+    depAdminCookie,
   );
   assert.equal(completedConflict.status, 409);
 });
 
-test('only admins manage departments, team placement, and workspace limits', async (context) => {
+test('only OrgAdmins manage departments, team placement, heads, and workspace limits', async (context) => {
   const harness = await createApiHarness(context);
   const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
-  const memberCookie = await harness.login('maya@lexflow.local', 'welcome123');
-  const mayaId = harness.userId('maya@lexflow.local');
+  const memberCookie = await harness.login('noah@lexflow.local', 'welcome123');
+  const noahId = harness.userId('noah@lexflow.local');
 
   assert.equal((await harness.post(
     '/api/departments',
-    { name: 'Compliance' },
+    { name: 'Compliance', sharedMailbox: 'compliance@lexflow.local' },
     memberCookie,
   )).status, 403);
   assert.equal((await harness.patch(
-    `/api/team/${mayaId}/department`,
+    `/api/team/${noahId}/department`,
     { departmentId: 1 },
     memberCookie,
   )).status, 403);
@@ -497,7 +568,7 @@ test('only admins manage departments, team placement, and workspace limits', asy
 
   const created = await harness.post(
     '/api/departments',
-    { name: '  Compliance  ' },
+    { name: '  Compliance  ', sharedMailbox: 'compliance@lexflow.local' },
     adminCookie,
   );
   assert.equal(created.status, 201);
@@ -505,7 +576,7 @@ test('only admins manage departments, team placement, and workspace limits', asy
 
   const duplicate = await harness.post(
     '/api/departments',
-    { name: 'compliance' },
+    { name: 'compliance', sharedMailbox: 'other@lexflow.local' },
     adminCookie,
   );
   assert.equal(duplicate.status, 400);
@@ -513,12 +584,29 @@ test('only admins manage departments, team placement, and workspace limits', asy
   assert.ok(duplicate.body.error.fields.name);
 
   const moved = await harness.patch(
-    `/api/team/${mayaId}/department`,
+    `/api/team/${noahId}/department`,
     { departmentId: created.body.department.id },
     adminCookie,
   );
   assert.equal(moved.status, 200);
   assert.equal(moved.body.member.department, 'Compliance');
+  assert.equal(moved.body.member.role, 'dep_admin');
+  assert.equal('mailboxAccessStatus' in moved.body.member, false);
+  assert.equal('mailboxAccessMessage' in moved.body.member, false);
+  const withHead = await harness.get('/api/bootstrap', adminCookie);
+  assert.equal(
+    withHead.body.departments.find(item => item.id === created.body.department.id).headUser.id,
+    noahId,
+  );
+
+  assert.equal((await harness.delete(`/api/departments/${created.body.department.id}`, memberCookie)).status, 403);
+  const removed = await harness.delete(`/api/departments/${created.body.department.id}`, adminCookie);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.department.unassignedMemberCount, 1);
+  assert.equal(harness.db.prepare('SELECT department_id FROM users WHERE id = ?').get(noahId).department_id, null);
+
+  const removedAgain = await harness.delete(`/api/departments/${created.body.department.id}`, adminCookie);
+  assert.equal(removedAgain.status, 404);
 
   const invalidSettings = await harness.patch(
     '/api/settings',
@@ -540,11 +628,12 @@ test('only admins manage departments, team placement, and workspace limits', asy
   });
 
   const adminBootstrap = await harness.get('/api/bootstrap', adminCookie);
-  assert.ok(adminBootstrap.body.departments.some(item => item.name === 'Compliance'));
+  assert.equal(adminBootstrap.body.departments.some(item => item.name === 'Compliance'), false);
   assert.equal(
-    adminBootstrap.body.team.find(item => item.id === mayaId).department,
-    'Compliance',
+    adminBootstrap.body.members.find(item => item.id === noahId).department,
+    '',
   );
+  assert.equal(adminBootstrap.body.members.find(item => item.id === noahId).departmentId, null);
   assert.deepEqual(adminBootstrap.body.settings, settings.body.settings);
 
   const memberBootstrap = await harness.get('/api/bootstrap', memberCookie);
@@ -553,16 +642,258 @@ test('only admins manage departments, team placement, and workspace limits', asy
   assert.equal('team' in memberBootstrap.body, false);
 });
 
-test('completion records activity and notifies every admin once', async (context) => {
+test('OrgAdmin is email-blind while DepAdmin authority follows the current department head', async (context) => {
+  const harness = await createApiHarness(context, { includeUnassigned: true });
+  const orgAdminCookie = await harness.login('admin@lexflow.local');
+  const mayaCookie = await harness.login('maya@lexflow.local');
+  const noahCookie = await harness.login('noah@lexflow.local');
+  const legal = one(harness.db, "SELECT id FROM departments WHERE name = 'Legal'");
+  const finance = one(harness.db, "SELECT id FROM departments WHERE name = 'Finance'");
+  const mayaId = harness.userId('maya@lexflow.local');
+  const noahId = harness.userId('noah@lexflow.local');
+  const priyaId = harness.userId('priya@lexflow.local');
+
+  const orgAdmin = await harness.get('/api/bootstrap', orgAdminCookie);
+  for (const confidentialField of ['emails', 'rules', 'activity', 'notifications', 'sync', 'team']) {
+    assert.equal(orgAdmin.body[confidentialField], undefined);
+  }
+  assert.ok(Array.isArray(orgAdmin.body.members));
+  assert.ok(Array.isArray(orgAdmin.body.departments));
+
+  const mayaBefore = await harness.get('/api/bootstrap', mayaCookie);
+  assert.equal(mayaBefore.body.user.role, 'dep_admin');
+  assert.equal(mayaBefore.body.department.id, Number(legal.id));
+  assert.ok(mayaBefore.body.emails.every(email => email.departmentId === Number(legal.id)));
+  assert.ok(mayaBefore.body.rules.every(rule => rule.departmentId === Number(legal.id)));
+
+  const invalidCandidate = await harness.patch(
+    `/api/departments/${legal.id}/head`,
+    { memberId: priyaId },
+    orgAdminCookie,
+  );
+  assert.equal(invalidCandidate.status, 400);
+
+  const replaced = await harness.patch(
+    `/api/departments/${legal.id}/head`,
+    { memberId: noahId },
+    orgAdminCookie,
+  );
+  assert.equal(replaced.status, 200);
+  assert.equal(replaced.body.department.headUser.id, noahId);
+
+  const mayaAfter = await harness.get('/api/bootstrap', mayaCookie);
+  const noahAfter = await harness.get('/api/bootstrap', noahCookie);
+  assert.equal(mayaAfter.body.user.role, 'member');
+  assert.ok(mayaAfter.body.emails.every(email => email.assignee?.id === mayaId));
+  assert.equal(noahAfter.body.user.role, 'dep_admin');
+  assert.ok(noahAfter.body.emails.some(email => email.status === 'unassigned'));
+
+  const financeRule = one(harness.db, 'SELECT id FROM rules WHERE department_id = ?', finance.id);
+  const financeEmail = one(harness.db, 'SELECT id FROM emails WHERE department_id = ?', finance.id);
+  assert.equal((await harness.patch(
+    `/api/rules/${financeRule.id}`,
+    { name: 'Hidden finance rule' },
+    noahCookie,
+  )).status, 404);
+  assert.equal((await harness.post(
+    `/api/emails/${financeEmail.id}/assign`,
+    { assigneeId: noahId },
+    noahCookie,
+  )).status, 404);
+  assert.equal((await harness.post('/api/rules', {
+    name: 'OrgAdmin must not route mail',
+    keywords: 'private',
+    senderFilter: '',
+    assigneeId: noahId,
+    priority: 40,
+  }, orgAdminCookie)).status, 403);
+
+  const protectedMove = await harness.patch(
+    `/api/team/${noahId}/department`,
+    { departmentId: Number(finance.id) },
+    orgAdminCookie,
+  );
+  assert.equal(protectedMove.status, 409);
+  assert.equal(protectedMove.body.error.code, 'DEPARTMENT_HEAD_REPLACEMENT_REQUIRED');
+
+  const restored = await harness.patch(
+    `/api/departments/${legal.id}/head`,
+    { memberId: mayaId },
+    orgAdminCookie,
+  );
+  assert.equal(restored.status, 200);
+});
+
+test('bootstrap reports role-scoped pending task counts only to Members and DepAdmins', async (context) => {
+  const harness = await createApiHarness(context, { includeUnassigned: true });
+  const orgAdminCookie = await harness.login('admin@lexflow.local');
+  const depAdminCookie = await harness.login('maya@lexflow.local');
+  const memberCookie = await harness.login('noah@lexflow.local');
+  const legal = one(harness.db, "SELECT id FROM departments WHERE name = 'Legal'");
+  const noahId = harness.userId('noah@lexflow.local');
+  const mayaId = harness.userId('maya@lexflow.local');
+  const timestamp = '2026-08-30T12:00:00.000Z';
+
+  const memberEmailId = Number(harness.db.prepare(`
+    INSERT INTO emails
+      (provider_id, subject, sender_name, sender_address, preview, received_at,
+       status, assignee_id, assigned_at, created_at, organization_id, department_id)
+    VALUES ('pending-member-summary', 'Member task', 'Sender', 'sender@example.test', 'Review', ?,
+      'assigned', ?, ?, ?, 1, ?)
+  `).run(timestamp, noahId, timestamp, timestamp, legal.id).lastInsertRowid);
+  harness.db.prepare('DELETE FROM notifications').run();
+  harness.db.prepare(`
+    INSERT INTO notifications (user_id, email_id, kind, message, created_at, organization_id, department_id)
+    VALUES (?, ?, 'assignment', 'Member task assigned.', ?, 1, ?)
+  `).run(noahId, memberEmailId, timestamp, legal.id);
+  const mayaEmail = one(harness.db, "SELECT id FROM emails WHERE assignee_id = ? AND status = 'assigned'", mayaId);
+  harness.db.prepare(`
+    INSERT INTO notifications (user_id, email_id, kind, message, created_at, organization_id, department_id)
+    VALUES (?, ?, 'assignment', 'Department task assigned.', ?, 1, ?)
+  `).run(mayaId, mayaEmail.id, timestamp, legal.id);
+
+  const orgAdmin = await harness.get('/api/bootstrap', orgAdminCookie);
+  const depAdmin = await harness.get('/api/bootstrap', depAdminCookie);
+  const member = await harness.get('/api/bootstrap', memberCookie);
+
+  assert.equal('pendingTasks' in orgAdmin.body, false);
+  assert.deepEqual(depAdmin.body.pendingTasks, {
+    assignedToMe: 1,
+    unassignedDepartment: 1,
+    unreadNotifications: 1,
+  });
+  assert.deepEqual(member.body.pendingTasks, {
+    assignedToMe: 1,
+    unassignedDepartment: 0,
+    unreadNotifications: 1,
+  });
+});
+
+test('email open links are limited to the current DepAdmin department or Member assignment', async (context) => {
+  const resolverCalls = [];
+  let resolvedOutlookLink = 'https://outlook.office.com/mail/deeplink/read/current-message';
+  const harness = await createApiHarness(context, {
+    integrationFactory() {
+      return {
+        outlook: {
+          configured: true,
+          async resolveWebLink(input) {
+            resolverCalls.push(input);
+            return resolvedOutlookLink;
+          },
+        },
+      };
+    },
+  });
+  const legal = one(harness.db, "SELECT id, shared_mailbox FROM departments WHERE name = 'Legal'");
+  const noahId = harness.userId('noah@lexflow.local');
+  const createdAt = '2026-08-30T09:00:00.000Z';
+  const outlookEmailId = Number(harness.db.prepare(`
+    INSERT INTO emails
+      (provider_id, provider, mailbox_address, subject, sender_name, sender_address,
+       preview, received_at, outlook_url, status, assignee_id, assigned_at, created_at,
+       organization_id, department_id)
+    VALUES (?, 'outlook', ?, 'Scoped matter', 'Sender', 'sender@example.test',
+      'Message preview', ?, 'https://outlook.office.com/owa/legacy-link', 'assigned', ?, ?, ?, 1, ?)
+  `).run(
+    `outlook:${legal.shared_mailbox.toLocaleLowerCase()}:immutable-message`,
+    legal.shared_mailbox,
+    createdAt,
+    noahId,
+    createdAt,
+    createdAt,
+    legal.id,
+  ).lastInsertRowid);
+  const gmailLink = 'https://mail.google.com/mail/u/0/#inbox/direct-message';
+  const gmailEmailId = Number(harness.db.prepare(`
+    INSERT INTO emails
+      (provider_id, provider, mailbox_address, subject, sender_name, sender_address,
+       preview, received_at, outlook_url, status, assignee_id, assigned_at, created_at,
+       organization_id, department_id)
+    VALUES ('gmail:test:direct-message', 'gmail', 'owner@example.test', 'Gmail matter',
+      'Sender', 'sender@example.test', 'Message preview', ?, ?, 'assigned', ?, ?, ?, 1, ?)
+  `).run(createdAt, gmailLink, noahId, createdAt, createdAt, legal.id).lastInsertRowid);
+
+  harness.db.prepare(`
+    INSERT INTO users
+      (email, name, initials, department, role, organization_id, auth_provider,
+       account_status, department_id)
+    VALUES ('ravi@lexflow.local', 'Ravi Kumar', 'RK', 'Legal', 'member', 1, 'local', 'active', ?)
+  `).run(legal.id);
+  harness.db.prepare(`
+    INSERT INTO users
+      (email, name, initials, department, role, organization_id, auth_provider,
+       account_status, is_platform_admin)
+    VALUES ('developer@platform.test', 'Platform Developer', 'PD', '', 'admin', NULL,
+      'local', 'active', 1)
+  `).run();
+  harness.db.prepare(`
+    INSERT INTO organizations
+      (entra_tenant_id, name, domain, status, created_at, updated_at)
+    VALUES ('99999999-9999-4999-8999-999999999999', 'Other Org', 'other.test', 'active', ?, ?)
+  `).run(createdAt, createdAt);
+  const otherOrganizationId = Number(one(harness.db, "SELECT id FROM organizations WHERE domain = 'other.test'").id);
+  harness.db.prepare(`
+    INSERT INTO users
+      (email, name, initials, department, role, organization_id, auth_provider, account_status)
+    VALUES ('member@other.test', 'Other Member', 'OM', '', 'member', ?, 'local', 'active')
+  `).run(otherOrganizationId);
+
+  const depAdminCookie = await harness.login('maya@lexflow.local');
+  const memberCookie = await harness.login('noah@lexflow.local');
+  const sameDepartmentMemberCookie = await harness.login('ravi@lexflow.local');
+  const otherDepartmentCookie = await harness.login('priya@lexflow.local');
+  const orgAdminCookie = await harness.login('admin@lexflow.local');
+  const platformAdminCookie = await harness.login('developer@platform.test');
+  const otherOrganizationCookie = await harness.login('member@other.test');
+
+  const depAdminResult = await harness.get(`/api/emails/${outlookEmailId}/open-link`, depAdminCookie);
+  const memberResult = await harness.get(`/api/emails/${outlookEmailId}/open-link`, memberCookie);
+  assert.equal(depAdminResult.status, 200);
+  assert.deepEqual(depAdminResult.body, { webUrl: resolvedOutlookLink });
+  assert.equal(memberResult.status, 200);
+  assert.equal(resolverCalls.length, 2);
+  assert.deepEqual(resolverCalls[0], {
+    organizationId: 1,
+    mailboxAddress: legal.shared_mailbox,
+    immutableId: 'immutable-message',
+    subject: 'Scoped matter',
+    receivedAt: createdAt,
+  });
+
+  for (const cookie of [
+    sameDepartmentMemberCookie,
+    otherDepartmentCookie,
+    orgAdminCookie,
+    platformAdminCookie,
+    otherOrganizationCookie,
+  ]) {
+    const hidden = await harness.get(`/api/emails/${outlookEmailId}/open-link`, cookie);
+    assert.equal(hidden.status, 404);
+    assert.equal(hidden.body.error.code, 'NOT_FOUND');
+  }
+  assert.equal(resolverCalls.length, 2);
+
+  const gmailResult = await harness.get(`/api/emails/${gmailEmailId}/open-link`, memberCookie);
+  assert.equal(gmailResult.status, 200);
+  assert.deepEqual(gmailResult.body, { webUrl: gmailLink });
+  assert.equal(resolverCalls.length, 2);
+
+  resolvedOutlookLink = 'https://example.test/not-an-outlook-link';
+  const unsafeOutlookResult = await harness.get(`/api/emails/${outlookEmailId}/open-link`, memberCookie);
+  assert.equal(unsafeOutlookResult.status, 502);
+  assert.equal(unsafeOutlookResult.body.error.code, 'OUTLOOK_LINK_FAILED');
+});
+
+test('completion records department activity and notifies only the current DepAdmin once', async (context) => {
   const harness = await createApiHarness(context);
   const mayaCookie = await harness.login('maya@lexflow.local', 'welcome123');
   const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
   const email = harness.emailAssignedTo('maya@lexflow.local');
-  const secondAdminPasswordHash = await hashPassword('secondadmin123');
   harness.db.prepare(`
-    INSERT INTO users (email, name, initials, department, role, password_hash)
-    VALUES ('ops2@lexflow.local', 'Second Admin', 'SA', 'Operations', 'admin', ?)
-  `).run(secondAdminPasswordHash);
+    INSERT INTO users (email, name, initials, department, role)
+    VALUES ('ops2@lexflow.local', 'Second Admin', 'SA', 'Operations', 'admin')
+  `).run();
 
   const completion = await harness.post(`/api/emails/${email.id}/complete`, {}, mayaCookie);
   const repeatedCompletion = await harness.post(
@@ -570,9 +901,10 @@ test('completion records activity and notifies every admin once', async (context
     {},
     mayaCookie,
   );
+  const depAdmin = await harness.get('/api/bootstrap', mayaCookie);
   const admin = await harness.get('/api/bootstrap', adminCookie);
-  const event = admin.body.activity.find(item => item.kind === 'completed' && item.emailId === email.id);
-  const completionNotifications = admin.body.notifications.filter(item => (
+  const event = depAdmin.body.activity.find(item => item.kind === 'completed' && item.emailId === email.id);
+  const completionNotifications = depAdmin.body.notifications.filter(item => (
     item.kind === 'completion' && item.emailId === email.id
   ));
 
@@ -582,20 +914,86 @@ test('completion records activity and notifies every admin once', async (context
   assert.match(event.createdAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(completionNotifications.length, 1);
   assert.equal(completionNotifications[0].readAt, null);
+  assert.equal(admin.body.emails, undefined);
+  assert.equal(admin.body.activity, undefined);
+  assert.equal(admin.body.notifications, undefined);
   assert.equal(harness.db.prepare(`
     SELECT count(*) AS count FROM notifications
     WHERE email_id = ? AND kind = 'completion'
-  `).get(email.id).count, 2);
+  `).get(email.id).count, 1);
   assert.equal(harness.db.prepare(`
     SELECT count(*) AS count FROM activity
     WHERE email_id = ? AND kind = 'completed'
   `).get(email.id).count, 1);
 });
 
+test('metrics routes enforce role scope and return email-blind payloads', async (context) => {
+  const now = new Date('2026-08-30T12:00:00.000Z');
+  const harness = await createApiHarness(context, { clock: () => now });
+  harness.db.prepare(`
+    INSERT INTO users
+      (email, name, initials, department, role, organization_id, auth_provider,
+       account_status, is_platform_admin)
+    VALUES ('metrics-platform@platform.test', 'Metrics Platform', 'MP', '', 'admin', NULL,
+      'local', 'active', 1)
+  `).run();
+  harness.db.prepare(`
+    INSERT INTO organizations
+      (entra_tenant_id, name, domain, status, timezone, created_at, updated_at)
+    VALUES ('99999999-9999-4999-8999-999999999999', 'Metrics Customer',
+      'metrics.test', 'active', 'UTC', ?, ?)
+  `).run(now.toISOString(), now.toISOString());
+
+  const orgAdmin = await harness.login('admin@lexflow.local');
+  const depAdmin = await harness.login('maya@lexflow.local');
+  const member = await harness.login('noah@lexflow.local');
+  const platform = await harness.login('metrics-platform@platform.test');
+  const range = '?preset=custom&from=2026-08-01&to=2026-08-30';
+
+  const chartBundle = await harness.get('/vendor/chart.js');
+  assert.equal(chartBundle.status, 200);
+  assert.match(chartBundle.body, /Chart\.js/);
+
+  const platformResult = await harness.get(`/api/metrics/platform${range}&timezone=UTC`, platform);
+  const organizationResult = await harness.get(`/api/metrics/organization${range}`, orgAdmin);
+  const departmentResult = await harness.get(`/api/metrics/department${range}`, depAdmin);
+  const memberResult = await harness.get(`/api/metrics/me${range}`, member);
+  assert.equal(platformResult.status, 200);
+  assert.equal(organizationResult.status, 200);
+  assert.equal(departmentResult.status, 200);
+  assert.equal(memberResult.status, 200);
+  assert.deepEqual(
+    [platformResult.body.scope, organizationResult.body.scope, departmentResult.body.scope, memberResult.body.scope],
+    ['platform', 'organization', 'department', 'member'],
+  );
+
+  for (const result of [platformResult, organizationResult, departmentResult, memberResult]) {
+    assert.doesNotMatch(
+      JSON.stringify(result.body),
+      /Urgent NDA amendment|legal@acme\.test|Please review the NDA|mock-nda-1/iu,
+    );
+  }
+  assert.equal((await harness.get(`/api/metrics/organization${range}`, depAdmin)).status, 403);
+  assert.equal((await harness.get(`/api/metrics/department${range}`, orgAdmin)).status, 403);
+  assert.equal((await harness.get(`/api/metrics/me${range}`, depAdmin)).status, 403);
+  assert.equal((await harness.get(`/api/metrics/platform${range}&timezone=UTC`, member)).status, 403);
+  assert.equal(
+    (await harness.get(`/api/metrics/organization${range}&departmentId=99999`, orgAdmin)).status,
+    404,
+  );
+  const financeMember = harness.userId('priya@lexflow.local');
+  assert.equal(
+    (await harness.get(`/api/metrics/department${range}&employeeId=${financeMember}`, depAdmin)).status,
+    404,
+  );
+});
+
 test('multi-source sync is idempotent and isolates provider failures and cursors', async (context) => {
   const db = createDatabase(':memory:');
   context.after(() => db.close());
   seedDemoData(db);
+  const legalDepartment = one(db, "SELECT id, shared_mailbox FROM departments WHERE name = 'Legal'");
+  const financeDepartment = one(db, "SELECT id, shared_mailbox FROM departments WHERE name = 'Finance'");
 
   let outlookCall = 0;
   let gmailCall = 0;
@@ -604,15 +1002,17 @@ test('multi-source sync is idempotent and isolates provider failures and cursors
   const gmailCursors = [];
   const outlookSource = {
     provider: 'outlook',
-    mailboxAddress: 'shared@example.test',
-    cursorKey: 'mail_cursor:graph:shared@example.test',
+    organizationId: 1,
+    departmentId: Number(legalDepartment.id),
+    mailboxAddress: legalDepartment.shared_mailbox,
+    cursorKey: `mail_cursor:graph:${legalDepartment.shared_mailbox}`,
     async fetchChanges(cursor) {
       outlookCursors.push(cursor);
       outlookCall += 1;
       const messages = [{
         providerId: outlookCall < 3 ? 'same-raw-id' : 'outlook-new',
         provider: 'outlook',
-        mailboxAddress: 'shared@example.test',
+        mailboxAddress: legalDepartment.shared_mailbox,
         subject: outlookCall < 3 ? 'Outlook request' : 'New Outlook request',
         senderName: 'Outlook Sender',
         senderAddress: 'sender@outlook.test',
@@ -625,7 +1025,9 @@ test('multi-source sync is idempotent and isolates provider failures and cursors
   };
   const gmailSource = {
     provider: 'gmail',
-    mailboxAddress: 'owner@gmail.test',
+    organizationId: 1,
+    departmentId: Number(financeDepartment.id),
+    mailboxAddress: financeDepartment.shared_mailbox,
     cursorKey: 'mail_cursor:gmail',
     async fetchChanges(cursor) {
       gmailCursors.push(cursor);
@@ -641,7 +1043,7 @@ test('multi-source sync is idempotent and isolates provider failures and cursors
           // Gmail namespaces its external ID, so it can coexist with the same raw Outlook ID.
           providerId: 'gmail:owner@gmail.test:same-raw-id',
           provider: 'gmail',
-          mailboxAddress: 'owner@gmail.test',
+          mailboxAddress: financeDepartment.shared_mailbox,
           subject: 'Gmail request',
           senderName: 'Gmail Sender',
           senderAddress: 'sender@gmail.test',
@@ -711,12 +1113,15 @@ test('sync discards a Gmail result when its connection changes in flight', async
   const db = createDatabase(':memory:');
   context.after(() => db.close());
   seedDemoData(db);
+  const financeDepartment = one(db, "SELECT id, shared_mailbox FROM departments WHERE name = 'Finance'");
 
   let current = true;
   let finishFetch;
   const source = {
     provider: 'gmail',
-    mailboxAddress: 'old@gmail.test',
+    organizationId: 1,
+    departmentId: Number(financeDepartment.id),
+    mailboxAddress: financeDepartment.shared_mailbox,
     cursorKey: 'mail_cursor:gmail',
     isCurrentConnection: () => current,
     fetchChanges() {
@@ -732,7 +1137,7 @@ test('sync discards a Gmail result when its connection changes in flight', async
     messages: [{
       providerId: 'gmail:old@gmail.test:stale-message',
       provider: 'gmail',
-      mailboxAddress: 'old@gmail.test',
+      mailboxAddress: financeDepartment.shared_mailbox,
       subject: 'Stale Gmail result',
       senderName: 'Old sender',
       senderAddress: 'old@example.test',
@@ -752,6 +1157,69 @@ test('sync discards a Gmail result when its connection changes in flight', async
   assert.equal(one(db, 'SELECT count(*) AS count FROM emails').count, 0);
   assert.equal(one(db, 'SELECT value FROM sync_state WHERE key = ?', source.cursorKey), undefined);
   assert.equal(one(db, "SELECT value FROM sync_state WHERE key = 'last_sync_error'"), undefined);
+});
+
+test('sync runner exposes organization-scoped in-progress and completed outcomes', async (context) => {
+  const db = createDatabase(':memory:');
+  context.after(() => db.close());
+  seedDemoData(db);
+  const legal = one(db, "SELECT id, shared_mailbox FROM departments WHERE name = 'Legal'");
+  let now = new Date('2026-08-30T10:00:00.000Z');
+  let rejectFetch = false;
+  let finishFetch;
+  const source = {
+    provider: 'outlook',
+    organizationId: 1,
+    departmentId: Number(legal.id),
+    mailboxAddress: legal.shared_mailbox,
+    cursorKey: `mail_cursor:graph:${legal.shared_mailbox}`,
+    fetchChanges() {
+      if (rejectFetch) return Promise.reject(new Error('Graph unavailable'));
+      return new Promise(resolve => { finishFetch = resolve; });
+    },
+  };
+  const runner = createSyncRunner({ db, sources: [source], clock: () => now });
+
+  assert.deepEqual(runner.status(1), {
+    inProgress: false,
+    startedAt: null,
+    completedAt: null,
+    sequence: 0,
+    outcome: null,
+  });
+  const pending = runner.run();
+  assert.deepEqual(runner.status(1), {
+    inProgress: true,
+    startedAt: '2026-08-30T10:00:00.000Z',
+    completedAt: null,
+    sequence: 1,
+    outcome: null,
+  });
+  assert.equal(runner.status(999).inProgress, false);
+
+  now = new Date('2026-08-30T10:00:05.000Z');
+  finishFetch({ messages: [], nextCursor: 'cursor-1' });
+  await pending;
+  assert.deepEqual(runner.status(1), {
+    inProgress: false,
+    startedAt: '2026-08-30T10:00:00.000Z',
+    completedAt: '2026-08-30T10:00:05.000Z',
+    sequence: 1,
+    outcome: 'success',
+  });
+  assert.equal(one(db, "SELECT value FROM sync_state WHERE key = 'outlook:last_success_at'").value, '2026-08-30T10:00:05.000Z');
+
+  rejectFetch = true;
+  now = new Date('2026-08-30T10:01:00.000Z');
+  await assert.rejects(runner.run(), error => error.code === 'SYNC_FAILED');
+  assert.deepEqual(runner.status(1), {
+    inProgress: false,
+    startedAt: '2026-08-30T10:01:00.000Z',
+    completedAt: '2026-08-30T10:01:00.000Z',
+    sequence: 2,
+    outcome: 'error',
+  });
+  assert.equal(one(db, "SELECT value FROM sync_state WHERE key = 'outlook:last_error'").value, 'Microsoft Graph synchronization needs attention.');
 });
 
 test('Gmail OAuth routes are admin-only, bind state to one session, and expose safe status', async (context) => {
@@ -827,7 +1295,7 @@ test('Gmail OAuth routes are admin-only, bind state to one session, and expose s
       };
     },
   });
-  const memberCookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const memberCookie = await harness.login('noah@lexflow.local', 'welcome123');
   const firstAdminCookie = await harness.login('admin@lexflow.local', 'admin123');
   const secondAdminCookie = await harness.login('admin@lexflow.local', 'admin123');
 
@@ -957,4 +1425,58 @@ test('Gmail OAuth routes are admin-only, bind state to one session, and expose s
   assert.equal((await harness.delete('/api/integrations/gmail', firstAdminCookie)).status, 204);
   assert.deepEqual(revokedTokens, [refreshToken, refreshToken]);
   assert.equal(harness.integrations.gmail.status().connected, false);
+});
+
+test('Microsoft 365 tenant connection routes are OrgAdmin-only and preserve callback state', async (context) => {
+  const calls = [];
+  const harness = await createApiHarness(context, {
+    integrationFactory() {
+      return {
+        outlook: {
+          configured: true,
+          status() {
+            return {
+              configured: true,
+              connected: false,
+              accountEmail: null,
+              mailboxCount: 2,
+              lastSuccessAt: null,
+              lastError: null,
+            };
+          },
+          authorizationUrl(input) {
+            calls.push({ kind: 'authorize', ...input });
+            return 'https://login.microsoftonline.com/tenant/v2.0/adminconsent?state=consent-state';
+          },
+          async completeAuthorization(input) { calls.push({ kind: 'callback', ...input }); },
+          disconnect(input) { calls.push({ kind: 'disconnect', ...input }); },
+        },
+      };
+    },
+  });
+  const memberCookie = await harness.login('noah@lexflow.local');
+  const adminCookie = await harness.login('admin@lexflow.local');
+  const bootstrap = await harness.get('/api/bootstrap', adminCookie);
+
+  assert.equal(bootstrap.body.integrations.outlook.mailboxCount, 2);
+  assert.equal(bootstrap.body.integrations.outlook.inProgress, false);
+  assert.equal(bootstrap.body.integrations.outlook.sequence, 1);
+  assert.equal(bootstrap.body.integrations.outlook.outcome, 'success');
+  assert.equal('emails' in bootstrap.body, false);
+
+  assert.equal((await harness.get('/api/integrations/outlook/authorize', memberCookie, { redirect: 'manual' })).status, 403);
+  const start = await harness.get('/api/integrations/outlook/authorize', adminCookie, { redirect: 'manual' });
+  assert.equal(start.status, 303);
+  assert.match(start.location, /adminconsent/);
+  assert.equal(calls[0].kind, 'authorize');
+  assert.ok(calls[0].sessionId);
+
+  const callback = await harness.get('/api/integrations/outlook/callback?state=consent-state&tenant=tenant&admin_consent=True', adminCookie, { redirect: 'manual' });
+  assert.equal(callback.status, 303);
+  assert.equal(callback.location, '/?integration=outlook-connected');
+  assert.equal(calls[1].state, 'consent-state');
+  assert.equal(calls[1].adminConsent, 'True');
+
+  assert.equal((await harness.delete('/api/integrations/outlook', adminCookie)).status, 204);
+  assert.equal(calls[2].kind, 'disconnect');
 });

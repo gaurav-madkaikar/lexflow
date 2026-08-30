@@ -5,11 +5,48 @@ import test from 'node:test';
 import { createDatabase, migrate, seedDemoData } from '../src/db.js';
 import {
   createDepartment,
+  deleteDepartment,
   getWorkspaceSettings,
   listDepartments,
   moveMemberToDepartment,
   updateWorkspaceSettings,
 } from '../src/workspace.js';
+
+test('removing a department unassigns members and clears only its mailbox cursor', (context) => {
+  const db = createDatabase(':memory:');
+  context.after(() => db.close());
+  seedDemoData(db);
+
+  const department = createDepartment({ db, name: 'Compliance', sharedMailbox: 'compliance@lexflow.local' });
+  const member = db.prepare(`
+    INSERT INTO users (email, name, initials, department, role, organization_id, auth_provider)
+    VALUES ('sam@lexflow.local', 'Sam Rao', 'SR', '', 'member', 1, 'local')
+    RETURNING id
+  `).get();
+  moveMemberToDepartment({
+    db,
+    userId: Number(member.id),
+    departmentId: department.id,
+  });
+  for (const key of [
+    'mail_cursor:graph:compliance@lexflow.local',
+    'last_sync_at:mail_cursor:graph:compliance@lexflow.local',
+    'last_sync_error:mail_cursor:graph:compliance@lexflow.local',
+  ]) {
+    db.prepare('INSERT INTO sync_state (key, value, organization_id) VALUES (?, ?, 1)').run(key, 'saved');
+  }
+  db.prepare("INSERT INTO sync_state (key, value, organization_id) VALUES ('mail_cursor:graph:legal@lexflow.local', 'keep', 1)").run();
+
+  const removed = deleteDepartment({ db, departmentId: department.id });
+
+  assert.equal(removed.unassignedMemberCount, 1);
+  const placement = db.prepare('SELECT department, department_id FROM users WHERE id = ?').get(member.id);
+  assert.equal(placement.department, '');
+  assert.equal(placement.department_id, null);
+  assert.equal(db.prepare('SELECT id FROM departments WHERE id = ?').get(department.id), undefined);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM sync_state WHERE key LIKE '%compliance@lexflow.local'").get().count, 0);
+  assert.equal(db.prepare("SELECT value FROM sync_state WHERE key = 'mail_cursor:graph:legal@lexflow.local'").get().value, 'keep');
+});
 
 test('workspace defaults and departments are persisted', (context) => {
   const db = createDatabase(':memory:');
@@ -23,11 +60,16 @@ test('workspace defaults and departments are persisted', (context) => {
   assert.deepEqual(listDepartments(db).map(item => item.name), [
     'Finance',
     'Legal',
-    'Operations',
   ]);
 
-  const created = createDepartment({ db, name: '  Compliance  ' });
-  const maya = db.prepare("SELECT id FROM users WHERE email = 'maya@lexflow.local'").get();
+  const created = createDepartment({ db, name: '  Compliance  ', sharedMailbox: 'compliance@lexflow.local' });
+  assert.equal('accessStatus' in created, false);
+  assert.equal('accessMessage' in created, false);
+  const maya = db.prepare(`
+    INSERT INTO users (email, name, initials, department, role, organization_id, auth_provider)
+    VALUES ('new.member@lexflow.local', 'New Member', 'NM', '', 'member', 1, 'local')
+    RETURNING id
+  `).get();
   const moved = moveMemberToDepartment({
     db,
     userId: Number(maya.id),
@@ -47,7 +89,7 @@ test('workspace validation rejects duplicate departments and invalid limits', (c
   seedDemoData(db);
 
   assert.throws(
-    () => createDepartment({ db, name: 'legal' }),
+    () => createDepartment({ db, name: 'legal', sharedMailbox: 'legal@lexflow.local' }),
     error => error.code === 'INVALID_INPUT' && error.field === 'name',
   );
   assert.throws(
@@ -63,6 +105,26 @@ test('workspace validation rejects duplicate departments and invalid limits', (c
     timeUnassignedHours: 1,
     timeAssignedUnmarkedHours: 24,
   });
+});
+
+test('department placement trusts the OrgAdmin assignment without mailbox verification', (context) => {
+  const db = createDatabase(':memory:');
+  context.after(() => db.close());
+  seedDemoData(db);
+
+  const member = db.prepare("SELECT id FROM users WHERE email = 'maya@lexflow.local'").get();
+  const department = db.prepare("SELECT id FROM departments WHERE name = 'Legal'").get();
+
+  const moved = moveMemberToDepartment({
+    db,
+    userId: Number(member.id),
+    departmentId: Number(department.id),
+  });
+
+  assert.equal(moved.department, 'Legal');
+  assert.equal(moved.departmentId, Number(department.id));
+  assert.equal('mailboxAccessStatus' in moved, false);
+  assert.equal('mailboxAccessMessage' in moved, false);
 });
 
 test('migration preserves legacy data and is idempotent', () => {
@@ -125,8 +187,13 @@ test('migration preserves legacy data and is idempotent', () => {
   );
   assert.deepEqual(
     db.prepare('SELECT name FROM departments ORDER BY name').all().map(row => row.name),
-    ['Legal', 'Operations'],
+    ['Legal'],
   );
+  assert.equal(
+    db.prepare("SELECT head_user_id FROM departments WHERE name = 'Legal'").get().head_user_id,
+    2,
+  );
+  assert.equal(db.prepare('SELECT department_id FROM emails WHERE id = 1').get().department_id, 1);
   assert.equal(db.prepare('SELECT count(*) AS count FROM workspace_settings').get().count, 1);
   db.prepare(`
     INSERT INTO notifications (user_id, email_id, kind, message, created_at)

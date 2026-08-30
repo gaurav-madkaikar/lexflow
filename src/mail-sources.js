@@ -62,7 +62,7 @@ const demoMessages = [
 
 function mapGraphMessage(item, mailbox) {
   return {
-    providerId: item.id,
+    providerId: `outlook:${mailbox.toLocaleLowerCase()}:${item.id}`,
     provider: 'outlook',
     mailboxAddress: mailbox,
     subject: item.subject || '(No subject)',
@@ -89,8 +89,8 @@ export class MockMailSource {
 }
 
 export class GraphMailSource {
-  constructor({ tenantId, clientId, clientSecret, mailbox, fetchImpl = fetch, requestTimeoutMs = 15_000 }) {
-    Object.assign(this, { tenantId, clientId, clientSecret, mailbox, fetchImpl, requestTimeoutMs });
+  constructor({ tenantId, clientId, clientSecret, mailbox, accessTokenProvider = null, fetchImpl = fetch, requestTimeoutMs = 15_000 }) {
+    Object.assign(this, { tenantId, clientId, clientSecret, mailbox, accessTokenProvider, fetchImpl, requestTimeoutMs });
     this.provider = 'outlook';
     this.mailboxAddress = mailbox;
     this.sourceKey = `outlook:${mailbox.toLocaleLowerCase()}`;
@@ -98,6 +98,7 @@ export class GraphMailSource {
   }
 
   async accessToken() {
+    if (this.accessTokenProvider) return this.accessTokenProvider();
     const form = new URLSearchParams({
       client_id: this.clientId,
       client_secret: this.clientSecret,

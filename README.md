@@ -1,112 +1,101 @@
 # LexFlow Email Assignment
 
-A minimal email-intake app for rule-based and manual assignment. Admins manage routing, departments, response windows, and reassignments; members see only their work, receive assignment and overdue notifications, and can mark email complete. It runs with built-in demo mail by default and can sync one Microsoft 365 mailbox, one Gmail mailbox, or both into the same queue.
+LexFlow routes Microsoft 365 shared-mailbox messages to organization members. Access is provided by Microsoft Entra ID; local passwords and bootstrap accounts are not supported. The data model is tenant-aware even when the first deployment has only one active customer organization.
 
 ## Requirements
 
 - Node.js 22.13 or newer
 - npm
+- A Microsoft Entra application configured for organizational accounts
+
+## Entra ID setup
+
+1. Register a web application in Microsoft Entra ID for organizational accounts in any directory.
+2. Open **Entra ID → App registrations → All applications → LexFlow → Authentication**. Under **Platform configurations**, choose **Add a platform → Web** and add `${APP_BASE_URL}/api/auth/outlook/callback` and `${APP_BASE_URL}/api/integrations/outlook/callback`, then save. Redirect URIs are configured on the app registration, not the Enterprise application.
+3. Create an application role named `PlatformAdmin` and assign it to the developers who maintain LexFlow.
+4. Record the application client ID and client secret.
+5. Start LexFlow with `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`, and `APP_BASE_URL` configured.
+6. A PlatformAdmin signs in, creates the customer organization, and supplies its authoritative Entra tenant ID, approved domain, and initial OrgAdmin email. Entra binds the verified object ID on first sign-in.
+
+The server validates the signed ID token through `@azure/msal-node`, checks the tenant ID and issuer/audience through MSAL, requires an approved organization domain, and uses the verified `PlatformAdmin` role claim for platform access. Organization members must be pre-provisioned by an OrgAdmin before their first sign-in. A pending member is activated and bound to the verified Entra object ID on first login.
+
+With `APP_BASE_URL=http://localhost:3000`, the two exact local Web redirect URIs are:
+
+```text
+http://localhost:3000/api/auth/outlook/callback
+http://localhost:3000/api/integrations/outlook/callback
+```
 
 ## Run locally
 
 ```bash
 npm install
+cp .env.example .env
 npm start
 ```
 
-Open [http://127.0.0.1:3000](http://127.0.0.1:3000). Without complete Microsoft Graph settings, the app clearly runs in demo mode. Runtime data is stored in `data/lexflow.db`.
+Open the URL configured by `APP_BASE_URL` (default `http://localhost:3000`). The application refuses startup when Entra client credentials are absent or when a database still contains local accounts. It never silently deletes or maps those accounts.
 
-To change the port, database path, or automatic sync interval, copy the example configuration before starting:
-
-```bash
-cp .env.example .env
-```
-
-Automatic sync runs once per minute by default. `SYNC_INTERVAL_SECONDS=0` disables it; any enabled interval must be at least 60 seconds.
-
-## Demo accounts
-
-These credentials are for local demonstration only:
-
-| Role | Email | Password |
-| --- | --- | --- |
-| Admin | `admin@lexflow.local` | `admin123` |
-| Legal member | `maya@lexflow.local` | `welcome123` |
-| Finance member | `priya@lexflow.local` | `welcome123` |
-
-## Microsoft Outlook connection
-
-1. Register an application in Microsoft Entra ID.
-2. Add the Microsoft Graph **application** permission `Mail.Read` and grant admin consent.
-3. Restrict application access to the intended mailbox with an appropriate tenant policy.
-4. Copy `.env.example` to `.env` and set all four values:
-
-```dotenv
-GRAPH_TENANT_ID=your-tenant-id
-GRAPH_CLIENT_ID=your-client-id
-GRAPH_CLIENT_SECRET=your-client-secret
-GRAPH_MAILBOX=shared-mailbox@example.com
-BOOTSTRAP_ADMIN_PASSWORD=choose-a-strong-admin-password
-BOOTSTRAP_MAYA_PASSWORD=choose-a-strong-member-password
-BOOTSTRAP_PRIYA_PASSWORD=choose-another-strong-member-password
-```
-
-The three local account passwords are required whenever a live mail connector is configured and replace any earlier demo passwords, so a connected instance never retains the documented defaults. Outlook is enabled only when every Graph value is present. For an HTTPS deployment, also set `NODE_ENV=production` so session cookies use the `Secure` flag. Keep `.env` and client secrets out of version control.
-
-## Gmail connection
-
-1. Create a project in [Google Cloud Console](https://console.cloud.google.com/) and enable the Gmail API.
-2. Configure the OAuth consent screen. For a local test, add the Gmail account as a test user.
-3. Create an OAuth client with application type **Web application**.
-4. Add this exact authorized redirect URI for the default local server:
-
-```text
-http://127.0.0.1:3000/api/integrations/gmail/callback
-```
-
-5. Generate a 32-byte encryption key and configure the Google client:
+For a database containing only the three known demo accounts, the explicit one-time reset path is:
 
 ```bash
-openssl rand -base64 32
+npm run reset-local-data -- data/lexflow.db --confirm-reset-local-data
 ```
+
+The command refuses any database that is not the known local demo workspace. Back up the database first.
+
+## Configuration
+
+Copy `.env.example` and set the Entra values:
 
 ```dotenv
-APP_BASE_URL=http://127.0.0.1:3000
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-TOKEN_ENCRYPTION_KEY=the-generated-base64-key
-BOOTSTRAP_ADMIN_PASSWORD=choose-a-strong-admin-password
-BOOTSTRAP_MAYA_PASSWORD=choose-a-strong-member-password
-BOOTSTRAP_PRIYA_PASSWORD=choose-another-strong-member-password
+APP_BASE_URL=https://lexflow.example.com
+ENTRA_CLIENT_ID=your-entra-application-client-id
+ENTRA_CLIENT_SECRET=your-entra-client-secret
+ENTRA_AUTHORITY=https://login.microsoftonline.com/organizations
 ```
 
-Restart LexFlow, sign in as an admin, open **Settings → Email connections**, and select **Connect Gmail**. LexFlow requests read-only Gmail access, encrypts the refresh token in SQLite, and uses it only for background Inbox sync. Disconnecting makes a bounded attempt to revoke Google access, then removes the local connection and Gmail cursor; it does not delete imported work items.
+Microsoft 365 shared-mailbox access uses the same multitenant Entra application as sign-in. Add this Web redirect URI to the app registration:
 
-## Rule behavior
+```dotenv
+https://lexflow.example.com/api/integrations/outlook/callback
+```
 
-- Only admins can create, enable, disable, or delete rules and trigger a manual sync.
-- Enabled rules are evaluated by ascending numeric priority; the first match wins. Equal priorities use creation order.
-- Comma-separated keywords are case-insensitive and must all appear across the email subject and preview.
-- The optional sender filter is a case-insensitive substring match against the sender name and address.
-- Creating or enabling a rule also checks currently unassigned email. Disabling or deleting a rule does not alter existing assignments.
-- Admins can also assign or reassign any open email from its detail drawer. Completed email is locked.
-- An assignment creates an in-app notification for the member and an activity entry for the admin. Members see only their assigned email and can mark it complete.
-- Completion creates an activity entry and notifies every admin, once per email.
-- Admins can add departments, move members between them, and edit the two workspace-wide response windows in **Settings**.
-- Unassigned alerts notify admins based on the provider's received time. Assigned-but-incomplete alerts notify both admins and the assignee from the latest assignment time. Overdue alerts repeat once per hour until the email is assigned, reassigned, or completed as applicable.
+An OrgAdmin connects their organization once from Settings and a Microsoft 365 tenant administrator grants consent. LexFlow stores only the tenant connection status; it uses short-lived client-credential tokens and does not store per-member Microsoft credentials or refresh tokens. Every department shared mailbox becomes an organization-scoped sync source.
+
+Use Exchange Online Application RBAC to assign the `Application Mail.Read` role to the tenant's LexFlow service principal with a resource scope containing only the approved shared mailboxes. Do not also grant the unscoped Microsoft Graph `Mail.Read` application permission in Entra: Entra grants and Exchange App RBAC grants are additive, which would otherwise make every mailbox readable. Exchange RBAC changes can take 30 minutes to 2 hours to propagate. For HTTPS deployments set `NODE_ENV=production` so the server-side session cookie includes `Secure`.
+
+OrgAdmins are responsible for ensuring members have the appropriate Full Access and Send As permissions for a department's shared mailbox before assigning them to that department. LexFlow treats department assignment as this administrative confirmation; it does not inspect or modify individual Exchange permissions.
+
+## Administration
+
+- `PlatformAdmin` creates, edits, archives, and restores customer organizations. Archive is reversible and blocks login and processing while preserving data.
+- `OrgAdmin` edits organization name, approved domain, IANA reporting timezone, and optional PNG/JPEG/WebP logo; configures the organization-wide Microsoft 365 connection; manages pending/active/disabled members and departments; and selects each department's DepAdmin. OrgAdmins never receive email subjects, senders, previews, rules, activity, or email notifications.
+- `DepAdmin` is the current head of one department. The first eligible member assigned to a headless department becomes DepAdmin automatically. A DepAdmin remains a working member and can assign email to themselves or active members of the same department, manage that department's automation rules, and complete work assigned to them.
+- A current DepAdmin cannot be moved, disabled, or promoted until the OrgAdmin selects a replacement from the same department. Promoting another member is blocked while that member has open assigned email or enabled rules.
+- `Member` sees and completes only email assigned to their own account.
+- The last active OrgAdmin cannot be disabled or demoted.
+- Microsoft Graph synchronization runs automatically. DepAdmins do not configure Graph credentials, and LexFlow does not add per-user credentials to `.env`.
+
+## Metrics
+
+Every role has a tenant-safe **Metrics** module:
+
+- PlatformAdmins see active/archived tenant status and tenant lifecycle only.
+- OrgAdmins see workforce lifecycle and Microsoft Graph refresh health, never task or email-derived reporting.
+- DepAdmins see assignment outcomes, employee workload, and automation-rule performance for their current department only.
+- Members see only their own assignments, completions, and handling-time trend.
+
+Metrics use append-only reporting events. Existing organization and task records are backfilled only where their stored timestamps provide reliable evidence; the UI labels older ranges as partial rather than inventing missing history. Date boundaries, daily/weekly/monthly buckets, and SLA status use the organization's configured IANA timezone. Chart.js is bundled and served locally, and every plot includes an exact data-table alternative.
 
 ## Verification
-
-Run the intentionally small suite:
 
 ```bash
 npm test
 ```
 
-The suite contains a compact set of automated contract tests covering migrations, Gmail and Outlook imports, OAuth safety, rule and manual assignment, reassignment, isolation, admin-only controls, departments, response windows, completion notifications, hourly overdue alerts, idempotency, and the one-minute sync default.
+The suite covers migration compatibility, Entra callback safety, tenant membership and isolation behavior, organization administration, department-head replacement, cross-department confidentiality, shared-mailbox imports, assignment/completion workflows, role-scoped metrics, timezone/DST boundaries, notifications, alerts, and configuration validation. Browser smoke testing should cover Microsoft sign-in, all four Metrics views, OrgAdmin administration-only navigation, DepAdmin department workflow access, and Member assigned-work access.
 
-For a browser smoke check, sign in as the admin, open an unassigned message and assign it, then sign in as its assignee. Confirm the notification and completion control. Return to the admin account to confirm the completion notification and activity entry. Admin settings should also expose department placement and both alert windows.
+## Security notes
 
-## Production limitations
-
-This MVP uses one local Express process, SQLite, local password accounts, polling, and at most one mailbox per provider. It does not include webhooks, a distributed job queue, centralized identity/SSO, user administration, password recovery, attachments, full email bodies, outbound replies, AI classification, or multiple accounts from the same provider. Deployment still requires normal production controls such as TLS, secret management, database backups, monitoring, Google OAuth verification where applicable, and tenant-level mailbox access restrictions.
+Keep `.env`, client secrets, and the SQLite database out of version control. Use TLS, secret management, backups, monitoring, and appropriate Graph mailbox access restrictions in production. Tenant archive and domain changes invalidate organization sessions.

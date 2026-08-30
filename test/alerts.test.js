@@ -13,10 +13,20 @@ function user(db, email) {
 
 function addSecondAdmin(db) {
   db.prepare(`
-    INSERT INTO users (email, name, initials, department, role, password_hash)
-    VALUES ('ops2@lexflow.local', 'Second Admin', 'SA', 'Operations', 'admin', 'test')
+    INSERT INTO users (email, name, initials, department, role)
+    VALUES ('ops2@lexflow.local', 'Second Admin', 'SA', 'Operations', 'admin')
   `).run();
   return user(db, 'ops2@lexflow.local');
+}
+
+function addLegalMember(db) {
+  const legal = db.prepare("SELECT id FROM departments WHERE name = 'Legal'").get();
+  db.prepare(`
+    INSERT INTO users
+      (email, name, initials, department, role, organization_id, auth_provider, account_status, department_id)
+    VALUES ('noah@lexflow.local', 'Noah Singh', 'NS', 'Legal', 'member', 1, 'local', 'active', ?)
+  `).run(legal.id);
+  return user(db, 'noah@lexflow.local');
 }
 
 function insertEmail(db, {
@@ -26,12 +36,13 @@ function insertEmail(db, {
   receivedAt,
   assignedAt = null,
   createdAt,
+  departmentId,
 }) {
   return Number(db.prepare(`
     INSERT INTO emails
       (provider_id, subject, sender_name, sender_address, preview, received_at,
-       outlook_url, status, assignee_id, assigned_at, created_at)
-    VALUES (?, ?, 'Customer', 'customer@example.test', 'Please review.', ?, NULL, ?, ?, ?, ?)
+       outlook_url, status, assignee_id, assigned_at, created_at, organization_id, department_id)
+    VALUES (?, ?, 'Customer', 'customer@example.test', 'Please review.', ?, NULL, ?, ?, ?, ?, 1, ?)
   `).run(
     providerId,
     `Message ${providerId}`,
@@ -40,6 +51,7 @@ function insertEmail(db, {
     assigneeId,
     assignedAt,
     createdAt,
+    departmentId,
   ).lastInsertRowid);
 }
 
@@ -50,16 +62,18 @@ test('unassigned alerts use Outlook received time, repeat hourly, and stop after
   addSecondAdmin(db);
   const admin = user(db, 'admin@lexflow.local');
   const maya = user(db, 'maya@lexflow.local');
+  const legal = db.prepare("SELECT id FROM departments WHERE name = 'Legal'").get();
   const emailId = insertEmail(db, {
     providerId: 'unassigned-overdue',
     status: 'unassigned',
     receivedAt: '2026-08-14T08:00:00.000Z',
     createdAt: '2026-08-14T08:59:00.000Z',
+    departmentId: Number(legal.id),
   });
 
   assert.deepEqual(
     evaluateOverdueAlerts({ db, now: new Date('2026-08-14T09:01:00.000Z') }),
-    { created: 2 },
+    { created: 1 },
   );
   assert.deepEqual(
     evaluateOverdueAlerts({ db, now: new Date('2026-08-14T09:59:00.000Z') }),
@@ -67,18 +81,23 @@ test('unassigned alerts use Outlook received time, repeat hourly, and stop after
   );
   assert.deepEqual(
     evaluateOverdueAlerts({ db, now: new Date('2026-08-14T10:01:00.000Z') }),
-    { created: 2 },
+    { created: 1 },
   );
   assert.equal(db.prepare(`
     SELECT count(*) AS count FROM notifications
     WHERE email_id = ? AND kind = 'unassigned_overdue'
-  `).get(emailId).count, 4);
+  `).get(emailId).count, 2);
+  assert.equal(db.prepare(`
+    SELECT count(*) AS count FROM notifications
+    WHERE email_id = ? AND user_id = ?
+  `).get(emailId, admin.id).count, 0);
 
   assignEmailManually({
     db,
     emailId,
     assigneeId: Number(maya.id),
-    adminId: Number(admin.id),
+    actorId: Number(maya.id),
+    departmentId: Number(legal.id),
     now: new Date('2026-08-14T10:02:00.000Z'),
   });
   assert.deepEqual(
@@ -96,26 +115,27 @@ test('assigned alerts reach admins and assignee, reset on reassignment, and stop
   context.after(() => db.close());
   seedDemoData(db);
   addSecondAdmin(db);
+  const noah = addLegalMember(db);
   updateWorkspaceSettings({
     db,
     timeUnassignedHours: 1,
     timeAssignedUnmarkedHours: 1,
   });
-  const admin = user(db, 'admin@lexflow.local');
   const maya = user(db, 'maya@lexflow.local');
-  const priya = user(db, 'priya@lexflow.local');
+  const legal = db.prepare("SELECT id FROM departments WHERE name = 'Legal'").get();
   const emailId = insertEmail(db, {
     providerId: 'assigned-overdue',
     status: 'assigned',
-    assigneeId: Number(maya.id),
+    assigneeId: Number(noah.id),
     receivedAt: '2026-08-14T07:30:00.000Z',
     assignedAt: '2026-08-14T08:00:00.000Z',
     createdAt: '2026-08-14T07:31:00.000Z',
+    departmentId: Number(legal.id),
   });
 
   assert.deepEqual(
     evaluateOverdueAlerts({ db, now: new Date('2026-08-14T09:01:00.000Z') }),
-    { created: 3 },
+    { created: 2 },
   );
   assert.deepEqual(
     evaluateOverdueAlerts({ db, now: new Date('2026-08-14T09:59:00.000Z') }),
@@ -123,37 +143,38 @@ test('assigned alerts reach admins and assignee, reset on reassignment, and stop
   );
   assert.deepEqual(
     evaluateOverdueAlerts({ db, now: new Date('2026-08-14T10:01:00.000Z') }),
-    { created: 3 },
+    { created: 2 },
   );
 
   assignEmailManually({
     db,
     emailId,
-    assigneeId: Number(priya.id),
-    adminId: Number(admin.id),
+    assigneeId: Number(maya.id),
+    actorId: Number(maya.id),
+    departmentId: Number(legal.id),
     now: new Date('2026-08-14T10:02:00.000Z'),
   });
   assert.equal(db.prepare(`
     SELECT count(*) AS count FROM notifications
     WHERE email_id = ? AND user_id = ? AND kind = 'assigned_overdue'
-  `).get(emailId, maya.id).count, 0);
+  `).get(emailId, noah.id).count, 0);
   assert.deepEqual(
     evaluateOverdueAlerts({ db, now: new Date('2026-08-14T10:30:00.000Z') }),
     { created: 0 },
   );
   assert.deepEqual(
     evaluateOverdueAlerts({ db, now: new Date('2026-08-14T11:03:00.000Z') }),
-    { created: 3 },
+    { created: 1 },
   );
   assert.equal(db.prepare(`
     SELECT count(*) AS count FROM notifications
     WHERE email_id = ? AND user_id = ? AND kind = 'assigned_overdue'
-  `).get(emailId, priya.id).count, 1);
+  `).get(emailId, maya.id).count, 1);
 
   completeAssignedEmail({
     db,
     emailId,
-    userId: Number(priya.id),
+    userId: Number(maya.id),
     now: new Date('2026-08-14T11:04:00.000Z'),
   });
   assert.deepEqual(

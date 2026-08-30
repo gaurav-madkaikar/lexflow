@@ -1,3 +1,13 @@
+import { randomUUID } from 'node:crypto';
+import { departmentHeadRecipient } from './department-access.js';
+import {
+  finishGraphRun,
+  interruptOpenGraphRuns,
+  recordRuleAssignment,
+  recordTaskEvent,
+  startGraphRun,
+} from './reporting-events.js';
+
 function runTransaction(db, operation) {
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -30,11 +40,15 @@ function workflowError(status, code, message) {
   return error;
 }
 
-function setSyncState(db, key, value) {
+function scopedStateKey(key, organizationId = 1) {
+  return Number(organizationId) === 1 ? key : `organization:${organizationId}:${key}`;
+}
+
+function setSyncState(db, key, value, organizationId = 1) {
   db.prepare(`
-    INSERT INTO sync_state (key, value) VALUES (?, ?)
+    INSERT INTO sync_state (key, value, organization_id) VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
-  `).run(key, value);
+  `).run(scopedStateKey(key, organizationId), value, organizationId);
 }
 
 function asMailMessage(row) {
@@ -52,6 +66,9 @@ function recordAssignment(db, {
   actorId = null,
   assignedAt,
   allowReassignment = false,
+  organizationId = 1,
+  assignmentSource = 'manual',
+  rule = null,
 }) {
   const eligibleStatus = allowReassignment
     ? "status IN ('unassigned', 'assigned')"
@@ -59,52 +76,96 @@ function recordAssignment(db, {
   const updated = db.prepare(`
     UPDATE emails
     SET status = 'assigned', assignee_id = ?, assigned_at = ?
-    WHERE id = ? AND ${eligibleStatus}
-  `).run(assignee.id, assignedAt, email.id);
+    WHERE id = ? AND organization_id = ? AND ${eligibleStatus}
+  `).run(assignee.id, assignedAt, email.id, organizationId);
   if (updated.changes !== 1) return false;
 
   if (email.assignee_id) {
     db.prepare(`
       DELETE FROM notifications
-      WHERE user_id = ? AND email_id = ? AND kind IN ('assignment', 'assigned_overdue')
-    `).run(email.assignee_id, email.id);
+      WHERE organization_id = ? AND user_id = ? AND email_id = ? AND kind = 'assignment'
+    `).run(organizationId, email.assignee_id, email.id);
+    db.prepare(`
+      DELETE FROM notifications
+      WHERE organization_id = ? AND email_id = ? AND kind = 'assigned_overdue'
+    `).run(organizationId, email.id);
     db.prepare(`
       DELETE FROM alert_deliveries
-      WHERE user_id = ? AND email_id = ? AND kind = 'assigned_overdue'
-    `).run(email.assignee_id, email.id);
+      WHERE organization_id = ? AND email_id = ? AND kind = 'assigned_overdue'
+    `).run(organizationId, email.id);
   }
   db.prepare(`
     DELETE FROM alert_deliveries
-    WHERE email_id = ? AND kind = 'unassigned_overdue'
-  `).run(email.id);
+      WHERE organization_id = ? AND email_id = ? AND kind = 'unassigned_overdue'
+    `).run(organizationId, email.id);
   db.prepare(`
-    INSERT INTO notifications
-      (user_id, email_id, kind, message, created_at)
-    VALUES (?, ?, 'assignment', ?, ?)
-  `).run(assignee.id, email.id, `New assignment: ${email.subject}`, assignedAt);
+      INSERT INTO notifications
+      (user_id, email_id, kind, message, created_at, organization_id)
+    VALUES (?, ?, 'assignment', ?, ?, ?)
+  `).run(assignee.id, email.id, `New assignment: ${email.subject}`, assignedAt, organizationId);
 
   const previous = email.assignee_id
     ? db.prepare('SELECT name FROM users WHERE id = ?').get(email.assignee_id)
     : null;
+  const department = email.department_id
+    ? db.prepare('SELECT name FROM departments WHERE id = ? AND organization_id = ?')
+      .get(email.department_id, organizationId)
+    : null;
+  const taskEventId = recordTaskEvent(db, {
+    organizationId,
+    departmentId: email.department_id,
+    emailId: email.id,
+    actorId,
+    assigneeId: assignee.id,
+    previousAssigneeId: email.assignee_id,
+    eventType: email.assignee_id ? 'reassigned' : 'assigned',
+    assignmentSource,
+    departmentNameSnapshot: department?.name ?? null,
+    assigneeNameSnapshot: assignee.name,
+    previousAssigneeNameSnapshot: previous?.name ?? null,
+    receivedAt: email.received_at,
+    occurredAt: assignedAt,
+  });
+  if (assignmentSource === 'rule' && rule) {
+    recordRuleAssignment(db, {
+      taskEventId,
+      organizationId,
+      departmentId: email.department_id,
+      ruleId: rule.id,
+      assigneeId: assignee.id,
+      ruleNameSnapshot: rule.name,
+      departmentNameSnapshot: department?.name ?? null,
+      assigneeNameSnapshot: assignee.name,
+      prioritySnapshot: rule.priority,
+      occurredAt: assignedAt,
+    });
+  }
   const message = previous
     ? `Reassigned "${email.subject}" from ${previous.name} to ${assignee.name}`
     : `Assigned "${email.subject}" to ${assignee.name}`;
   db.prepare(`
-    INSERT INTO activity (actor_id, email_id, kind, message, created_at)
-    VALUES (?, ?, 'assigned', ?, ?)
-  `).run(actorId, email.id, message, assignedAt);
+    INSERT INTO activity
+      (actor_id, email_id, kind, message, created_at, organization_id, department_id)
+    VALUES (?, ?, 'assigned', ?, ?, ?, ?)
+  `).run(actorId, email.id, message, assignedAt, organizationId, email.department_id);
   return true;
 }
 
-function assignEmailByRule(db, email, rule, assignedAt) {
-  const assignee = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'member'")
-    .get(rule.assignee_id);
+function assignEmailByRule(db, email, rule, assignedAt, organizationId = 1) {
+  const assignee = db.prepare(`
+    SELECT * FROM users
+    WHERE id = ? AND organization_id = ? AND department_id = ?
+      AND role = 'member' AND account_status = 'active'
+  `).get(rule.assignee_id, organizationId, email.department_id);
   if (!assignee) return false;
   return recordAssignment(db, {
     email,
     assignee,
     assignedAt,
+    organizationId,
     allowReassignment: false,
+    assignmentSource: 'rule',
+    rule,
   });
 }
 
@@ -146,30 +207,66 @@ export function matchRule(message, rules) {
 
 export async function syncMailbox({ db, source }) {
   if (source.isCurrentConnection?.() === false) {
-    return { imported: 0, assigned: 0, skipped: true };
+    return { imported: 0, assigned: 0, skipped: true, skipReason: 'connection_changed' };
+  }
+  const organizationId = Number(source.organizationId ?? 1);
+  const departmentId = Number(source.departmentId);
+  const organization = db.prepare('SELECT status FROM organizations WHERE id = ?').get(organizationId);
+  if (!organization || organization.status !== 'active') {
+    return { imported: 0, assigned: 0, skipped: true, skipReason: 'organization_inactive' };
   }
   const cursorKey = source.cursorKey || 'mail_cursor';
-  const cursor = db.prepare('SELECT value FROM sync_state WHERE key = ?').get(cursorKey)?.value ?? null;
+  const department = Number.isInteger(departmentId) && departmentId > 0
+    ? db.prepare(`
+        SELECT id, shared_mailbox
+        FROM departments
+        WHERE id = ? AND organization_id = ?
+      `).get(departmentId, organizationId)
+    : null;
+  const sourceMailbox = String(source.mailboxAddress ?? '').trim().toLocaleLowerCase();
+  if (!department || (sourceMailbox && sourceMailbox !== String(department.shared_mailbox).trim().toLocaleLowerCase())) {
+    setSyncState(
+      db,
+      `last_sync_error:${cursorKey}`,
+      'Mailbox source no longer maps to an active department.',
+      organizationId,
+    );
+    return { imported: 0, assigned: 0, skipped: true, skipReason: 'source_invalid' };
+  }
+  const stateKey = scopedStateKey(cursorKey, organizationId);
+  const cursor = db.prepare('SELECT value FROM sync_state WHERE key = ? AND organization_id = ?').get(stateKey, organizationId)?.value ?? null;
   const { messages, nextCursor } = await source.fetchChanges(cursor);
 
   return runTransaction(db, () => {
     if (source.isCurrentConnection?.() === false) {
-      return { imported: 0, assigned: 0, skipped: true };
+      return { imported: 0, assigned: 0, skipped: true, skipReason: 'connection_changed' };
     }
-    const rules = db.prepare('SELECT * FROM rules').all();
+    const rules = db.prepare(`
+      SELECT rules.*
+      FROM rules
+      JOIN users assignee
+        ON assignee.id = rules.assignee_id
+        AND assignee.organization_id = rules.organization_id
+      WHERE rules.organization_id = ? AND rules.department_id = ?
+        AND rules.enabled = 1
+        AND assignee.department_id = rules.department_id
+        AND assignee.role = 'member'
+        AND assignee.account_status = 'active'
+      ORDER BY rules.priority, rules.id
+    `).all(organizationId, departmentId);
     const insertEmail = db.prepare(`
       INSERT OR IGNORE INTO emails
         (provider_id, subject, sender_name, sender_address, preview, received_at,
-         outlook_url, provider, mailbox_address, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned', ?)
+         outlook_url, provider, mailbox_address, status, created_at, organization_id, department_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned', ?, ?, ?)
     `);
     const updateEmail = db.prepare(`
       UPDATE emails
       SET subject = ?, sender_name = ?, sender_address = ?, preview = ?, received_at = ?,
-          outlook_url = ?, provider = ?, mailbox_address = ?
-      WHERE provider_id = ?
+          outlook_url = ?, provider = ?, mailbox_address = ?, department_id = ?
+      WHERE provider_id = ? AND organization_id = ?
     `);
-    const findEmail = db.prepare('SELECT * FROM emails WHERE provider_id = ?');
+    const findEmail = db.prepare('SELECT * FROM emails WHERE provider_id = ? AND organization_id = ?');
     const now = new Date().toISOString();
     let imported = 0;
     let assigned = 0;
@@ -189,6 +286,8 @@ export async function syncMailbox({ db, source }) {
         provider,
         mailboxAddress,
         now,
+        organizationId,
+        departmentId,
       );
 
       if (insertion.changes === 0) {
@@ -201,38 +300,100 @@ export async function syncMailbox({ db, source }) {
           webUrl,
           provider,
           mailboxAddress,
+          departmentId,
           message.providerId,
+          organizationId,
         );
         continue;
       }
 
       imported += 1;
-      const email = findEmail.get(message.providerId);
+      const email = findEmail.get(message.providerId, organizationId);
       const rule = matchRule(message, rules);
-      if (rule && assignEmailByRule(db, email, rule, now)) assigned += 1;
+      if (rule && assignEmailByRule(db, email, rule, now, organizationId)) assigned += 1;
     }
 
     if (nextCursor === null) {
-      db.prepare('DELETE FROM sync_state WHERE key = ?').run(cursorKey);
+      db.prepare('DELETE FROM sync_state WHERE key = ? AND organization_id = ?').run(stateKey, organizationId);
     } else {
-      setSyncState(db, cursorKey, nextCursor);
+      setSyncState(db, cursorKey, nextCursor, organizationId);
     }
-    setSyncState(db, 'last_sync_at', now);
-    setSyncState(db, `last_sync_at:${cursorKey}`, now);
-    db.prepare('DELETE FROM sync_state WHERE key = ?').run(`last_sync_error:${cursorKey}`);
+    setSyncState(db, 'last_sync_at', now, organizationId);
+    setSyncState(db, `last_sync_at:${cursorKey}`, now, organizationId);
+    db.prepare('DELETE FROM sync_state WHERE key = ? AND organization_id = ?').run(scopedStateKey(`last_sync_error:${cursorKey}`, organizationId), organizationId);
 
     return { imported, assigned };
   });
 }
 
-export function createSyncRunner({ db, source, sources }) {
+export function createSyncRunner({ db, source, sources, clock = () => new Date() }) {
   let inFlight = null;
+  let sequence = 0;
+  const runtimeByOrganization = new Map();
 
-  async function syncAll() {
+  if (db.prepare('SELECT 1 FROM graph_sync_runs WHERE completed_at IS NULL LIMIT 1').get()) {
+    interruptOpenGraphRuns(db, clock());
+  }
+
+  function timestamp() {
+    const value = clock();
+    return (value instanceof Date ? value : new Date(value)).toISOString();
+  }
+
+  function status(organizationId) {
+    const current = runtimeByOrganization.get(Number(organizationId));
+    return current ? { ...current } : {
+      inProgress: false,
+      startedAt: null,
+      completedAt: null,
+      sequence: 0,
+      outcome: null,
+    };
+  }
+
+  function clearSyncState(key, organizationId) {
+    db.prepare('DELETE FROM sync_state WHERE key = ? AND organization_id = ?')
+      .run(scopedStateKey(key, organizationId), organizationId);
+  }
+
+  async function syncAll(organizationId = null) {
     const available = typeof sources === 'function' ? await sources() : sources;
-    const activeSources = (available ?? (source ? [source] : [])).filter(Boolean);
+    const activeSources = (available ?? (source ? [source] : [])).filter(activeSource => (
+      activeSource && (organizationId == null || Number(activeSource.organizationId ?? 1) === Number(organizationId))
+    ));
     if (activeSources.length === 0) {
       return { imported: 0, assigned: 0, succeeded: 0, failed: 0, skipped: 0, sources: [] };
+    }
+
+    const runSequence = ++sequence;
+    const startedAt = timestamp();
+    const organizationIds = [...new Set(activeSources.map(activeSource => Number(activeSource.organizationId ?? 1)))];
+    const graphRuns = new Map();
+    for (const activeOrganizationId of organizationIds) {
+      runtimeByOrganization.set(activeOrganizationId, {
+        ...status(activeOrganizationId),
+        inProgress: true,
+        startedAt,
+        sequence: runSequence,
+      });
+      const outlookSources = activeSources.filter(activeSource => (
+        Number(activeSource.organizationId ?? 1) === activeOrganizationId
+        && (activeSource.provider || 'mailbox') === 'outlook'
+      ));
+      if (outlookSources.length) {
+        const runId = randomUUID();
+        const departments = outlookSources.map(activeSource => ({
+          departmentId: activeSource.departmentId ?? null,
+          departmentName: activeSource.departmentId
+            ? db.prepare('SELECT name FROM departments WHERE id = ? AND organization_id = ?')
+              .get(activeSource.departmentId, activeOrganizationId)?.name ?? null
+            : null,
+          mailbox: activeSource.mailboxAddress || 'outlook',
+          startedAt,
+        }));
+        startGraphRun(db, { runId, organizationId: activeOrganizationId, startedAt, departments });
+        graphRuns.set(activeOrganizationId, { runId, outcomes: [] });
+      }
     }
 
     const settled = await Promise.allSettled(
@@ -246,16 +407,42 @@ export function createSyncRunner({ db, source, sources }) {
       skipped: 0,
       sources: [],
     };
+    const organizationResults = new Map(organizationIds.map(activeOrganizationId => [activeOrganizationId, {
+      healthy: true,
+      hasOutlook: false,
+      outlookHealthy: true,
+      failedLabels: [],
+    }]));
 
     settled.forEach((outcome, index) => {
       const activeSource = activeSources[index];
+      const activeOrganizationId = Number(activeSource.organizationId ?? 1);
+      const organizationResult = organizationResults.get(activeOrganizationId);
       const cursorKey = activeSource.cursorKey || 'mail_cursor';
       const provider = activeSource.provider || 'mailbox';
       const account = activeSource.mailboxAddress || null;
+      const sourceLabel = account ? `${provider} (${account})` : provider;
+      const isOutlook = provider === 'outlook';
+      if (isOutlook) organizationResult.hasOutlook = true;
+      const graphRun = isOutlook ? graphRuns.get(activeOrganizationId) : null;
+
       if (outcome.status === 'fulfilled') {
         if (outcome.value.skipped) {
+          const safelySkipped = outcome.value.skipReason === 'connection_changed'
+            || activeSource.isCurrentConnection?.() === false;
           summary.skipped += 1;
           summary.sources.push({ provider, account, skipped: true });
+          graphRun?.outcomes.push({
+            mailbox: account || 'outlook',
+            completedAt: null,
+            outcome: safelySkipped ? 'skipped_connection_changed' : 'failed',
+            failureCategory: safelySkipped ? null : (outcome.value.skipReason || 'source_invalid'),
+          });
+          if (!safelySkipped) {
+            organizationResult.healthy = false;
+            if (isOutlook) organizationResult.outlookHealthy = false;
+            organizationResult.failedLabels.push(sourceLabel);
+          }
           return;
         }
         summary.imported += outcome.value.imported;
@@ -267,29 +454,85 @@ export function createSyncRunner({ db, source, sources }) {
           imported: outcome.value.imported,
           assigned: outcome.value.assigned,
         });
+        graphRun?.outcomes.push({
+          mailbox: account || 'outlook',
+          completedAt: null,
+          outcome: 'success',
+          failureCategory: null,
+        });
         return;
       }
 
       if (activeSource.isCurrentConnection?.() === false) {
         summary.skipped += 1;
         summary.sources.push({ provider, account, skipped: true });
+        graphRun?.outcomes.push({
+          mailbox: account || 'outlook',
+          completedAt: null,
+          outcome: 'skipped_connection_changed',
+          failureCategory: null,
+        });
         return;
       }
 
       const safeMessage = sanitizeError(outcome.reason);
       summary.failed += 1;
       summary.sources.push({ provider, account, error: safeMessage });
-      setSyncState(db, `last_sync_error:${cursorKey}`, safeMessage);
+      organizationResult.healthy = false;
+      if (isOutlook) organizationResult.outlookHealthy = false;
+      organizationResult.failedLabels.push(sourceLabel);
+      graphRun?.outcomes.push({
+        mailbox: account || 'outlook',
+        completedAt: null,
+        outcome: 'failed',
+        failureCategory: 'source_failed',
+      });
+      setSyncState(db, `last_sync_error:${cursorKey}`, safeMessage, activeOrganizationId);
     });
 
-    if (summary.failed > 0) {
-      const failedProviders = summary.sources
-        .filter((item) => item.error)
-        .map((item) => item.account ? `${item.provider} (${item.account})` : item.provider)
-        .join(', ');
-      setSyncState(db, 'last_sync_error', `Sync needs attention: ${failedProviders}.`);
-    } else {
-      db.prepare("DELETE FROM sync_state WHERE key = 'last_sync_error'").run();
+    const completedAt = timestamp();
+    for (const [activeOrganizationId, result] of organizationResults) {
+      if (result.healthy) {
+        clearSyncState('last_sync_error', activeOrganizationId);
+      } else {
+        const failedSources = result.failedLabels.join(', ') || 'configured mailboxes';
+        setSyncState(db, 'last_sync_error', `Sync needs attention: ${failedSources}.`, activeOrganizationId);
+      }
+      if (result.hasOutlook) {
+        if (result.outlookHealthy) {
+          setSyncState(db, 'outlook:last_success_at', completedAt, activeOrganizationId);
+          clearSyncState('outlook:last_error', activeOrganizationId);
+        } else {
+          setSyncState(
+            db,
+            'outlook:last_error',
+            'Microsoft Graph synchronization needs attention.',
+            activeOrganizationId,
+          );
+        }
+        const graphRun = graphRuns.get(activeOrganizationId);
+        if (graphRun) {
+          const graphOutcome = graphRun.outcomes.some(item => item.outcome === 'failed')
+            ? 'failed'
+            : graphRun.outcomes.some(item => item.outcome === 'success')
+              ? 'success'
+              : 'skipped_connection_changed';
+          finishGraphRun(db, {
+            runId: graphRun.runId,
+            completedAt,
+            outcome: graphOutcome,
+            failureCategory: graphOutcome === 'failed' ? 'source_failed' : null,
+            departmentOutcomes: graphRun.outcomes.map(item => ({ ...item, completedAt })),
+          });
+        }
+      }
+      runtimeByOrganization.set(activeOrganizationId, {
+        inProgress: false,
+        startedAt,
+        completedAt,
+        sequence: runSequence,
+        outcome: result.healthy ? 'success' : 'error',
+      });
     }
 
     if (summary.succeeded === 0 && summary.failed > 0) {
@@ -300,28 +543,41 @@ export function createSyncRunner({ db, source, sources }) {
     return summary;
   }
 
-  function run() {
+  function run(organizationId = null) {
     if (inFlight) return inFlight;
-    inFlight = syncAll()
+    inFlight = syncAll(organizationId)
       .finally(() => {
         inFlight = null;
       });
     return inFlight;
   }
 
-  return { run };
+  return { run, status };
 }
 
-export function applyRuleToUnassigned(db, ruleId) {
+export function applyRuleToUnassigned(
+  db,
+  ruleId,
+  organizationId = 1,
+  departmentId = null,
+  nowValue = new Date(),
+) {
   return runSavepoint(db, () => {
-    const rule = db.prepare('SELECT * FROM rules WHERE id = ? AND enabled = 1').get(ruleId);
+    const rule = db.prepare(`
+      SELECT * FROM rules
+      WHERE id = ? AND organization_id = ? AND department_id = ? AND enabled = 1
+    `).get(ruleId, organizationId, departmentId);
     if (!rule) return { assigned: 0 };
 
-    const emails = db.prepare("SELECT * FROM emails WHERE status = 'unassigned' ORDER BY id").all();
-    const now = new Date().toISOString();
+    const emails = db.prepare(`
+      SELECT * FROM emails
+      WHERE organization_id = ? AND department_id = ? AND status = 'unassigned'
+      ORDER BY id
+    `).all(organizationId, departmentId);
+    const now = (nowValue instanceof Date ? nowValue : new Date(nowValue)).toISOString();
     let assigned = 0;
     for (const email of emails) {
-      if (matchRule(asMailMessage(email), [rule]) && assignEmailByRule(db, email, rule, now)) {
+      if (matchRule(asMailMessage(email), [rule]) && assignEmailByRule(db, email, rule, now, organizationId)) {
         assigned += 1;
       }
     }
@@ -333,19 +589,32 @@ export function assignEmailManually({
   db,
   emailId,
   assigneeId,
+  actorId,
   adminId,
+  organizationId = 1,
+  departmentId,
   now = new Date(),
 }) {
   return runTransaction(db, () => {
     const assignedAt = now.toISOString();
-    const email = db.prepare('SELECT * FROM emails WHERE id = ?').get(emailId);
-    const assignee = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'member'")
-      .get(assigneeId);
-    const admin = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'admin'").get(adminId);
+    const assigningUserId = actorId ?? adminId;
+    const email = db.prepare(`
+      SELECT * FROM emails
+      WHERE id = ? AND organization_id = ? AND department_id = ?
+    `).get(emailId, organizationId, departmentId);
+    const assignee = db.prepare(`
+      SELECT * FROM users
+      WHERE id = ? AND organization_id = ? AND department_id = ?
+        AND role = 'member' AND account_status = 'active'
+    `).get(assigneeId, organizationId, departmentId);
+    const department = db.prepare(`
+      SELECT id FROM departments
+      WHERE id = ? AND organization_id = ? AND head_user_id = ?
+    `).get(departmentId, organizationId, assigningUserId);
 
     if (!email) throw workflowError(404, 'NOT_FOUND', 'Email not found.');
     if (!assignee) throw workflowError(404, 'NOT_FOUND', 'Team member not found.');
-    if (!admin) throw workflowError(403, 'FORBIDDEN', 'Admin access is required.');
+    if (!department) throw workflowError(403, 'FORBIDDEN', 'Department administrator access is required.');
     if (email.status === 'completed') {
       throw workflowError(409, 'CONFLICT', 'Completed emails cannot be reassigned.');
     }
@@ -356,50 +625,86 @@ export function assignEmailManually({
     const changed = recordAssignment(db, {
       email,
       assignee,
-      actorId: adminId,
+      actorId: assigningUserId,
       assignedAt,
       allowReassignment: true,
+      organizationId,
+      assignmentSource: 'manual',
     });
     if (!changed) {
       throw workflowError(409, 'CONFLICT', 'Email assignment changed. Refresh and try again.');
     }
     return {
       changed: true,
-      email: db.prepare('SELECT * FROM emails WHERE id = ?').get(emailId),
+      email: db.prepare('SELECT * FROM emails WHERE id = ? AND organization_id = ?').get(emailId, organizationId),
     };
   });
 }
 
-export function completeAssignedEmail({ db, emailId, userId, now = new Date() }) {
+export function completeAssignedEmail({ db, emailId, userId, organizationId = 1, now = new Date() }) {
   return runTransaction(db, () => {
     const completedAt = now.toISOString();
     const update = db.prepare(`
       UPDATE emails
       SET status = 'completed', completed_by = ?, completed_at = ?
-      WHERE id = ? AND assignee_id = ? AND status = 'assigned'
-    `).run(userId, completedAt, emailId, userId);
+      WHERE id = ? AND organization_id = ? AND assignee_id = ? AND status = 'assigned'
+    `).run(userId, completedAt, emailId, organizationId, userId);
 
     if (update.changes === 1) {
-      const email = db.prepare('SELECT * FROM emails WHERE id = ?').get(emailId);
-      const actor = db.prepare('SELECT name FROM users WHERE id = ?').get(userId);
+      const email = db.prepare('SELECT * FROM emails WHERE id = ? AND organization_id = ?').get(emailId, organizationId);
+      const actor = db.prepare('SELECT name FROM users WHERE id = ? AND organization_id = ?').get(userId, organizationId);
+      const department = email.department_id
+        ? db.prepare('SELECT name FROM departments WHERE id = ? AND organization_id = ?')
+          .get(email.department_id, organizationId)
+        : null;
+      recordTaskEvent(db, {
+        organizationId,
+        departmentId: email.department_id,
+        emailId,
+        actorId: userId,
+        assigneeId: userId,
+        eventType: 'completed',
+        departmentNameSnapshot: department?.name ?? null,
+        assigneeNameSnapshot: actor.name,
+        receivedAt: email.received_at,
+        occurredAt: completedAt,
+      });
       db.prepare(`
-        INSERT INTO activity (actor_id, email_id, kind, message, created_at)
-        VALUES (?, ?, 'completed', ?, ?)
-      `).run(userId, emailId, `${actor.name} completed "${email.subject}"`, completedAt);
-      db.prepare(`
-        INSERT INTO notifications (user_id, email_id, kind, message, created_at)
-        SELECT id, ?, 'completion', ?, ?
-        FROM users
-        WHERE role = 'admin'
-      `).run(emailId, `${actor.name} completed "${email.subject}"`, completedAt);
+        INSERT INTO activity
+          (actor_id, email_id, kind, message, created_at, organization_id, department_id)
+        VALUES (?, ?, 'completed', ?, ?, ?, ?)
+      `).run(
+        userId,
+        emailId,
+        `${actor.name} completed "${email.subject}"`,
+        completedAt,
+        organizationId,
+        email.department_id,
+      );
+      const head = departmentHeadRecipient(db, {
+        organizationId,
+        departmentId: email.department_id,
+      });
+      if (head) {
+        db.prepare(`
+          INSERT INTO notifications (user_id, email_id, kind, message, created_at, organization_id)
+          VALUES (?, ?, 'completion', ?, ?, ?)
+        `).run(
+          head.id,
+          emailId,
+          `${actor.name} completed "${email.subject}"`,
+          completedAt,
+          organizationId,
+        );
+      }
       db.prepare(`
         DELETE FROM alert_deliveries
-        WHERE email_id = ? AND kind = 'assigned_overdue'
-      `).run(emailId);
+        WHERE organization_id = ? AND email_id = ? AND kind = 'assigned_overdue'
+      `).run(organizationId, emailId);
       return email;
     }
 
-    const email = db.prepare('SELECT * FROM emails WHERE id = ?').get(emailId);
+    const email = db.prepare('SELECT * FROM emails WHERE id = ? AND organization_id = ?').get(emailId, organizationId);
     if (
       email?.status === 'completed' &&
       Number(email.assignee_id) === Number(userId) &&

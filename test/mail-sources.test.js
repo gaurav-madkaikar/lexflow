@@ -526,9 +526,12 @@ test('Outlook delta sync keeps pagination, removal, and provider mapping intact'
   const result = await source.fetchChanges(null);
 
   assert.equal(result.nextCursor, deltaLink);
-  assert.deepEqual(result.messages.map(message => message.providerId), ['graph-1', 'graph-2']);
+  assert.deepEqual(result.messages.map(message => message.providerId), [
+    'outlook:shared@example.test:graph-1',
+    'outlook:shared@example.test:graph-2',
+  ]);
   assert.deepEqual(result.messages[0], {
-    providerId: 'graph-1',
+    providerId: 'outlook:shared@example.test:graph-1',
     provider: 'outlook',
     mailboxAddress: 'Shared@Example.Test',
     subject: 'Graph message',

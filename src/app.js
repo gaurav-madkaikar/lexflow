@@ -3,16 +3,40 @@ import { fileURLToPath } from 'node:url';
 
 import express from 'express';
 
+import { isRulePriority, RULE_PRIORITY_ERROR } from '../public/rule-priorities.js';
+
 import {
   createSession,
   deleteSession,
   expiredSessionCookie,
   requireAdmin,
+  requireDepAdmin,
   requireUser,
   sessionCookie,
   sessionIdFromRequest,
-  verifyPassword
+  requireOrgAdmin,
+  requirePlatformAdmin,
 } from './auth.js';
+import { createEntraAuth } from './entra-auth.js';
+import {
+  getDepartmentMetrics,
+  getMemberMetrics,
+  getOrganizationMetrics,
+  getPlatformMetrics,
+  normalizeMetricsQuery,
+} from './metrics.js';
+import {
+  createMember,
+  createOrganization,
+  getLogo,
+  getOrganization,
+  listMembers,
+  listOrganizations,
+  organizationPayload,
+  setOrganizationStatus,
+  updateMember,
+  updateOrganization,
+} from './tenants.js';
 import {
   applyRuleToUnassigned,
   assignEmailManually,
@@ -20,22 +44,31 @@ import {
 } from './workflows.js';
 import {
   createDepartment,
+  deleteDepartment,
   getWorkspaceSettings,
+  listDepartmentMembers,
   listDepartments,
   moveMemberToDepartment,
+  setDepartmentHead,
+  updateDepartment,
   updateWorkspaceSettings,
 } from './workspace.js';
 
 const publicDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
+const chartBundle = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/chart.js/dist/chart.umd.js');
 
 function safeUser(row) {
   return {
     id: Number(row.id),
+    organizationId: row.organization_id == null ? null : Number(row.organization_id),
+    departmentId: row.department_id == null ? null : Number(row.department_id),
+    headedDepartmentId: row.headed_department_id == null ? null : Number(row.headed_department_id),
     email: row.email,
     name: row.name,
     initials: row.initials,
     department: row.department,
-    role: row.role
+    role: row.effectiveRole ?? (row.is_platform_admin ? 'platform_admin' : row.role === 'admin' ? 'org_admin' : 'member'),
+    status: row.account_status ?? 'active',
   };
 }
 
@@ -53,7 +86,9 @@ function emailFromRow(row) {
     outlookUrl: row.outlook_url,
     status: row.status,
     assignedAt: row.assigned_at,
-    department: row.assignee_department ?? null,
+    departmentId: row.department_id == null ? null : Number(row.department_id),
+    department: row.email_department ?? row.assignee_department ?? null,
+    sharedMailbox: row.department_mailbox ?? row.mailbox_address ?? null,
     assignee: row.assignee_id ? {
       id: Number(row.assignee_id),
       email: row.assignee_email,
@@ -70,31 +105,83 @@ function emailFromRow(row) {
 }
 
 function listEmails(db, user) {
-  const ownership = user.role === 'admin' ? '' : 'WHERE emails.assignee_id = ?';
+  const departmentAccess = user.effectiveRole === 'dep_admin';
+  const ownership = departmentAccess
+    ? 'AND emails.department_id = ?'
+    : 'AND emails.assignee_id = ?';
   const statement = db.prepare(`
     SELECT emails.*,
       assignee.email AS assignee_email,
       assignee.name AS assignee_name,
       assignee.initials AS assignee_initials,
       assignee.department AS assignee_department,
+      departments.name AS email_department,
+      departments.shared_mailbox AS department_mailbox,
       completed.name AS completed_by_name
     FROM emails
     LEFT JOIN users AS assignee ON assignee.id = emails.assignee_id
     LEFT JOIN users AS completed ON completed.id = emails.completed_by
-    ${ownership}
+    LEFT JOIN departments
+      ON departments.id = emails.department_id
+      AND departments.organization_id = emails.organization_id
+    WHERE emails.organization_id = ? ${ownership}
     ORDER BY emails.received_at DESC, emails.id DESC
   `);
-  const rows = user.role === 'admin' ? statement.all() : statement.all(user.id);
+  const rows = statement.all(
+    user.organization_id,
+    departmentAccess ? user.headed_department_id : user.id,
+  );
   return rows.map(emailFromRow);
 }
 
-function listNotifications(db, userId) {
+function visibleEmailRow(db, user, emailId) {
+  if (user.effectiveRole === 'dep_admin' && user.headed_department_id) {
+    return db.prepare(`
+      SELECT * FROM emails
+      WHERE id = ? AND organization_id = ? AND department_id = ?
+    `).get(emailId, user.organization_id, user.headed_department_id) ?? null;
+  }
+  if (user.effectiveRole === 'member') {
+    return db.prepare(`
+      SELECT * FROM emails
+      WHERE id = ? AND organization_id = ? AND assignee_id = ?
+    `).get(emailId, user.organization_id, user.id) ?? null;
+  }
+  return null;
+}
+
+function safeHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeOutlookUrl(value) {
+  const webUrl = safeHttpUrl(value);
+  if (!webUrl) return null;
+  const hostname = new URL(webUrl).hostname.toLocaleLowerCase();
+  return ['outlook.office.com', 'outlook.office365.com'].includes(hostname) ? webUrl : null;
+}
+
+function outlookImmutableId(email) {
+  const mailbox = String(email.mailbox_address ?? '').trim().toLocaleLowerCase();
+  const providerId = String(email.provider_id ?? '').trim();
+  if (!mailbox || !providerId) return null;
+  const prefix = `outlook:${mailbox}:`;
+  if (!providerId.toLocaleLowerCase().startsWith(prefix)) return null;
+  return providerId.slice(prefix.length).trim() || null;
+}
+
+function listNotifications(db, userId, organizationId) {
   return db.prepare(`
     SELECT id, email_id, kind, message, read_at, created_at
     FROM notifications
-    WHERE user_id = ?
+    WHERE user_id = ? AND organization_id = ?
     ORDER BY created_at DESC, id DESC
-  `).all(userId).map(row => ({
+  `).all(userId, organizationId).map(row => ({
     id: Number(row.id),
     emailId: Number(row.email_id),
     kind: row.kind,
@@ -102,6 +189,38 @@ function listNotifications(db, userId) {
     readAt: row.read_at,
     createdAt: row.created_at
   }));
+}
+
+function pendingTaskSummary(db, user, unreadNotifications) {
+  const departmentId = user.effectiveRole === 'dep_admin'
+    ? Number(user.headed_department_id)
+    : null;
+  const counts = db.prepare(`
+    SELECT
+      SUM(CASE
+        WHEN status = 'assigned' AND assignee_id = ?
+          AND (? IS NULL OR department_id = ?)
+        THEN 1 ELSE 0
+      END) AS assigned_to_me,
+      SUM(CASE
+        WHEN ? IS NOT NULL AND status = 'unassigned' AND department_id = ?
+        THEN 1 ELSE 0
+      END) AS unassigned_department
+    FROM emails
+    WHERE organization_id = ?
+  `).get(
+    user.id,
+    departmentId,
+    departmentId,
+    departmentId,
+    departmentId,
+    user.organization_id,
+  );
+  return {
+    assignedToMe: Number(counts.assigned_to_me) || 0,
+    unassignedDepartment: Number(counts.unassigned_department) || 0,
+    unreadNotifications: Number(unreadNotifications) || 0,
+  };
 }
 
 function ruleFromRow(row) {
@@ -112,6 +231,7 @@ function ruleFromRow(row) {
     senderFilter: row.sender_filter,
     priority: Number(row.priority),
     enabled: Boolean(row.enabled),
+    departmentId: Number(row.department_id),
     assignee: {
       id: Number(row.assignee_id),
       email: row.assignee_email,
@@ -126,31 +246,34 @@ const ruleSelect = `
     SELECT rules.*, users.email AS assignee_email, users.name AS assignee_name,
       users.initials AS assignee_initials, users.department AS assignee_department
     FROM rules
-    JOIN users ON users.id = rules.assignee_id
+    JOIN users ON users.id = rules.assignee_id AND users.organization_id = rules.organization_id
 `;
 
-function listRules(db) {
+function listRules(db, organizationId, departmentId) {
   return db.prepare(`
     ${ruleSelect}
+    WHERE rules.organization_id = ? AND rules.department_id = ?
     ORDER BY rules.priority, rules.id
-  `).all().map(ruleFromRow);
+  `).all(organizationId, departmentId).map(ruleFromRow);
 }
 
-function getRule(db, id) {
-  const row = db.prepare(`${ruleSelect} WHERE rules.id = ?`).get(id);
+function getRule(db, organizationId, departmentId, id) {
+  const row = db.prepare(`${ruleSelect} WHERE rules.organization_id = ? AND rules.department_id = ? AND rules.id = ?`)
+    .get(organizationId, departmentId, id);
   return row ? ruleFromRow(row) : null;
 }
 
-function listActivity(db) {
+function listActivity(db, organizationId, departmentId) {
   return db.prepare(`
     SELECT activity.*, users.name AS actor_name, users.initials AS actor_initials,
       emails.subject
     FROM activity
     LEFT JOIN users ON users.id = activity.actor_id
     LEFT JOIN emails ON emails.id = activity.email_id
+    WHERE activity.organization_id = ? AND activity.department_id = ?
     ORDER BY activity.created_at DESC, activity.id DESC
     LIMIT 30
-  `).all().map(row => ({
+  `).all(organizationId, departmentId).map(row => ({
     id: Number(row.id),
     emailId: row.email_id === null ? null : Number(row.email_id),
     kind: row.kind,
@@ -165,9 +288,9 @@ function listActivity(db) {
   }));
 }
 
-function syncSummary(db) {
+function syncSummary(db, organizationId) {
   const values = Object.fromEntries(
-    db.prepare('SELECT key, value FROM sync_state').all().map(row => [row.key, row.value])
+    db.prepare('SELECT key, value FROM sync_state WHERE organization_id = ?').all(organizationId).map(row => [row.key, row.value])
   );
   return {
     lastSuccessAt: values.last_sync_at ?? null,
@@ -175,42 +298,49 @@ function syncSummary(db) {
   };
 }
 
-function sourceSyncSummary(db, cursorKey) {
+function sourceSyncSummary(db, organizationId, cursorKey) {
   if (!cursorKey) return { lastSuccessAt: null, lastError: null };
   return {
-    lastSuccessAt: db.prepare('SELECT value FROM sync_state WHERE key = ?')
-      .get(`last_sync_at:${cursorKey}`)?.value ?? null,
-    lastError: db.prepare('SELECT value FROM sync_state WHERE key = ?')
-      .get(`last_sync_error:${cursorKey}`)?.value ?? null,
+    lastSuccessAt: db.prepare('SELECT value FROM sync_state WHERE organization_id = ? AND key = ?')
+      .get(organizationId, Number(organizationId) === 1 ? `last_sync_at:${cursorKey}` : `organization:${organizationId}:last_sync_at:${cursorKey}`)?.value ?? null,
+    lastError: db.prepare('SELECT value FROM sync_state WHERE organization_id = ? AND key = ?')
+      .get(organizationId, Number(organizationId) === 1 ? `last_sync_error:${cursorKey}` : `organization:${organizationId}:last_sync_error:${cursorKey}`)?.value ?? null,
   };
 }
 
-function integrationPayload(db, integrations) {
+function integrationPayload(db, integrations, organizationId = 1, syncRunner = null) {
   const outlookConfig = integrations?.outlook ?? {};
-  const outlookSync = sourceSyncSummary(db, outlookConfig.cursorKey);
-  const outlook = {
+  const outlook = outlookConfig.status?.(organizationId) ?? {
     configured: Boolean(outlookConfig.configured),
-    connected: Boolean(outlookConfig.configured),
+    connected: Boolean(outlookConfig.connected ?? outlookConfig.configured),
     accountEmail: outlookConfig.accountEmail ?? null,
-    ...outlookSync,
+    mailboxCount: 0,
+    ...sourceSyncSummary(db, organizationId, outlookConfig.cursorKey),
   };
-  const gmail = integrations?.gmail?.status?.() ?? {
+  const gmail = integrations?.gmail?.status?.(organizationId) ?? {
     configured: false,
     connected: false,
     accountEmail: null,
     lastSuccessAt: null,
     lastError: null,
   };
-  return { outlook, gmail };
+  const runtime = typeof syncRunner?.status === 'function'
+    ? syncRunner.status(organizationId)
+    : {
+        inProgress: false,
+        startedAt: null,
+        completedAt: null,
+        sequence: 0,
+        outcome: null,
+      };
+  return { outlook: { ...outlook, ...runtime }, gmail };
 }
 
 function mailboxSummary(details) {
   const providers = Object.entries(details)
     .filter(([, integration]) => integration.connected)
     .map(([provider]) => provider);
-  const hasConfiguredIntegration = Object.values(details)
-    .some(integration => integration.configured);
-  let label = hasConfiguredIntegration ? 'No mailbox connected' : 'Demo mailbox';
+  let label = 'No mailbox connected';
   if (providers.length === 1) {
     label = `${providers[0] === 'gmail' ? 'Gmail' : 'Outlook'} connected`;
   } else if (providers.length > 1) {
@@ -266,7 +396,7 @@ function parseRule(body) {
   if (senderFilter.length > 160) return { error: 'The sender filter is too long.', field: 'senderFilter' };
   if (!keywords && !senderFilter) return { error: 'Enter keywords or a sender filter.', field: 'keywords' };
   if (!Number.isInteger(assigneeId) || assigneeId < 1) return { error: 'Choose an assignee.', field: 'assigneeId' };
-  if (!Number.isInteger(priority) || priority < 1 || priority > 999) return { error: 'Priority must be between 1 and 999.', field: 'priority' };
+  if (!isRulePriority(priority)) return { error: RULE_PRIORITY_ERROR, field: 'priority' };
   return { value: { name, keywords, senderFilter, assigneeId, priority } };
 }
 
@@ -333,8 +463,8 @@ function parseRulePatch(body, current) {
   if (!Number.isInteger(value.assigneeId) || value.assigneeId < 1) {
     return { error: 'Choose an assignee.', field: 'assigneeId' };
   }
-  if (!Number.isInteger(value.priority) || value.priority < 1 || value.priority > 999) {
-    return { error: 'Priority must be between 1 and 999.', field: 'priority' };
+  if (!isRulePriority(value.priority)) {
+    return { error: RULE_PRIORITY_ERROR, field: 'priority' };
   }
   const changed = (
     value.name !== current.name
@@ -358,6 +488,8 @@ export function createApp({
   syncRunner,
   mode = 'demo',
   integrations = {},
+  entraAuth = null,
+  entraConfig = null,
   cookieSecure = process.env.NODE_ENV === 'production',
   staticDir = publicDirectory,
   clock = () => new Date(),
@@ -366,39 +498,44 @@ export function createApp({
   app.disable('x-powered-by');
   app.use(express.json({ limit: '32kb' }));
 
-  app.post('/api/login', async (request, response, next) => {
-    try {
-      const email = typeof request.body?.email === 'string' ? request.body.email.trim().toLowerCase() : '';
-      const password = typeof request.body?.password === 'string' ? request.body.password : '';
-      if (!email) {
-        validationError(response, 'Enter your email address.', 'email');
-        return;
-      }
-      if (!password) {
-        validationError(response, 'Enter your password.', 'password');
-        return;
-      }
-      const user = db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(email);
-      if (!user || !(await verifyPassword(password, user.password_hash))) {
-        response.status(401).json({
-          error: {
-            code: 'INVALID_CREDENTIALS',
-            message: 'Email or password is incorrect.',
-            fields: {
-              email: 'Check your email or password.',
-              password: 'Check your email or password.'
-            }
-          }
-        });
-        return;
-      }
+  app.get('/vendor/chart.js', (request, response) => {
+    response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    response.sendFile(chartBundle);
+  });
 
-      const session = createSession(db, user.id);
-      response.setHeader('set-cookie', sessionCookie(session.id, cookieSecure));
-      response.json({ user: safeUser(user) });
+  const identity = entraAuth ?? createEntraAuth({ db, config: entraConfig, clock });
+
+  app.get('/api/auth/outlook/start', async (request, response, next) => {
+    try {
+      response.redirect(303, await identity.authorizationUrl({ redirectPath: request.query?.returnTo }));
     } catch (error) {
       next(error);
     }
+  });
+
+  app.get('/api/auth/outlook/callback', async (request, response) => {
+    try {
+      const result = await identity.callback({
+        code: request.query?.code,
+        state: request.query?.state,
+        error: request.query?.error,
+      });
+      const session = createSession(db, result.user.id, clock(), result.user.organization_id);
+      response.setHeader('set-cookie', sessionCookie(session.id, cookieSecure));
+      response.redirect(303, result.redirectPath || '/');
+    } catch (error) {
+      response.redirect(303, `/?auth=error&message=${encodeURIComponent(error.expose ? error.message : 'Microsoft sign-in failed.')}`);
+    }
+  });
+
+  app.get('/api/organization-logos/:assetId', (request, response) => {
+    const logo = getLogo({ db, assetId: resourceId(request.params.assetId) });
+    if (!logo) return notFound(response, 'Organization logo not found.');
+    response.setHeader('Content-Type', logo.mime_type);
+    response.setHeader('Content-Length', String(logo.content.length));
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    response.end(logo.content);
   });
 
   app.use('/api', requireUser(db));
@@ -410,29 +547,314 @@ export function createApp({
   });
 
   app.get('/api/bootstrap', (request, response) => {
-    const notifications = listNotifications(db, request.user.id);
-    const integrationDetails = integrationPayload(db, integrations);
     const payload = {
       user: safeUser(request.user),
+      organization: request.user.organization_id ? organizationPayload({
+        id: request.user.organization_id,
+        name: request.user.organization_name,
+        domain: request.user.organization_domain,
+        status: request.user.organization_status,
+        timezone: request.user.organization_timezone,
+        logo_asset_id: request.user.logo_asset_id,
+      }) : null,
       mode,
-      mailboxSummary: mailboxSummary(integrationDetails),
-      emails: listEmails(db, request.user),
-      notifications,
-      unreadCount: notifications.filter(item => !item.readAt).length
     };
 
-    if (request.user.role === 'admin') {
-      payload.rules = listRules(db);
-      payload.team = db.prepare("SELECT * FROM users WHERE role = 'member' ORDER BY name")
-        .all().map(safeUser);
-      payload.activity = listActivity(db);
-      payload.sync = syncSummary(db);
-      payload.departments = listDepartments(db);
-      payload.settings = getWorkspaceSettings(db);
+    if (request.user.effectiveRole === 'org_admin') {
+      const integrationDetails = integrationPayload(db, integrations, request.user.organization_id, syncRunner);
+      payload.members = listMembers(db, request.user.organization_id);
+      payload.departments = listDepartments(db, request.user.organization_id);
+      payload.settings = getWorkspaceSettings(db, request.user.organization_id);
       payload.integrations = integrationDetails;
+      payload.mailboxSummary = mailboxSummary(integrationDetails);
+    } else if (request.user.effectiveRole === 'dep_admin') {
+      const departmentId = request.user.headed_department_id;
+      const notifications = listNotifications(db, request.user.id, request.user.organization_id);
+      payload.department = listDepartments(db, request.user.organization_id)
+        .find(item => item.id === Number(departmentId)) ?? null;
+      payload.emails = listEmails(db, request.user);
+      payload.rules = listRules(db, request.user.organization_id, departmentId);
+      payload.activity = listActivity(db, request.user.organization_id, departmentId);
+      payload.notifications = notifications;
+      payload.unreadCount = notifications.filter(item => !item.readAt).length;
+      payload.pendingTasks = pendingTaskSummary(db, request.user, payload.unreadCount);
+      payload.team = db.prepare(`
+        SELECT * FROM users
+        WHERE organization_id = ? AND department_id = ? AND role = 'member'
+          AND account_status = 'active'
+        ORDER BY name COLLATE NOCASE, id
+      `).all(request.user.organization_id, departmentId).map(row => safeUser({
+        ...row,
+        effectiveRole: Number(row.id) === Number(request.user.id) ? 'dep_admin' : 'member',
+      }));
+    } else if (request.user.effectiveRole === 'member') {
+      const notifications = listNotifications(db, request.user.id, request.user.organization_id);
+      payload.emails = listEmails(db, request.user);
+      payload.notifications = notifications;
+      payload.unreadCount = notifications.filter(item => !item.readAt).length;
+      payload.pendingTasks = pendingTaskSummary(db, request.user, payload.unreadCount);
+    }
+
+    if (request.user.effectiveRole === 'platform_admin') {
+      payload.organizations = listOrganizations(db);
     }
 
     response.json(payload);
+  });
+
+  app.get('/api/metrics/platform', requirePlatformAdmin, (request, response, next) => {
+    try {
+      const period = normalizeMetricsQuery({
+        query: request.query,
+        timezone: request.query?.timezone ?? 'UTC',
+        now: clock(),
+      });
+      response.json(getPlatformMetrics({ db, period }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/metrics/organization', requireOrgAdmin, (request, response, next) => {
+    try {
+      let departmentId = request.query?.departmentId ?? null;
+      if (departmentId !== null && !['unassigned', 'organization-wide'].includes(departmentId)) {
+        departmentId = resourceId(departmentId);
+        if (!departmentId || !db.prepare(`
+          SELECT 1 FROM departments WHERE id = ? AND organization_id = ?
+        `).get(departmentId, request.user.organization_id)) {
+          return notFound(response, 'Metrics filter not found.');
+        }
+      }
+      const period = normalizeMetricsQuery({
+        query: request.query,
+        timezone: request.user.organization_timezone ?? 'UTC',
+        now: clock(),
+      });
+      response.json(getOrganizationMetrics({
+        db,
+        organizationId: Number(request.user.organization_id),
+        departmentId,
+        period,
+        now: clock(),
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/metrics/department', requireDepAdmin, (request, response, next) => {
+    try {
+      const employeeId = request.query?.employeeId == null ? null : resourceId(request.query.employeeId);
+      if (request.query?.employeeId != null && !employeeId) {
+        return notFound(response, 'Metrics filter not found.');
+      }
+      const period = normalizeMetricsQuery({
+        query: request.query,
+        timezone: request.user.organization_timezone ?? 'UTC',
+        now: clock(),
+      });
+      response.json(getDepartmentMetrics({
+        db,
+        organizationId: Number(request.user.organization_id),
+        departmentId: Number(request.user.headed_department_id),
+        employeeId,
+        period,
+        now: clock(),
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/metrics/me', (request, response, next) => {
+    try {
+      if (request.user.effectiveRole !== 'member') {
+        response.status(403).json({
+          error: { code: 'FORBIDDEN', message: 'Member access is required.' },
+        });
+        return;
+      }
+      const period = normalizeMetricsQuery({
+        query: request.query,
+        timezone: request.user.organization_timezone ?? 'UTC',
+        now: clock(),
+      });
+      response.json(getMemberMetrics({
+        db,
+        organizationId: Number(request.user.organization_id),
+        userId: Number(request.user.id),
+        period,
+        now: clock(),
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/platform/organizations', requirePlatformAdmin, (request, response) => {
+    response.json({ organizations: listOrganizations(db) });
+  });
+
+  app.post('/api/platform/organizations', requirePlatformAdmin, (request, response, next) => {
+    try {
+      response.status(201).json({ organization: createOrganization({
+        db,
+        input: request.body,
+        actorId: request.user.id,
+        now: clock(),
+      }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/platform/organizations/:id', requirePlatformAdmin, (request, response, next) => {
+    try {
+      const id = resourceId(request.params.id);
+      if (!id) return notFound(response, 'Organization not found.');
+      const current = getOrganization(db, id);
+      if (!current) return notFound(response, 'Organization not found.');
+      const organization = updateOrganization({ db, organizationId: id, input: { ...request.body, entraTenantId: current.entraTenantId }, now: clock() });
+      response.json({ organization });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/platform/organizations/:id/archive', requirePlatformAdmin, (request, response, next) => {
+    try {
+      const id = resourceId(request.params.id);
+      if (!id) return notFound(response, 'Organization not found.');
+      response.json({ organization: setOrganizationStatus({
+        db,
+        organizationId: id,
+        status: 'archived',
+        actorId: request.user.id,
+        now: clock(),
+      }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/platform/organizations/:id/restore', requirePlatformAdmin, (request, response, next) => {
+    try {
+      const id = resourceId(request.params.id);
+      if (!id) return notFound(response, 'Organization not found.');
+      response.json({ organization: setOrganizationStatus({
+        db,
+        organizationId: id,
+        status: 'active',
+        actorId: request.user.id,
+        now: clock(),
+      }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/organization', requireOrgAdmin, (request, response) => {
+    response.json({ organization: getOrganization(db, request.user.organization_id) });
+  });
+
+  app.patch('/api/organization', requireOrgAdmin, (request, response, next) => {
+    try {
+      const current = getOrganization(db, request.user.organization_id);
+      response.json({ organization: updateOrganization({
+        db,
+        organizationId: request.user.organization_id,
+        input: { ...request.body, entraTenantId: current.entraTenantId },
+        updateAdmin: false,
+        now: clock(),
+      }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/members', requireOrgAdmin, (request, response) => {
+    response.json({ members: listMembers(db, request.user.organization_id) });
+  });
+
+  app.post('/api/members', requireOrgAdmin, (request, response, next) => {
+    try {
+      response.status(201).json({ member: createMember({
+        db,
+        organizationId: request.user.organization_id,
+        input: request.body,
+        actorId: request.user.id,
+        now: clock(),
+      }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/members/:id', requireOrgAdmin, (request, response, next) => {
+    try {
+      const id = resourceId(request.params.id);
+      if (!id) return notFound(response, 'Member not found.');
+      response.json({ member: updateMember({
+        db,
+        organizationId: request.user.organization_id,
+        memberId: id,
+        input: request.body,
+        actorId: request.user.id,
+        now: clock(),
+      }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/integrations/outlook/authorize', requireOrgAdmin, (request, response, next) => {
+    try {
+      const authorizationUrl = integrations.outlook?.authorizationUrl?.({
+        sessionId: request.sessionId,
+        organizationId: request.user.organization_id,
+      });
+      if (!authorizationUrl) {
+        const error = new Error('Microsoft 365 connection is not configured on this server.');
+        error.status = 503;
+        error.code = 'OUTLOOK_NOT_CONFIGURED';
+        error.expose = true;
+        throw error;
+      }
+      response.redirect(303, authorizationUrl);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/integrations/outlook/callback', requireOrgAdmin, async (request, response) => {
+    const state = typeof request.query?.state === 'string' ? request.query.state : '';
+    if (!integrations.outlook?.completeAuthorization || !state) {
+      response.redirect(303, '/?integration=outlook-error');
+      return;
+    }
+    try {
+      await integrations.outlook.completeAuthorization({
+        sessionId: request.sessionId,
+        state,
+        tenantId: request.query?.tenant,
+        adminConsent: request.query?.admin_consent,
+        providerError: request.query?.error,
+      });
+      response.redirect(303, '/?integration=outlook-connected');
+    } catch {
+      response.redirect(303, '/?integration=outlook-error');
+    }
+  });
+
+  app.delete('/api/integrations/outlook', requireOrgAdmin, (request, response, next) => {
+    try {
+      if (!integrations.outlook?.disconnect) return notFound(response, 'Microsoft 365 connection is not available.');
+      integrations.outlook.disconnect({ organizationId: request.user.organization_id });
+      response.status(204).end();
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/integrations/gmail/authorize', requireAdmin, (request, response, next) => {
@@ -479,18 +901,20 @@ export function createApp({
       if (!integrations.gmail?.disconnect) {
         return notFound(response, 'Gmail connection is not available.');
       }
-      await integrations.gmail.disconnect();
+      await integrations.gmail.disconnect({ organizationId: request.user.organization_id });
       response.status(204).end();
     } catch (error) {
       next(error);
     }
   });
 
-  app.post('/api/departments', requireAdmin, (request, response, next) => {
+  app.post('/api/departments', requireOrgAdmin, (request, response, next) => {
     try {
       const department = createDepartment({
         db,
         name: request.body?.name,
+        sharedMailbox: request.body?.sharedMailbox,
+        organizationId: request.user.organization_id,
         now: clock(),
       });
       response.status(201).json({ department });
@@ -499,7 +923,74 @@ export function createApp({
     }
   });
 
-  app.patch('/api/team/:id/department', requireAdmin, (request, response, next) => {
+  app.patch('/api/departments/:id', requireOrgAdmin, (request, response, next) => {
+    try {
+      const departmentId = resourceId(request.params.id);
+      if (!departmentId) return notFound(response, 'Department not found.');
+      response.json({ department: updateDepartment({
+        db,
+        departmentId,
+        name: request.body?.name,
+        sharedMailbox: request.body?.sharedMailbox,
+        organizationId: request.user.organization_id,
+      }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete('/api/departments/:id', requireOrgAdmin, (request, response, next) => {
+    try {
+      const departmentId = resourceId(request.params.id);
+      if (!departmentId) return notFound(response, 'Department not found.');
+      response.json({
+        department: deleteDepartment({
+          db,
+          departmentId,
+          organizationId: request.user.organization_id,
+          actorId: request.user.id,
+          now: clock(),
+        }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/departments/:id/head', requireOrgAdmin, (request, response, next) => {
+    try {
+      const departmentId = resourceId(request.params.id);
+      const memberId = resourceId(request.body?.memberId);
+      if (!departmentId) return notFound(response, 'Department not found.');
+      if (!memberId) return validationError(response, 'Choose a valid department member.', 'memberId');
+      response.json({
+        department: setDepartmentHead({
+          db,
+          departmentId,
+          memberId,
+          organizationId: request.user.organization_id,
+          actorId: request.user.id,
+          now: clock(),
+        }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/departments/:id/members', requireOrgAdmin, (request, response, next) => {
+    try {
+      const departmentId = resourceId(request.params.id);
+      if (!departmentId || !db.prepare('SELECT id FROM departments WHERE id = ? AND organization_id = ?').get(departmentId, request.user.organization_id)) {
+        return notFound(response, 'Department not found.');
+      }
+      response.json({ members: listDepartmentMembers(db, departmentId, request.user.organization_id) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/team/:id/department', requireOrgAdmin, (request, response, next) => {
     try {
       const userId = resourceId(request.params.id);
       const departmentId = resourceId(request.body?.departmentId);
@@ -508,18 +999,26 @@ export function createApp({
         return validationError(response, 'Choose a valid department.', 'departmentId');
       }
       response.json({
-        member: moveMemberToDepartment({ db, userId, departmentId }),
+        member: moveMemberToDepartment({
+          db,
+          userId,
+          departmentId,
+          organizationId: request.user.organization_id,
+          actorId: request.user.id,
+          now: clock(),
+        }),
       });
     } catch (error) {
       next(error);
     }
   });
 
-  app.patch('/api/settings', requireAdmin, (request, response, next) => {
+  app.patch('/api/settings', requireOrgAdmin, (request, response, next) => {
     try {
       response.json({
         settings: updateWorkspaceSettings({
           db,
+          organizationId: request.user.organization_id,
           timeUnassignedHours: Number(request.body?.timeUnassignedHours),
           timeAssignedUnmarkedHours: Number(request.body?.timeAssignedUnmarkedHours),
         }),
@@ -529,41 +1028,41 @@ export function createApp({
     }
   });
 
-  app.post('/api/sync', requireAdmin, async (request, response, next) => {
-    try {
-      response.json(await runSync(syncRunner));
-    } catch (error) {
-      error.status = 502;
-      error.code = 'SYNC_FAILED';
-      error.message = 'Mailbox sync failed. Review the last sync status and try again.';
-      error.expose = true;
-      next(error);
-    }
+  app.post('/api/sync', (request, response) => {
+    response.status(403).json({
+      error: { code: 'FORBIDDEN', message: 'Mailbox synchronization runs automatically.' },
+    });
   });
 
-  app.post('/api/rules', requireAdmin, (request, response, next) => {
+  app.post('/api/rules', requireDepAdmin, (request, response, next) => {
     try {
       const parsed = parseRule(request.body ?? {});
       if (parsed.error) return validationError(response, parsed.error, parsed.field);
-      const member = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'member'")
-        .get(parsed.value.assigneeId);
+      const member = db.prepare(`
+        SELECT id FROM users
+        WHERE id = ? AND organization_id = ? AND department_id = ?
+          AND role = 'member' AND account_status = 'active'
+      `).get(parsed.value.assigneeId, request.user.organization_id, request.user.headed_department_id);
       if (!member) return validationError(response, 'Choose a valid team member.', 'assigneeId');
 
       const now = new Date().toISOString();
       const id = runTransaction(db, () => {
         const result = db.prepare(`
-          INSERT INTO rules (name, keywords, sender_filter, assignee_id, priority, enabled, created_at)
-          VALUES (?, ?, ?, ?, ?, 1, ?)
+          INSERT INTO rules
+            (name, keywords, sender_filter, assignee_id, priority, enabled, created_at, organization_id, department_id)
+          VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
         `).run(
           parsed.value.name,
           parsed.value.keywords,
           parsed.value.senderFilter,
           parsed.value.assigneeId,
           parsed.value.priority,
-          now
+          now,
+          request.user.organization_id,
+          request.user.headed_department_id,
         );
         const ruleId = Number(result.lastInsertRowid);
-        applyRuleToUnassigned(db, ruleId);
+        applyRuleToUnassigned(db, ruleId, request.user.organization_id, request.user.headed_department_id);
         return ruleId;
       });
       response.status(201).json({ id });
@@ -572,27 +1071,33 @@ export function createApp({
     }
   });
 
-  app.patch('/api/rules/:id', requireAdmin, (request, response, next) => {
+  app.patch('/api/rules/:id', requireDepAdmin, (request, response, next) => {
     try {
       const id = resourceId(request.params.id);
       if (!id) return notFound(response, 'Rule not found.');
 
-      const current = db.prepare('SELECT * FROM rules WHERE id = ?').get(id);
+      const current = db.prepare(`
+        SELECT * FROM rules
+        WHERE id = ? AND organization_id = ? AND department_id = ?
+      `).get(id, request.user.organization_id, request.user.headed_department_id);
       if (!current) return notFound(response, 'Rule not found.');
 
       const body = request.body && !Array.isArray(request.body) ? request.body : {};
       const parsed = parseRulePatch(body, current);
       if (parsed.error) return validationError(response, parsed.error, parsed.field);
 
-      const member = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'member'")
-        .get(parsed.value.assigneeId);
+      const member = db.prepare(`
+        SELECT id FROM users
+        WHERE id = ? AND organization_id = ? AND department_id = ?
+          AND role = 'member' AND account_status = 'active'
+      `).get(parsed.value.assigneeId, request.user.organization_id, request.user.headed_department_id);
       if (!member) return validationError(response, 'Choose a valid team member.', 'assigneeId');
 
       runTransaction(db, () => {
         db.prepare(`
           UPDATE rules
           SET name = ?, keywords = ?, sender_filter = ?, assignee_id = ?, priority = ?, enabled = ?
-          WHERE id = ?
+          WHERE id = ? AND organization_id = ? AND department_id = ?
         `).run(
           parsed.value.name,
           parsed.value.keywords,
@@ -601,22 +1106,30 @@ export function createApp({
           parsed.value.priority,
           parsed.value.enabled ? 1 : 0,
           id,
+          request.user.organization_id,
+          request.user.headed_department_id,
         );
-        if (parsed.value.enabled) applyRuleToUnassigned(db, id);
+        if (parsed.value.enabled) {
+          applyRuleToUnassigned(db, id, request.user.organization_id, request.user.headed_department_id);
+        }
       });
-      response.json({ rule: getRule(db, id) });
+      response.json({
+        rule: getRule(db, request.user.organization_id, request.user.headed_department_id, id),
+      });
     } catch (error) {
       next(error);
     }
   });
 
-  app.delete('/api/rules/:id', requireAdmin, (request, response) => {
+  app.delete('/api/rules/:id', requireDepAdmin, (request, response) => {
     const id = resourceId(request.params.id);
     if (!id) {
       response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Rule not found.' } });
       return;
     }
-    const result = db.prepare('DELETE FROM rules WHERE id = ?').run(id);
+    const result = db.prepare(`
+      DELETE FROM rules WHERE id = ? AND organization_id = ? AND department_id = ?
+    `).run(id, request.user.organization_id, request.user.headed_department_id);
     if (!result.changes) {
       response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Rule not found.' } });
       return;
@@ -624,7 +1137,57 @@ export function createApp({
     response.status(204).end();
   });
 
-  app.post('/api/emails/:id/assign', requireAdmin, (request, response, next) => {
+  app.get('/api/emails/:id/open-link', async (request, response, next) => {
+    try {
+      const emailId = resourceId(request.params.id);
+      if (!emailId) return notFound(response, 'Email not found.');
+      const email = visibleEmailRow(db, request.user, emailId);
+      if (!email) return notFound(response, 'Email not found.');
+
+      const provider = String(email.provider || 'outlook').toLocaleLowerCase();
+      if (provider !== 'outlook') {
+        const webUrl = safeHttpUrl(email.outlook_url);
+        if (!webUrl) {
+          response.status(409).json({
+            error: { code: 'EMAIL_LINK_UNAVAILABLE', message: 'This email has no available web link.' },
+          });
+          return;
+        }
+        response.json({ webUrl });
+        return;
+      }
+
+      const immutableId = outlookImmutableId(email);
+      if (!immutableId) return notFound(response, 'Email not found.');
+      if (typeof integrations?.outlook?.resolveWebLink !== 'function') {
+        response.status(503).json({
+          error: {
+            code: 'OUTLOOK_LINK_NOT_CONFIGURED',
+            message: 'Microsoft Graph is not configured to open this message.',
+          },
+        });
+        return;
+      }
+      const webUrl = safeOutlookUrl(await integrations.outlook.resolveWebLink({
+        organizationId: Number(request.user.organization_id),
+        mailboxAddress: email.mailbox_address,
+        immutableId,
+        subject: email.subject,
+        receivedAt: email.received_at,
+      }));
+      if (!webUrl) {
+        response.status(502).json({
+          error: { code: 'OUTLOOK_LINK_FAILED', message: 'Outlook returned an invalid message link.' },
+        });
+        return;
+      }
+      response.json({ webUrl });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/emails/:id/assign', requireDepAdmin, (request, response, next) => {
     try {
       const emailId = resourceId(request.params.id);
       const assigneeId = resourceId(request.body?.assigneeId);
@@ -637,7 +1200,9 @@ export function createApp({
         db,
         emailId,
         assigneeId,
-        adminId: Number(request.user.id),
+        actorId: Number(request.user.id),
+        organizationId: request.user.organization_id,
+        departmentId: request.user.headed_department_id,
         now: clock(),
       });
       response.json({
@@ -653,7 +1218,7 @@ export function createApp({
 
   app.post('/api/emails/:id/complete', (request, response, next) => {
     try {
-      if (request.user.role !== 'member') {
+      if (!['member', 'dep_admin'].includes(request.user.effectiveRole)) {
         response.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only the assignee can complete this email.' } });
         return;
       }
@@ -663,7 +1228,7 @@ export function createApp({
         response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Email not found.' } });
         return;
       }
-      const email = db.prepare('SELECT id, assignee_id FROM emails WHERE id = ?').get(emailId);
+      const email = db.prepare('SELECT id, assignee_id FROM emails WHERE id = ? AND organization_id = ?').get(emailId, request.user.organization_id);
       if (!email) {
         response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Email not found.' } });
         return;
@@ -677,6 +1242,7 @@ export function createApp({
         db,
         emailId,
         userId: request.user.id,
+        organizationId: request.user.organization_id,
         now: clock(),
       });
       response.json({ email: completed });
@@ -691,7 +1257,7 @@ export function createApp({
       response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Notification not found.' } });
       return;
     }
-    const notification = db.prepare('SELECT user_id FROM notifications WHERE id = ?').get(id);
+    const notification = db.prepare('SELECT user_id FROM notifications WHERE id = ? AND organization_id = ?').get(id, request.user.organization_id);
     if (!notification) {
       response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Notification not found.' } });
       return;
@@ -703,8 +1269,8 @@ export function createApp({
     const result = db.prepare(`
       UPDATE notifications
       SET read_at = COALESCE(read_at, ?)
-      WHERE id = ? AND user_id = ?
-    `).run(new Date().toISOString(), id, request.user.id);
+      WHERE id = ? AND user_id = ? AND organization_id = ?
+    `).run(new Date().toISOString(), id, request.user.id, request.user.organization_id);
     if (!result.changes) {
       response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Notification not found.' } });
       return;
