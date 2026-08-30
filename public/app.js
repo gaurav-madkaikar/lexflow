@@ -1,6 +1,7 @@
 import { overviewPreview } from './overview-model.js';
 import { createFeedbackQueue, pendingTaskNotice } from './feedback.js';
 import { createMetricsView } from './metrics-view.js';
+import { conversationClickIntent } from './conversation-interactions.js';
 import {
   DEFAULT_TIMEZONE,
   formatDateKey,
@@ -760,12 +761,13 @@ function renderEmailRow(email, { grouped = false, compact = false } = {}) {
 function renderConversationItem(email, options = {}) {
   const row = renderEmailRow(email, options);
   if (!email.conversationId || Number(email.messageCount) <= 1) return row;
+  row.dataset.conversationParent = String(email.conversationId);
   const expanded = state.expandedConversations.has(email.conversationId);
   const wrapper = node('section', `conversation-item${expanded ? ' is-expanded' : ''}`);
   const heading = node('div', 'conversation-heading');
   const toggle = node('button', 'conversation-toggle', expanded ? 'Collapse' : 'Expand');
   toggle.type = 'button';
-  toggle.dataset.conversationId = String(email.conversationId);
+  toggle.dataset.conversationToggle = String(email.conversationId);
   toggle.setAttribute('aria-expanded', String(expanded));
   toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${email.subject} thread, ${email.messageCount} messages`);
   heading.append(row, toggle);
@@ -887,7 +889,8 @@ function renderRule(rule, { compact = false } = {}) {
   const copy = node('div');
   const criteria = [
     rule.keywords ? `Keywords “${rule.keywords}”` : '',
-    rule.senderFilter ? `Sender contains “${rule.senderFilter}”` : ''
+    rule.senderFilter ? `Sender contains “${rule.senderFilter}”` : '',
+    rule.hasAttachments ? 'Has attachment' : 'No attachments'
   ].filter(Boolean).join(' · ');
   copy.append(
     node('h3', '', rule.name),
@@ -1781,7 +1784,8 @@ function normalizedRuleValues(source) {
       .join(','),
     senderFilter: String(source.senderFilter ?? '').trim(),
     assigneeId: Number(source.assigneeId ?? source.assignee?.id),
-    priority: Number(source.priority)
+    priority: Number(source.priority),
+    hasAttachments: source.hasAttachments === true
   };
 }
 
@@ -1792,7 +1796,8 @@ function ruleFormValues() {
     keywords: form.get('keywords'),
     senderFilter: form.get('senderFilter'),
     assigneeId: form.get('assigneeId'),
-    priority: form.get('priority')
+    priority: form.get('priority'),
+    hasAttachments: elements.ruleForm.elements.namedItem('hasAttachments').checked
   });
 }
 
@@ -1855,6 +1860,7 @@ function openRuleDialog(rule = null, opener = document.activeElement) {
     elements.ruleForm.elements.namedItem('senderFilter').value = values.senderFilter;
     elements.ruleForm.elements.namedItem('assigneeId').value = String(values.assigneeId);
     elements.ruleForm.elements.namedItem('priority').value = String(values.priority);
+    elements.ruleForm.elements.namedItem('hasAttachments').checked = values.hasAttachments;
   } else {
     elements.ruleForm.elements.namedItem('priority').value = String(DEFAULT_RULE_PRIORITY);
   }
@@ -2131,33 +2137,29 @@ elements.heroDateClear.addEventListener('click', () => {
   window.requestAnimationFrame(() => elements.heroDateFilter.focus({ preventScroll: true }));
 });
 
-elements.emailList.addEventListener('click', event => {
-  const toggle = event.target.closest('[data-conversation-id]');
-  if (toggle) {
-    const conversationId = Number(toggle.dataset.conversationId);
-    if (state.expandedConversations.has(conversationId)) {
-      state.expandedConversations.delete(conversationId);
-      renderEmails();
-      return;
-    }
-    state.expandedConversations.add(conversationId);
+async function toggleConversation(conversationId) {
+  if (state.expandedConversations.has(conversationId)) {
+    state.expandedConversations.delete(conversationId);
     renderEmails();
-    if (!state.conversationMessages.has(conversationId)) {
-      api(`/api/conversations/${conversationId}/messages`)
-        .then(payload => {
-          state.conversationMessages.set(conversationId, payload.messages ?? []);
-          renderEmails();
-        })
-        .catch(error => {
-          state.expandedConversations.delete(conversationId);
-          reportError(error, 'The email thread could not be loaded.');
-          renderEmails();
-        });
-    }
     return;
   }
-  const row = event.target.closest('[data-email-id]');
-  if (row) openEmail(row.dataset.emailId);
+  state.expandedConversations.add(conversationId);
+  renderEmails();
+  if (state.conversationMessages.has(conversationId)) return;
+  try {
+    const payload = await api(`/api/conversations/${conversationId}/messages`);
+    state.conversationMessages.set(conversationId, payload.messages ?? []);
+  } catch (error) {
+    state.expandedConversations.delete(conversationId);
+    reportError(error, 'The email thread could not be loaded.');
+  }
+  renderEmails();
+}
+
+elements.emailList.addEventListener('click', event => {
+  const intent = conversationClickIntent(event.target);
+  if (intent?.type === 'toggle') void toggleConversation(intent.conversationId);
+  else if (intent?.type === 'open') openEmail(intent.emailId);
 });
 
 elements.notificationButton.addEventListener('click', () => selectView('notifications'));
@@ -2405,7 +2407,7 @@ elements.ruleForm.addEventListener('submit', async event => {
   let body = values;
   if (editing) {
     body = {};
-    for (const key of ['name', 'keywords', 'senderFilter', 'assigneeId', 'priority']) {
+    for (const key of ['name', 'keywords', 'senderFilter', 'assigneeId', 'priority', 'hasAttachments']) {
       if (values[key] !== state.editingRuleSnapshot[key]) body[key] = values[key];
     }
     if (!Object.keys(body).length) {

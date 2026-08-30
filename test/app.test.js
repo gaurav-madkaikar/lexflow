@@ -221,6 +221,7 @@ test('a member cannot read or complete another member email', async (context) =>
   const bootstrap = await harness.get('/api/bootstrap', mayaCookie);
   assert.equal(bootstrap.status, 200);
   assert.ok(bootstrap.body.emails.every(email => email.assignee.email === 'noah@lexflow.local'));
+  assert.ok(bootstrap.body.emails.every(email => typeof email.hasAttachments === 'boolean'));
 
   const completion = await harness.post(`/api/emails/${priyaEmail.id}/complete`, {}, mayaCookie);
   assert.equal(completion.status, 403);
@@ -317,10 +318,18 @@ test('DepAdmin creates a sender-only rule and it assigns matching unassigned ema
   }, adminCookie);
 
   assert.equal(created.status, 201);
+  assert.equal(one(harness.db, 'SELECT has_attachments FROM rules WHERE id = ?', created.body.id).has_attachments, 0);
   assert.equal(
     one(harness.db, 'SELECT assignee_id FROM emails WHERE id = ?', unassigned.id).assignee_id,
     assigneeId,
   );
+
+  const invalid = await harness.post('/api/rules', {
+    name: 'Invalid attachment rule', keywords: '', senderFilter: 'customer@example.test',
+    assigneeId, priority: 30, hasAttachments: 'true',
+  }, adminCookie);
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.body.error.fields.hasAttachments, 'Choose whether attachments are required.');
 });
 
 test('rule creation and updates roll back when immediate assignment fails', async (context) => {

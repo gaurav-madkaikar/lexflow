@@ -1514,6 +1514,27 @@ select:not(:disabled) { cursor: pointer; }
   font-size: 12px;
 }
 
+.check-field {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 12px 14px;
+  color: var(--color-ink);
+  background: var(--color-soft);
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  font-weight: 700;
+}
+
+.check-field input { margin: 0; }
+.check-field small {
+  grid-column: 2;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .tag.reopened {
   color: var(--color-coral-hover);
   background: var(--color-coral-soft);

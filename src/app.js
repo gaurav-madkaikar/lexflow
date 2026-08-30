@@ -79,6 +79,7 @@ function emailFromRow(row) {
     conversationId: row.conversation_task_id == null ? null : Number(row.conversation_task_id),
     messageCount: Number(row.conversation_message_count ?? 1),
     reopened: row.conversation_reopened === 1,
+    hasAttachments: Boolean(row.conversation_has_attachments ?? row.has_attachments),
     searchText: row.conversation_search_text ?? '',
     subject: row.subject,
     sender: { name: row.sender_name, address: row.sender_address },
@@ -119,6 +120,7 @@ function listEmails(db, user) {
       conversations.status AS conversation_status,
       conversations.assignee_id AS conversation_assignee_id,
       conversations.message_count AS conversation_message_count,
+      conversations.has_attachments AS conversation_has_attachments,
       conversations.completed_at AS conversation_completed_at,
       COALESCE(
         (SELECT cycles.started_at FROM assignment_cycles cycles

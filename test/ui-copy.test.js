@@ -109,6 +109,12 @@ test('automation rules use fixed priority labels', () => {
   assert.match(app, /String\(DEFAULT_RULE_PRIORITY\)/);
 });
 
+test('automation rules expose strict attachment matching', () => {
+  assert.match(html, /type="checkbox" name="hasAttachments"/);
+  assert.match(html, /Off matches only email threads without attachments\./);
+  assert.match(app, /rule\.hasAttachments \? 'Has attachment' : 'No attachments'/);
+});
+
 test('DepAdmin overview cards align without a fixed height and stack responsively', () => {
   assert.doesNotMatch(styles, /--overview-card-height/);
   assert.doesNotMatch(styles, /height:\s*var\(--overview-card-height\)/);
