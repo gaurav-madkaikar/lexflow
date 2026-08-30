@@ -88,11 +88,11 @@ test('last active OrgAdmin cannot be demoted or disabled', (context) => {
   );
 });
 
-test('organization reporting timezone defaults to UTC and accepts only IANA zones', (context) => {
+test('organization reporting timezone defaults to Asia/Kolkata and accepts only IANA zones', (context) => {
   const db = createDatabase(':memory:');
   context.after(() => db.close());
   const org = organization(db);
-  assert.equal(org.timezone, 'UTC');
+  assert.equal(org.timezone, 'Asia/Kolkata');
 
   const updated = updateOrganization({
     db,

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS rules (
   created_at TEXT NOT NULL,
   organization_id INTEGER NOT NULL DEFAULT 1,
   department_id INTEGER REFERENCES departments(id) ON DELETE CASCADE
+  ,has_attachments INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1))
 );
 CREATE TABLE IF NOT EXISTS emails (
   id INTEGER PRIMARY KEY,
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS emails (
   created_at TEXT NOT NULL,
   organization_id INTEGER NOT NULL DEFAULT 1,
   department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL
+  ,has_attachments INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1))
 );
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY,
@@ -153,7 +155,7 @@ CREATE TABLE IF NOT EXISTS organizations (
   name TEXT NOT NULL,
   domain TEXT NOT NULL COLLATE NOCASE,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
-  timezone TEXT NOT NULL DEFAULT 'UTC',
+  timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
   logo_asset_id INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -186,6 +188,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  has_attachments INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1)),
   CHECK ((native_conversation_id IS NOT NULL AND fallback_key IS NULL)
     OR (native_conversation_id IS NULL AND fallback_key IS NOT NULL))
 );
@@ -550,7 +553,7 @@ export function migrate(db) {
     addColumn(db, 'organizations', 'entra_tenant_id', 'TEXT');
     addColumn(db, 'organizations', 'domain', 'TEXT');
     addColumn(db, 'organizations', 'status', "TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived'))");
-    addColumn(db, 'organizations', 'timezone', "TEXT NOT NULL DEFAULT 'UTC'");
+    addColumn(db, 'organizations', 'timezone', "TEXT NOT NULL DEFAULT 'Asia/Kolkata'");
     if (tableHasColumn(db, 'organizations', 'normalized_domain')) {
       db.prepare(`
         UPDATE organizations
@@ -590,12 +593,26 @@ export function migrate(db) {
     addColumn(db, 'departments', 'access_message', 'TEXT');
     addColumn(db, 'departments', 'head_user_id', 'INTEGER REFERENCES users(id) ON DELETE RESTRICT');
     addColumn(db, 'rules', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE CASCADE');
+    addColumn(db, 'rules', 'has_attachments', 'INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1))');
     addColumn(db, 'emails', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE SET NULL');
     addColumn(db, 'emails', 'provider_conversation_id', 'TEXT');
     addColumn(db, 'emails', 'internet_message_id', 'TEXT');
     addColumn(db, 'emails', 'conversation_id', 'INTEGER REFERENCES conversations(id) ON DELETE SET NULL');
+    addColumn(db, 'emails', 'has_attachments', 'INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1))');
     addColumn(db, 'activity', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE SET NULL');
     migrateLegacyConversations(db, createdAt);
+    addColumn(db, 'conversations', 'has_attachments', 'INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1))');
+    db.exec(`
+      UPDATE conversations
+      SET has_attachments = CASE WHEN EXISTS (
+        SELECT 1 FROM emails
+        WHERE emails.conversation_id = conversations.id
+          AND emails.has_attachments = 1
+      ) THEN 1 ELSE 0 END;
+      UPDATE organizations
+      SET timezone = 'Asia/Kolkata'
+      WHERE timezone = 'UTC';
+    `);
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS departments_organization_name_unique ON departments (organization_id, name COLLATE NOCASE)');
     db.prepare('UPDATE users SET organization_id = 1 WHERE organization_id IS NULL AND is_platform_admin = 0').run();
     db.prepare(`

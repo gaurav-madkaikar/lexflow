@@ -123,7 +123,7 @@ export function organizationPayload(row) {
     name: row.name,
     domain: row.domain,
     status: row.status,
-    timezone: row.timezone ?? 'UTC',
+    timezone: row.timezone ?? 'Asia/Kolkata',
     logoUrl: row.logo_asset_id ? `/api/organization-logos/${row.logo_asset_id}` : null,
     initialAdminEmail: row.initial_admin_email ?? null,
     createdAt: row.created_at,
@@ -175,7 +175,7 @@ function preparedOrganization(input) {
   const domain = normalizeDomain(input?.domain);
   const entraTenantId = normalizeTenantId(input?.entraTenantId);
   const initialAdminEmail = normalizeEmail(input?.initialAdminEmail);
-  const timezone = input?.timezone == null ? 'UTC' : normalizeTimezone(input.timezone);
+  const timezone = input?.timezone == null ? 'Asia/Kolkata' : normalizeTimezone(input.timezone);
   if (initialAdminEmail.split('@')[1] !== domain) {
     throw error(400, 'INVALID_INPUT', 'Initial administrator email must use the organization domain.', 'initialAdminEmail');
   }
@@ -272,7 +272,7 @@ export function updateOrganization({ db, organizationId, input, now = new Date()
   const name = text(input?.name, 'name', 'Organization name');
   const domain = normalizeDomain(input?.domain);
   const timezone = input?.timezone === undefined
-    ? (current.timezone ?? 'UTC')
+    ? (current.timezone ?? 'Asia/Kolkata')
     : normalizeTimezone(input.timezone);
   const initialAdminEmail = updateAdmin ? normalizeEmail(input?.initialAdminEmail) : null;
   if (updateAdmin && initialAdminEmail.split('@')[1] !== domain) {

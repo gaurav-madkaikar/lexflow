@@ -31,7 +31,7 @@ const REPORTING_TABLES = [
   'metrics_completeness',
 ];
 
-test('metrics reporting schema and UTC organization default are installed', (context) => {
+test('metrics reporting schema and IST organization default are installed', (context) => {
   const db = createDatabase(':memory:');
   context.after(() => db.close());
 
@@ -41,7 +41,7 @@ test('metrics reporting schema and UTC organization default are installed', (con
       table,
     );
   }
-  assert.equal(db.prepare('SELECT timezone FROM organizations WHERE id = 1').get().timezone, 'UTC');
+  assert.equal(db.prepare('SELECT timezone FROM organizations WHERE id = 1').get().timezone, 'Asia/Kolkata');
 });
 
 test('timezone validation accepts IANA zones and rejects unsafe values', () => {

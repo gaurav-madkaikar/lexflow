@@ -35,6 +35,10 @@ test('database creates conversation task storage', () => {
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assignment_cycles'").get());
   assert.ok(db.prepare("SELECT 1 FROM pragma_table_info('emails') WHERE name='conversation_id'").get());
+  for (const table of ['emails', 'conversations', 'rules']) {
+    assert.ok(db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name='has_attachments'`).get());
+  }
+  assert.equal(db.prepare('SELECT timezone FROM organizations WHERE id = 1').get().timezone, 'Asia/Kolkata');
   db.close();
 });
 
