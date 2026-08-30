@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { backfillReportingEvents } from './reporting-events.js';
+import { backfillConversations } from './conversations.js';
 
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
@@ -166,6 +167,40 @@ CREATE TABLE IF NOT EXISTS organization_assets (
   height INTEGER NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS conversations (
+  id INTEGER PRIMARY KEY,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL,
+  normalized_mailbox TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
+  native_conversation_id TEXT,
+  fallback_key TEXT,
+  subject TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('unassigned', 'assigned', 'completed')),
+  assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  first_received_at TEXT NOT NULL,
+  latest_received_at TEXT NOT NULL,
+  latest_email_id INTEGER REFERENCES emails(id) ON DELETE SET NULL,
+  message_count INTEGER NOT NULL DEFAULT 0 CHECK (message_count >= 0),
+  completed_at TEXT,
+  version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK ((native_conversation_id IS NOT NULL AND fallback_key IS NULL)
+    OR (native_conversation_id IS NULL AND fallback_key IS NOT NULL))
+);
+CREATE TABLE IF NOT EXISTS assignment_cycles (
+  id INTEGER PRIMARY KEY,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  assignment_source TEXT NOT NULL CHECK (assignment_source IN ('manual', 'rule', 'reopen_previous', 'historical_unknown')),
+  rule_id INTEGER REFERENCES rules(id) ON DELETE SET NULL,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS auth_transactions (
   state_digest TEXT PRIMARY KEY,
   nonce_digest TEXT NOT NULL,
@@ -281,6 +316,55 @@ function migrationError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function migrateLegacyConversations(db, createdAt) {
+  addColumn(db, 'conversations', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE SET NULL');
+  addColumn(db, 'conversations', 'provider', "TEXT NOT NULL DEFAULT 'demo'");
+  addColumn(db, 'conversations', 'normalized_mailbox', "TEXT NOT NULL DEFAULT '' COLLATE NOCASE");
+  addColumn(db, 'conversations', 'native_conversation_id', 'TEXT');
+  addColumn(db, 'conversations', 'fallback_key', 'TEXT');
+  addColumn(db, 'conversations', 'status', "TEXT NOT NULL DEFAULT 'unassigned' CHECK (status IN ('unassigned', 'assigned', 'completed'))");
+  addColumn(db, 'conversations', 'assignee_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  addColumn(db, 'conversations', 'first_received_at', "TEXT NOT NULL DEFAULT ''");
+  addColumn(db, 'conversations', 'latest_received_at', "TEXT NOT NULL DEFAULT ''");
+  addColumn(db, 'conversations', 'latest_email_id', 'INTEGER REFERENCES emails(id) ON DELETE SET NULL');
+  addColumn(db, 'conversations', 'message_count', 'INTEGER NOT NULL DEFAULT 0 CHECK (message_count >= 0)');
+  addColumn(db, 'conversations', 'completed_at', 'TEXT');
+  addColumn(db, 'conversations', 'version', 'INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1)');
+  addColumn(db, 'conversations', 'created_at', `TEXT NOT NULL DEFAULT '${createdAt}'`);
+  addColumn(db, 'conversations', 'updated_at', `TEXT NOT NULL DEFAULT '${createdAt}'`);
+
+  if (tableHasColumn(db, 'conversations', 'completion_state')) {
+    db.exec('UPDATE conversations SET status = completion_state WHERE completion_state IN (\'unassigned\', \'assigned\', \'completed\')');
+  }
+  if (tableHasColumn(db, 'conversations', 'current_assignee_id')) {
+    db.exec('UPDATE conversations SET assignee_id = current_assignee_id WHERE assignee_id IS NULL');
+  }
+  const hasSources = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_sources'").get();
+  if (hasSources) {
+    db.exec(`
+      UPDATE conversations
+      SET provider = COALESCE((SELECT provider FROM conversation_sources WHERE conversation_id = conversations.id ORDER BY id LIMIT 1), provider),
+          normalized_mailbox = COALESCE((SELECT normalized_mailbox FROM conversation_sources WHERE conversation_id = conversations.id ORDER BY id LIMIT 1), normalized_mailbox),
+          native_conversation_id = (SELECT native_conversation_id FROM conversation_sources WHERE conversation_id = conversations.id AND native_conversation_id IS NOT NULL ORDER BY id LIMIT 1),
+          fallback_key = (SELECT fallback_key FROM conversation_sources WHERE conversation_id = conversations.id AND native_conversation_id IS NULL ORDER BY id LIMIT 1)
+    `);
+  }
+  db.exec(`
+    UPDATE conversations
+    SET department_id = COALESCE(department_id, (SELECT department_id FROM emails WHERE conversation_id = conversations.id ORDER BY received_at DESC, id DESC LIMIT 1)),
+        subject = COALESCE(NULLIF(subject, ''), (SELECT subject FROM emails WHERE conversation_id = conversations.id ORDER BY received_at DESC, id DESC LIMIT 1), '(No subject)'),
+        first_received_at = COALESCE(NULLIF(first_received_at, ''), (SELECT MIN(received_at) FROM emails WHERE conversation_id = conversations.id), created_at),
+        latest_received_at = COALESCE(NULLIF(latest_received_at, ''), (SELECT MAX(received_at) FROM emails WHERE conversation_id = conversations.id), updated_at),
+        latest_email_id = COALESCE(latest_email_id, (SELECT id FROM emails WHERE conversation_id = conversations.id ORDER BY received_at DESC, id DESC LIMIT 1)),
+        message_count = (SELECT COUNT(*) FROM emails WHERE conversation_id = conversations.id),
+        fallback_key = CASE
+          WHEN native_conversation_id IS NULL AND (fallback_key IS NULL OR fallback_key = '')
+          THEN 'legacy-conversation:' || id
+          ELSE fallback_key
+        END
+  `);
 }
 
 function ensureDefaultOrganization(db, now) {
@@ -507,7 +591,11 @@ export function migrate(db) {
     addColumn(db, 'departments', 'head_user_id', 'INTEGER REFERENCES users(id) ON DELETE RESTRICT');
     addColumn(db, 'rules', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE CASCADE');
     addColumn(db, 'emails', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE SET NULL');
+    addColumn(db, 'emails', 'provider_conversation_id', 'TEXT');
+    addColumn(db, 'emails', 'internet_message_id', 'TEXT');
+    addColumn(db, 'emails', 'conversation_id', 'INTEGER REFERENCES conversations(id) ON DELETE SET NULL');
     addColumn(db, 'activity', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE SET NULL');
+    migrateLegacyConversations(db, createdAt);
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS departments_organization_name_unique ON departments (organization_id, name COLLATE NOCASE)');
     db.prepare('UPDATE users SET organization_id = 1 WHERE organization_id IS NULL AND is_platform_admin = 0').run();
     db.prepare(`
@@ -635,6 +723,18 @@ export function migrate(db) {
       WHERE head_user_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS emails_organization_department_status
       ON emails (organization_id, department_id, status);
+      CREATE UNIQUE INDEX IF NOT EXISTS conversations_native_identity_unique
+      ON conversations (organization_id, department_id, provider, normalized_mailbox, native_conversation_id)
+      WHERE native_conversation_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS conversations_fallback_identity_unique
+      ON conversations (organization_id, department_id, provider, normalized_mailbox, fallback_key)
+      WHERE fallback_key IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS conversations_scope_status_latest
+      ON conversations (organization_id, department_id, status, latest_received_at DESC);
+      CREATE INDEX IF NOT EXISTS emails_conversation_received
+      ON emails (conversation_id, received_at, id);
+      CREATE INDEX IF NOT EXISTS assignment_cycles_scope_started
+      ON assignment_cycles (organization_id, department_id, started_at);
       CREATE INDEX IF NOT EXISTS rules_organization_department_priority
       ON rules (organization_id, department_id, enabled, priority, id);
       CREATE INDEX IF NOT EXISTS activity_organization_department_created
@@ -730,6 +830,7 @@ export function migrate(db) {
       ON users (entra_tenant_id, entra_object_id)
       WHERE entra_tenant_id IS NOT NULL AND entra_object_id IS NOT NULL
     `);
+    backfillConversations(db);
     backfillReportingEvents(db, new Date(createdAt));
     db.exec('COMMIT');
   } catch (error) {
