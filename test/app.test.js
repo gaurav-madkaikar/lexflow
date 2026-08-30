@@ -195,6 +195,22 @@ test('a member cannot read or complete another member email', async (context) =>
   assert.equal(completion.status, 403);
 });
 
+test('marking a notification read removes it from the active notification feed', async (context) => {
+  const harness = await createApiHarness(context);
+  const cookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const before = await harness.get('/api/bootstrap', cookie);
+  const notification = before.body.notifications[0];
+
+  assert.ok(notification);
+  const marked = await harness.post(`/api/notifications/${notification.id}/read`, {}, cookie);
+  const after = await harness.get('/api/bootstrap', cookie);
+
+  assert.equal(marked.status, 200);
+  assert.equal(after.body.notifications.some(item => item.id === notification.id), false);
+  assert.equal(after.body.unreadCount, before.body.unreadCount - 1);
+  assert.ok(harness.db.prepare('SELECT read_at FROM notifications WHERE id = ?').get(notification.id).read_at);
+});
+
 test('a member cannot mutate rules or trigger sync', async (context) => {
   const harness = await createApiHarness(context);
   const cookie = await harness.login('maya@lexflow.local', 'welcome123');
@@ -553,7 +569,7 @@ test('only admins manage departments, team placement, and workspace limits', asy
   assert.equal('team' in memberBootstrap.body, false);
 });
 
-test('completion records activity and notifies every admin once', async (context) => {
+test('completion records activity once and retires every related notification', async (context) => {
   const harness = await createApiHarness(context);
   const mayaCookie = await harness.login('maya@lexflow.local', 'welcome123');
   const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
@@ -571,21 +587,23 @@ test('completion records activity and notifies every admin once', async (context
     mayaCookie,
   );
   const admin = await harness.get('/api/bootstrap', adminCookie);
+  const member = await harness.get('/api/bootstrap', mayaCookie);
   const event = admin.body.activity.find(item => item.kind === 'completed' && item.emailId === email.id);
-  const completionNotifications = admin.body.notifications.filter(item => (
-    item.kind === 'completion' && item.emailId === email.id
-  ));
 
   assert.equal(completion.status, 200);
   assert.equal(repeatedCompletion.status, 200);
   assert.equal(event.actor.name, 'Maya Shah');
   assert.match(event.createdAt, /^\d{4}-\d{2}-\d{2}T/);
-  assert.equal(completionNotifications.length, 1);
-  assert.equal(completionNotifications[0].readAt, null);
+  assert.equal(admin.body.notifications.some(item => item.emailId === email.id), false);
+  assert.equal(member.body.notifications.some(item => item.emailId === email.id), false);
   assert.equal(harness.db.prepare(`
     SELECT count(*) AS count FROM notifications
-    WHERE email_id = ? AND kind = 'completion'
-  `).get(email.id).count, 2);
+    WHERE email_id = ? AND user_id = ? AND read_at IS NULL
+  `).get(email.id, mayaId(harness.db)).count, 0);
+  assert.equal(harness.db.prepare(`
+    SELECT count(*) AS count FROM notifications
+    WHERE email_id = ? AND read_at IS NULL
+  `).get(email.id).count, 0);
   assert.equal(harness.db.prepare(`
     SELECT count(*) AS count FROM activity
     WHERE email_id = ? AND kind = 'completed'

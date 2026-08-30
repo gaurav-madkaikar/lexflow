@@ -5,10 +5,11 @@ import { createApp } from './app.js';
 import { createAlertRunner } from './alerts.js';
 import { hashPassword } from './auth.js';
 import { loadConfig } from './config.js';
-import { createDatabase, seedDemoData } from './db.js';
+import { createDatabase, ensureCfoUser, seedDemoData } from './db.js';
 import { createGmailIntegration } from './gmail.js';
 import { createMailSource } from './mail-sources.js';
 import { createSyncRunner } from './workflows.js';
+import { createVacationRunner, MicrosoftVacationProvider } from './vacation.js';
 
 if (existsSync('.env')) loadEnvFile('.env');
 
@@ -21,19 +22,20 @@ const db = createDatabase(config.databasePath);
 const userCount = Number(db.prepare('SELECT count(*) AS count FROM users').get().count);
 const passwords = config.liveMailConfigured
   ? config.bootstrapPasswords
-  : { admin: 'admin123', maya: 'welcome123', priya: 'welcome123' };
+  : { admin: 'admin123', maya: 'welcome123', priya: 'welcome123', cfo: 'welcome123' };
 if (config.liveMailConfigured && Object.values(passwords).some(password => password.length < 8)) {
   db.close();
   throw new Error('Live mail connections require all BOOTSTRAP_*_PASSWORD values (minimum 8 characters).');
 }
 if (userCount === 0 || config.liveMailConfigured) {
-  const [adminPasswordHash, mayaPasswordHash, priyaPasswordHash] = await Promise.all([
+  const [adminPasswordHash, mayaPasswordHash, priyaPasswordHash, cfoPasswordHash] = await Promise.all([
     hashPassword(passwords.admin),
     hashPassword(passwords.maya),
-    hashPassword(passwords.priya)
+    hashPassword(passwords.priya),
+    hashPassword(passwords.cfo)
   ]);
   if (userCount === 0) {
-    seedDemoData(db, { adminPasswordHash, mayaPasswordHash, priyaPasswordHash });
+    seedDemoData(db, { adminPasswordHash, mayaPasswordHash, priyaPasswordHash, cfoPasswordHash });
   } else {
     const updatePassword = db.prepare('UPDATE users SET password_hash = ? WHERE email = ?');
     db.exec('BEGIN IMMEDIATE');
@@ -41,6 +43,7 @@ if (userCount === 0 || config.liveMailConfigured) {
       updatePassword.run(adminPasswordHash, 'admin@lexflow.local');
       updatePassword.run(mayaPasswordHash, 'maya@lexflow.local');
       updatePassword.run(priyaPasswordHash, 'priya@lexflow.local');
+      ensureCfoUser(db, { passwordHash: cfoPasswordHash });
       db.prepare('DELETE FROM sessions').run();
       db.exec('COMMIT');
     } catch (error) {
@@ -49,6 +52,8 @@ if (userCount === 0 || config.liveMailConfigured) {
       throw error;
     }
   }
+} else {
+  ensureCfoUser(db, { passwordHash: await hashPassword(passwords.cfo) });
 }
 
 const primarySource = createMailSource(config);
@@ -71,6 +76,8 @@ const sources = () => {
 };
 const syncRunner = createSyncRunner({ db, sources });
 const alertRunner = createAlertRunner({ db });
+const vacationProvider = new MicrosoftVacationProvider(config.graph);
+const vacationRunner = createVacationRunner({ db, provider: vacationProvider });
 const app = createApp({
   db,
   syncRunner,
@@ -83,6 +90,7 @@ const app = createApp({
     },
     gmail: gmailIntegration,
   },
+  vacationRunner,
 });
 const server = app.listen(config.port, '127.0.0.1', () => {
   console.log(`LexFlow listening at http://127.0.0.1:${config.port} (${config.mode} mode)`);
@@ -112,11 +120,25 @@ const alertTimer = setInterval(() => {
 }, 60_000);
 alertTimer.unref();
 
+function reportVacationError(error) {
+  console.error(`Vacation Mode sync failed: ${error.message}`);
+}
+
+vacationRunner.run().catch(reportVacationError);
+let vacationTimer;
+if (config.vacationSyncIntervalSeconds > 0) {
+  vacationTimer = setInterval(() => {
+    vacationRunner.run().catch(reportVacationError);
+  }, config.vacationSyncIntervalSeconds * 1000);
+  vacationTimer.unref();
+}
+
 let stopping = false;
 function stop() {
   if (stopping) return;
   stopping = true;
   if (syncTimer) clearInterval(syncTimer);
+  if (vacationTimer) clearInterval(vacationTimer);
   clearInterval(alertTimer);
   server.close(() => {
     db.close();

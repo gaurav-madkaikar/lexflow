@@ -8,11 +8,13 @@ import {
   deleteSession,
   expiredSessionCookie,
   requireAdmin,
+  requireCfo,
   requireUser,
   sessionCookie,
   sessionIdFromRequest,
   verifyPassword
 } from './auth.js';
+import { financeDashboard } from './finance-dashboard.js';
 import {
   applyRuleToUnassigned,
   assignEmailManually,
@@ -25,8 +27,20 @@ import {
   moveMemberToDepartment,
   updateWorkspaceSettings,
 } from './workspace.js';
+import {
+  adminVacationSummary,
+  getBriefing,
+  listBriefings,
+  reviewBriefing,
+  updateMicrosoftPrincipal,
+  vacationPayload,
+} from './vacation.js';
 
 const publicDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
+const animeDirectory = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../node_modules/animejs/dist/bundles'
+);
 
 function safeUser(row) {
   return {
@@ -65,7 +79,12 @@ function emailFromRow(row) {
       id: Number(row.completed_by),
       name: row.completed_by_name
     } : null,
-    completedAt: row.completed_at
+    completedAt: row.completed_at,
+    vacationHold: row.hold_id ? {
+      intendedUserId: Number(row.hold_user_id),
+      intendedUserName: row.hold_user_name,
+      heldAt: row.hold_at,
+    } : null
   };
 }
 
@@ -77,10 +96,16 @@ function listEmails(db, user) {
       assignee.name AS assignee_name,
       assignee.initials AS assignee_initials,
       assignee.department AS assignee_department,
-      completed.name AS completed_by_name
+      completed.name AS completed_by_name,
+      hold.id AS hold_id,
+      hold.intended_user_id AS hold_user_id,
+      hold.held_at AS hold_at,
+      hold_user.name AS hold_user_name
     FROM emails
     LEFT JOIN users AS assignee ON assignee.id = emails.assignee_id
     LEFT JOIN users AS completed ON completed.id = emails.completed_by
+    LEFT JOIN vacation_email_holds AS hold ON hold.email_id = emails.id AND hold.status = 'held'
+    LEFT JOIN users AS hold_user ON hold_user.id = hold.intended_user_id
     ${ownership}
     ORDER BY emails.received_at DESC, emails.id DESC
   `);
@@ -90,13 +115,14 @@ function listEmails(db, user) {
 
 function listNotifications(db, userId) {
   return db.prepare(`
-    SELECT id, email_id, kind, message, read_at, created_at
+    SELECT id, email_id, briefing_id, kind, message, read_at, created_at
     FROM notifications
-    WHERE user_id = ?
+    WHERE user_id = ? AND read_at IS NULL
     ORDER BY created_at DESC, id DESC
   `).all(userId).map(row => ({
     id: Number(row.id),
-    emailId: Number(row.email_id),
+    emailId: row.email_id === null ? null : Number(row.email_id),
+    briefingId: row.briefing_id === null ? null : Number(row.briefing_id),
     kind: row.kind,
     message: row.message,
     readAt: row.read_at,
@@ -358,6 +384,7 @@ export function createApp({
   syncRunner,
   mode = 'demo',
   integrations = {},
+  vacationRunner = null,
   cookieSecure = process.env.NODE_ENV === 'production',
   staticDir = publicDirectory,
   clock = () => new Date(),
@@ -410,6 +437,13 @@ export function createApp({
   });
 
   app.get('/api/bootstrap', (request, response) => {
+    if (request.user.role === 'cfo') {
+      response.json({
+        user: safeUser(request.user),
+        mode: 'finance',
+      });
+      return;
+    }
     const notifications = listNotifications(db, request.user.id);
     const integrationDetails = integrationPayload(db, integrations);
     const payload = {
@@ -421,10 +455,18 @@ export function createApp({
       unreadCount: notifications.filter(item => !item.readAt).length
     };
 
+    if (request.user.role === 'member') {
+      payload.vacation = vacationPayload(db, request.user.id);
+    }
+
     if (request.user.role === 'admin') {
       payload.rules = listRules(db);
       payload.team = db.prepare("SELECT * FROM users WHERE role = 'member' ORDER BY name")
-        .all().map(safeUser);
+        .all().map(member => ({
+          ...safeUser(member),
+          microsoftPrincipal: member.microsoft_principal ?? null,
+          vacation: adminVacationSummary(db, member.id),
+        }));
       payload.activity = listActivity(db);
       payload.sync = syncSummary(db);
       payload.departments = listDepartments(db);
@@ -433,6 +475,89 @@ export function createApp({
     }
 
     response.json(payload);
+  });
+
+  app.get('/api/finance/dashboard', requireCfo, (request, response, next) => {
+    try {
+      response.json(financeDashboard({
+        period: String(request.query?.period ?? 'mtd').toLocaleLowerCase(),
+        reportingCurrency: String(request.query?.reportingCurrency ?? 'USD').toLocaleUpperCase(),
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/vacation', (request, response) => {
+    if (request.user.role !== 'member') {
+      response.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vacation briefings are available to members only.' } });
+      return;
+    }
+    response.json({ vacation: vacationPayload(db, request.user.id) });
+  });
+
+  app.post('/api/vacation/refresh', async (request, response, next) => {
+    if (request.user.role !== 'member') {
+      response.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vacation briefings are available to members only.' } });
+      return;
+    }
+    try {
+      if (!vacationRunner?.refreshUser) {
+        throw Object.assign(new Error('Microsoft Vacation Mode is not configured.'), { status: 503, code: 'MICROSOFT_NOT_CONFIGURED', expose: true });
+      }
+      response.json({ vacation: await vacationRunner.refreshUser(request.user.id) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put('/api/vacation/manual', async (request, response, next) => {
+    if (request.user.role !== 'member') {
+      response.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vacation Mode controls are available to members only.' } });
+      return;
+    }
+    try {
+      if (!vacationRunner?.setManualVacation) {
+        throw Object.assign(new Error('Vacation Mode controls are unavailable.'), { status: 503, code: 'VACATION_UNAVAILABLE', expose: true });
+      }
+      const enabled = request.body?.enabled;
+      if (typeof enabled !== 'boolean') return validationError(response, 'Choose whether Vacation Mode is on or off.', 'enabled');
+      response.json({ vacation: await vacationRunner.setManualVacation(request.user.id, {
+        enabled,
+        startsAt: request.body?.startsAt,
+        endsAt: request.body?.endsAt,
+      }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/vacation/briefings', (request, response) => {
+    if (request.user.role !== 'member') {
+      response.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vacation briefings are available to members only.' } });
+      return;
+    }
+    response.json({ briefings: listBriefings(db, request.user.id) });
+  });
+
+  app.get('/api/vacation/briefings/:id', (request, response) => {
+    if (request.user.role !== 'member') {
+      response.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vacation briefings are available to members only.' } });
+      return;
+    }
+    const briefing = getBriefing(db, request.user.id, resourceId(request.params.id));
+    if (!briefing) return notFound(response, 'Return briefing not found.');
+    response.json({ briefing });
+  });
+
+  app.post('/api/vacation/briefings/:id/reviewed', (request, response) => {
+    if (request.user.role !== 'member') {
+      response.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vacation briefings are available to members only.' } });
+      return;
+    }
+    const id = resourceId(request.params.id);
+    if (!id || !reviewBriefing(db, request.user.id, id, clock())) return notFound(response, 'Return briefing not found.');
+    response.json({ briefing: getBriefing(db, request.user.id, id) });
   });
 
   app.get('/api/integrations/gmail/authorize', requireAdmin, (request, response, next) => {
@@ -509,6 +634,24 @@ export function createApp({
       }
       response.json({
         member: moveMemberToDepartment({ db, userId, departmentId }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/team/:id/microsoft-principal', requireAdmin, (request, response, next) => {
+    try {
+      const userId = resourceId(request.params.id);
+      if (!userId) return notFound(response, 'Team member not found.');
+      const principal = updateMicrosoftPrincipal(db, userId, request.body?.microsoftPrincipal);
+      const member = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+      response.json({
+        member: {
+          ...safeUser(member),
+          microsoftPrincipal: principal,
+          vacation: adminVacationSummary(db, userId),
+        },
       });
     } catch (error) {
       next(error);
@@ -716,6 +859,7 @@ export function createApp({
     response.status(404).json({ error: { code: 'NOT_FOUND', message: 'API route not found.' } });
   });
 
+  app.use('/vendor/animejs', express.static(animeDirectory));
   app.use(express.static(staticDir));
   app.get('*splat', (request, response) => {
     response.sendFile(path.join(staticDir, 'index.html'));

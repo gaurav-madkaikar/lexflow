@@ -113,3 +113,13 @@ export function requireAdmin(request, response, next) {
   }
   next();
 }
+
+export function requireCfo(request, response, next) {
+  if (request.user.role !== 'cfo') {
+    response.status(403).json({
+      error: { code: 'FORBIDDEN', message: 'CFO access is required.' }
+    });
+    return;
+  }
+  next();
+}

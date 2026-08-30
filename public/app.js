@@ -1,3 +1,112 @@
+import { animate, stagger } from '/vendor/animejs/anime.esm.js';
+
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+let notificationAudioContext = null;
+
+function armNotificationAudio() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+  if (!notificationAudioContext) notificationAudioContext = new AudioContextClass();
+  if (notificationAudioContext.state === 'suspended') {
+    notificationAudioContext.resume().catch(() => {});
+  }
+}
+
+function playChime(tones, oscillatorType = 'sine') {
+  const audioContext = notificationAudioContext;
+  if (!audioContext || audioContext.state !== 'running') return;
+
+  const now = audioContext.currentTime;
+  tones.forEach(tone => {
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    const start = now + tone.offset;
+    oscillator.type = oscillatorType;
+    oscillator.frequency.setValueAtTime(tone.frequency, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(tone.volume, start + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + tone.duration);
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+    oscillator.start(start);
+    oscillator.stop(start + tone.duration + 0.02);
+  });
+}
+
+function playNotificationChime() {
+  playChime([
+    { frequency: 659.25, offset: 0, duration: 0.34, volume: 0.045 },
+    { frequency: 987.77, offset: 0.1, duration: 0.42, volume: 0.035 }
+  ]);
+}
+
+function playCompletionChime() {
+  playChime([
+    { frequency: 523.25, offset: 0, duration: 0.28, volume: 0.035 },
+    { frequency: 659.25, offset: 0.075, duration: 0.32, volume: 0.038 },
+    { frequency: 783.99, offset: 0.15, duration: 0.44, volume: 0.032 }
+  ]);
+}
+
+function playReadChime() {
+  playChime([
+    { frequency: 783.99, offset: 0, duration: 0.22, volume: 0.03 },
+    { frequency: 659.25, offset: 0.065, duration: 0.3, volume: 0.026 }
+  ]);
+}
+
+function playVacationOnSound() {
+  const audioContext = notificationAudioContext;
+  if (!audioContext || audioContext.state !== 'running') return;
+  const now = audioContext.currentTime;
+  const oscillator = audioContext.createOscillator();
+  const filter = audioContext.createBiquadFilter();
+  const gain = audioContext.createGain();
+  oscillator.type = 'sine';
+  oscillator.frequency.setValueAtTime(180, now);
+  oscillator.frequency.exponentialRampToValueAtTime(880, now + 0.48);
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(650, now);
+  filter.frequency.exponentialRampToValueAtTime(4200, now + 0.42);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.045, now + 0.08);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.55);
+  oscillator.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioContext.destination);
+  oscillator.start(now);
+  oscillator.stop(now + 0.58);
+}
+
+function playVacationOffSound() {
+  const audioContext = notificationAudioContext;
+  if (!audioContext || audioContext.state !== 'running') return;
+  const now = audioContext.currentTime;
+  const buffer = audioContext.createBuffer(1, Math.floor(audioContext.sampleRate * 0.42), audioContext.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let index = 0; index < data.length; index += 1) {
+    const decay = Math.pow(1 - index / data.length, 3.2);
+    data[index] = (Math.random() * 2 - 1) * decay;
+  }
+  [0, 0.055, 0.12].forEach((offset, index) => {
+    const source = audioContext.createBufferSource();
+    const filter = audioContext.createBiquadFilter();
+    const gain = audioContext.createGain();
+    source.buffer = buffer;
+    source.playbackRate.value = 1.25 + index * 0.42;
+    filter.type = 'highpass';
+    filter.frequency.value = 1800 + index * 900;
+    gain.gain.value = 0.022 - index * 0.004;
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioContext.destination);
+    source.start(now + offset);
+  });
+}
+
+document.addEventListener('pointerdown', armNotificationAudio, { once: true, capture: true });
+document.addEventListener('keydown', armNotificationAudio, { once: true, capture: true });
+
 const state = {
   session: null,
   view: 'inbox',
@@ -13,7 +122,11 @@ const state = {
   ruleDialogOpener: null,
   editingRuleId: null,
   editingRuleSnapshot: null,
-  integrationReturnHandled: false
+  integrationReturnHandled: false,
+  emailAnimationKey: '',
+  metricsAnimationKey: '',
+  vacationBriefings: null,
+  briefingShownId: null
 };
 
 const elements = {
@@ -21,6 +134,7 @@ const elements = {
   loginView: document.querySelector('#login-view'),
   loginForm: document.querySelector('#login-form'),
   loginError: document.querySelector('#login-error'),
+  cfoView: document.querySelector('#cfo-view'),
   appView: document.querySelector('#app-view'),
   navBackdrop: document.querySelector('#nav-backdrop'),
   sidebar: document.querySelector('#sidebar'),
@@ -31,6 +145,8 @@ const elements = {
   topbarAvatar: document.querySelector('#topbar-avatar'),
   topbarUser: document.querySelector('#topbar-user'),
   topbarRole: document.querySelector('#topbar-role'),
+  accountMenuButton: document.querySelector('#account-menu-button'),
+  accountMenu: document.querySelector('#account-menu'),
   modeChip: document.querySelector('#mode-chip'),
   adminNavigation: document.querySelector('#admin-navigation'),
   memberNavigation: document.querySelector('#member-navigation'),
@@ -48,6 +164,7 @@ const elements = {
   workspaceToolbar: document.querySelector('#workspace-toolbar'),
   departmentSwitch: document.querySelector('#department-switch'),
   metrics: document.querySelector('#metrics'),
+  workflowChartRoot: document.querySelector('#workflow-chart-root'),
   dashboardLayout: document.querySelector('#dashboard-layout'),
   queuePanel: document.querySelector('#queue-panel'),
   queueTitle: document.querySelector('#queue-title'),
@@ -62,6 +179,9 @@ const elements = {
   notificationsPanel: document.querySelector('#notifications-panel'),
   notificationsCaption: document.querySelector('#notifications-caption'),
   notificationList: document.querySelector('#notification-list'),
+  vacationPanel: document.querySelector('#vacation-panel'),
+  vacationContent: document.querySelector('#vacation-content'),
+  vacationRefresh: document.querySelector('#vacation-refresh'),
   settingsPanel: document.querySelector('#settings-panel'),
   integrationsTitle: document.querySelector('#integrations-title'),
   integrationList: document.querySelector('#integration-list'),
@@ -108,6 +228,14 @@ const elements = {
   assignButton: document.querySelector('#assign-button'),
   outlookLink: document.querySelector('#outlook-link'),
   completeButton: document.querySelector('#complete-button'),
+  returnBriefingDialog: document.querySelector('#return-briefing-dialog'),
+  returnBriefingBody: document.querySelector('#return-briefing-body'),
+  returnBriefingClose: document.querySelector('#return-briefing-close'),
+  vacationSetupDialog: document.querySelector('#vacation-setup-dialog'),
+  vacationSetupForm: document.querySelector('#vacation-setup-form'),
+  vacationSetupClose: document.querySelector('#vacation-setup-close'),
+  vacationSetupCancel: document.querySelector('#vacation-setup-cancel'),
+  vacationSetupError: document.querySelector('#vacation-setup-error'),
   toastRegion: document.querySelector('#toast-region')
 };
 
@@ -132,6 +260,101 @@ function svgIcon(symbol) {
 function setText(element, value, fallback = '') {
   const next = value === null || value === undefined || value === '' ? fallback : String(value);
   if (element.textContent !== next) element.textContent = next;
+}
+
+function closeAccountMenu({ restoreFocus = false } = {}) {
+  if (elements.accountMenu.hidden) return;
+  elements.accountMenu.hidden = true;
+  elements.accountMenuButton.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) elements.accountMenuButton.focus({ preventScroll: true });
+}
+
+function toggleAccountMenu() {
+  const opening = elements.accountMenu.hidden;
+  elements.accountMenu.hidden = !opening;
+  elements.accountMenuButton.setAttribute('aria-expanded', String(opening));
+  if (opening) {
+    window.requestAnimationFrame(() => {
+      if (!reducedMotion.matches) {
+        animate(elements.accountMenu, {
+          opacity: { from: 0 },
+          translateY: { from: -7 },
+          scale: { from: 0.98 },
+          duration: 240,
+          ease: 'out(3)'
+        });
+      }
+      elements.accountMenu.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
+    });
+  }
+}
+
+function animateWorkspaceModule() {
+  if (reducedMotion.matches) return;
+  window.requestAnimationFrame(() => {
+    const targets = document.querySelectorAll([
+      '#metrics:not([hidden]) .metric',
+      '#queue-panel:not([hidden])',
+      '#rules-panel:not([hidden])',
+      '#activity-panel:not([hidden])',
+      '#notifications-panel:not([hidden])',
+      '#settings-panel:not([hidden])',
+      '#workflow-chart-root:not([hidden])'
+    ].join(','));
+    if (!targets.length) return;
+    animate(targets, {
+      opacity: { from: 0 },
+      translateY: { from: 14 },
+      delay: stagger(42),
+      duration: 420,
+      ease: 'out(3)'
+    });
+  });
+}
+
+function animateEmailList(emails, grouped) {
+  const animationKey = JSON.stringify({
+    view: state.view,
+    department: state.department,
+    query: state.query,
+    date: state.dateFilter,
+    emails: emails.map(email => [email.id, email.status, email.assignee?.id ?? null])
+  });
+  if (reducedMotion.matches || animationKey === state.emailAnimationKey) return;
+  state.emailAnimationKey = animationKey;
+
+  const targets = grouped
+    ? elements.emailList.querySelectorAll('.employee-email-group')
+    : elements.emailList.querySelectorAll('.email-row');
+  if (!targets.length) return;
+
+  animate(targets, {
+    opacity: { from: 0 },
+    translateY: { from: 12 },
+    scale: { from: 0.985 },
+    delay: stagger(42),
+    duration: 420,
+    ease: 'out(3)'
+  });
+}
+
+function animateEmailDrawer() {
+  if (reducedMotion.matches) return;
+  const targets = elements.emailDialog.querySelectorAll([
+    '.email-dialog-head > div',
+    '.detail-grid > div',
+    '.message-preview',
+    '.assignment-control:not([hidden])',
+    '.completion-note:not([hidden])',
+    '.detail-actions > *:not([hidden])'
+  ].join(','));
+  animate(targets, {
+    opacity: { from: 0 },
+    translateX: { from: 14 },
+    delay: stagger(34),
+    duration: 360,
+    ease: 'out(3)'
+  });
 }
 
 function clearFieldErrors(form) {
@@ -274,7 +497,8 @@ async function refresh({ quiet = false } = {}) {
     normalizeView();
     render();
     handleIntegrationReturn();
-    startPolling();
+    if (state.session.user.role === 'cfo') stopPolling();
+    else startPolling();
   } catch (error) {
     if (!quiet && state.session) showToast(error.message, true);
     throw error;
@@ -289,9 +513,12 @@ async function mutate(path, method = 'POST', body) {
 
 function showLogin() {
   stopPolling();
+  window.__lexflowCfoUser = null;
   closeSidebar();
   if (elements.emailDialog.open) elements.emailDialog.close();
   if (elements.ruleDialog.open) elements.ruleDialog.close();
+  if (elements.returnBriefingDialog.open) elements.returnBriefingDialog.close();
+  if (elements.vacationSetupDialog.open) elements.vacationSetupDialog.close();
   state.selectedEmailId = null;
   state.dateFilter = '';
   state.emailDialogOpener = null;
@@ -300,7 +527,10 @@ function showLogin() {
   state.editingRuleSnapshot = null;
   state.settingsDirty = false;
   state.lastUnreadCount = null;
+  state.vacationBriefings = null;
+  state.briefingShownId = null;
   elements.skipLink.hidden = true;
+  elements.cfoView.hidden = true;
   elements.appView.hidden = true;
   elements.loginView.hidden = false;
   elements.loginForm.email.focus();
@@ -308,15 +538,29 @@ function showLogin() {
 
 function showApp() {
   elements.loginView.hidden = true;
+  elements.cfoView.hidden = true;
   elements.appView.hidden = false;
   elements.skipLink.hidden = false;
 }
 
+function showCfo() {
+  stopPolling();
+  elements.loginView.hidden = true;
+  elements.appView.hidden = true;
+  elements.cfoView.hidden = false;
+  elements.skipLink.hidden = true;
+  window.__lexflowCfoUser = state.session.user;
+  window.dispatchEvent(new CustomEvent('lexflow:cfo-session', {
+    detail: { user: state.session.user }
+  }));
+}
+
 function normalizeView() {
+  if (state.session?.user.role === 'cfo') return;
   const isAdmin = state.session?.user.role === 'admin';
   const allowed = isAdmin
     ? ['inbox', 'assigned', 'completed', 'rules', 'activity', 'settings', 'notifications']
-    : ['assigned', 'completed', 'notifications'];
+    : ['assigned', 'completed', 'notifications', 'vacation'];
   if (!allowed.includes(state.view)) state.view = isAdmin ? 'inbox' : 'assigned';
 }
 
@@ -353,13 +597,39 @@ function emptyState(title, message, mark = '—') {
   return wrapper;
 }
 
-function metric(label, value, note) {
-  const card = node('article', 'metric');
-  card.append(
+function metric(label, value, note, targetView = null, share = 0) {
+  const interactive = Boolean(targetView && Number(value) > 0);
+  const card = node(interactive ? 'button' : 'article', `metric spotlight-card${interactive ? ' metric-link' : ''}`);
+  if (interactive) {
+    card.type = 'button';
+    card.dataset.view = targetView;
+    card.setAttribute('aria-label', `Open ${label}, ${countLabel(Number(value), 'item')}`);
+  }
+  const meter = node('span', 'metric-meter');
+  const fill = node('span', 'metric-meter-fill');
+  fill.style.width = `${Math.max(4, Math.min(100, share))}%`;
+  meter.setAttribute('aria-hidden', 'true');
+  meter.append(fill);
+  const content = [
     node('span', 'metric-label', label),
     node('strong', 'metric-value', value),
-    node('span', 'metric-note', note)
-  );
+    node('span', 'metric-note', note),
+    meter
+  ];
+  if (interactive) content.unshift(node('span', 'metric-action', 'View'));
+  card.append(...content);
+  if (interactive) card.addEventListener('click', () => selectView(targetView));
+  card.addEventListener('pointermove', event => {
+    const bounds = card.getBoundingClientRect();
+    card.style.setProperty('--spotlight-x', `${event.clientX - bounds.left}px`);
+    card.style.setProperty('--spotlight-y', `${event.clientY - bounds.top}px`);
+  });
+  card.addEventListener('pointerenter', () => {
+    if (!reducedMotion.matches) animate(card, { scale: 1.015, duration: 220, ease: 'out(3)' });
+  });
+  card.addEventListener('pointerleave', () => {
+    if (!reducedMotion.matches) animate(card, { scale: 1, duration: 280, ease: 'out(3)' });
+  });
   return card;
 }
 
@@ -378,6 +648,7 @@ function counts(emails = state.session?.emails ?? []) {
     completed: emails.filter(email => email.status === 'completed').length,
     rules: (state.session?.rules ?? []).filter(rule => rule.enabled).length,
     notifications: state.session?.unreadCount ?? 0
+    ,briefings: state.session?.vacation?.briefingCount ?? 0
   };
 }
 
@@ -388,18 +659,42 @@ function renderMetrics() {
   const items = isAdmin
     ? [
         ['Unassigned', totals.inbox, periodNote || 'Awaiting an automation match'],
-        ['Open assigned', totals.assigned, periodNote || 'Across the team'],
-        ['Completed', totals.completed, periodNote || 'Recorded workflow items'],
+        ['Open assigned', totals.assigned, periodNote || 'Across the team', 'assigned'],
+        ['Completed', totals.completed, periodNote || 'Recorded workflow items', 'completed'],
         ['Active rules', totals.rules, 'Ordered by priority'],
-        ['Unread', totals.notifications, 'Work alerts and updates']
+        ['Unread', totals.notifications, 'Work alerts and updates', 'notifications']
       ]
     : [
-        ['Open assigned', totals.assigned, periodNote || 'Ready for your review'],
-        ['Completed', totals.completed, periodNote || 'Work you have finished'],
-        ['Unread', totals.notifications, 'Work alerts and updates']
+        ['Open assigned', totals.assigned, periodNote || 'Ready for your review', 'assigned'],
+        ['Completed', totals.completed, periodNote || 'Work you have finished', 'completed'],
+        ['Unread', totals.notifications, 'Work alerts and updates', 'notifications']
       ];
   elements.metrics.style.setProperty('--metric-count', String(items.length));
-  elements.metrics.replaceChildren(...items.map(item => metric(...item)));
+  const maxValue = Math.max(1, ...items.map(item => Number(item[1]) || 0));
+  elements.metrics.replaceChildren(...items.map(([label, value, note, targetView]) => (
+    metric(label, value, note, targetView, (Number(value) || 0) / maxValue * 100)
+  )));
+  const animationKey = JSON.stringify(items.map(item => [item[0], item[1]]));
+  if (!reducedMotion.matches && animationKey !== state.metricsAnimationKey) {
+    animate(elements.metrics.querySelectorAll('.metric'), {
+      opacity: { from: 0 },
+      translateY: { from: 10 },
+      delay: stagger(38),
+      duration: 380,
+      ease: 'out(3)'
+    });
+    animate(elements.metrics.querySelectorAll('.metric-meter-fill'), {
+      scaleX: { from: 0 },
+      delay: stagger(45, { start: 110 }),
+      duration: 620,
+      ease: 'out(4)'
+    });
+  }
+  state.metricsAnimationKey = animationKey;
+  window.__lexflowEmails = state.session?.emails ?? [];
+  window.dispatchEvent(new CustomEvent('lexflow:emails', {
+    detail: window.__lexflowEmails
+  }));
 }
 
 function renderHero() {
@@ -545,6 +840,9 @@ function renderEmailRow(email, { grouped = false } = {}) {
   if (email.department) tags.append(node('span', 'tag department', email.department));
   const statusLabel = email.status === 'unassigned' ? 'Unassigned' : email.status === 'completed' ? 'Completed' : 'Assigned';
   tags.append(node('span', `tag ${email.status}`, statusLabel));
+  if (email.vacationHold) {
+    tags.append(node('span', 'tag vacation-hold', `OOO hold · ${email.vacationHold.intendedMember.name}`));
+  }
   copy.append(subject, meta, preview, tags);
 
   row.append(dot, copy);
@@ -636,6 +934,7 @@ function renderEmails() {
       ? employeeGroups.map(renderEmployeeGroup)
       : emails.map(renderEmailRow)
     : [emptyState('Nothing here', emptyMessage)]));
+  animateEmailList(emails, groupedAssigned);
 
   if (focusedEmailId) {
     window.requestAnimationFrame(() => {
@@ -713,7 +1012,8 @@ function renderNotification(item) {
     assignment: item.readAt ? 'Assignment' : 'New assignment',
     completion: 'Email completed',
     unassigned_overdue: 'Unassigned email overdue',
-    assigned_overdue: 'Assigned work overdue'
+    assigned_overdue: 'Assigned work overdue',
+    return_briefing: 'Welcome back'
   };
   top.append(
     node('strong', '', titles[item.kind] || 'Workflow update'),
@@ -726,6 +1026,14 @@ function renderNotification(item) {
     const open = node('button', 'open-notification', 'Open email');
     open.type = 'button';
     open.dataset.emailId = String(item.emailId);
+    open.dataset.notificationId = String(item.id);
+    actions.append(open);
+  }
+  if (item.kind === 'return_briefing' && item.briefingId) {
+    const open = node('button', 'open-return-briefing', 'Open briefing');
+    open.type = 'button';
+    open.dataset.briefingId = String(item.briefingId);
+    open.dataset.notificationId = String(item.id);
     actions.append(open);
   }
   if (!item.readAt) {
@@ -746,6 +1054,149 @@ function renderNotifications() {
     : [emptyState('You are all caught up', 'Assignments, completions, and overdue work will appear here.')]));
 }
 
+function vacationStatusLabel(vacation) {
+  if (vacation.period?.status === 'active') return 'Out of office';
+  if (vacation.period?.status === 'scheduled') return 'Upcoming vacation';
+  if (vacation.sync?.status === 'error') return 'Connection needs attention';
+  return 'Available';
+}
+
+function datetimeLocalValue(date) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function sampleBriefing() {
+  return {
+    status: 'ready',
+    sample: true,
+    items: [
+      { type: 'email', section: 'open', title: 'Urgent renewal approval · Northstar', summary: 'A commercial renewal needs your approval before tomorrow’s deadline.', occurredAt: new Date(Date.now() - 3_600_000).toISOString(), priority: { score: 110, level: 'high', reasons: ['Beyond response SLA', 'Urgent language', 'Still open'] } },
+      { type: 'meeting', section: 'meetings', title: 'Q3 operating review', summary: 'Finance Director · Teams', occurredAt: new Date(Date.now() - 5 * 3_600_000).toISOString(), webUrl: 'https://teams.microsoft.com/', priority: { score: 70, level: 'high', reasons: ['You organized', 'Accepted meeting'] } },
+      { type: 'email', section: 'handled', title: 'Vendor bank-detail confirmation', summary: 'Priya covered this request while you were away.', occurredAt: new Date(Date.now() - 22 * 3_600_000).toISOString(), priority: { score: 25, level: 'normal', reasons: ['Handled by the team'] } },
+    ],
+  };
+}
+
+function animateVacationSwitch() {
+  if (reducedMotion.matches) return;
+  const toggle = elements.vacationContent.querySelector('.vacation-toggle');
+  const thumb = toggle?.querySelector('.vacation-toggle-thumb');
+  if (!toggle || !thumb) return;
+  animate(toggle, { scale: [{ to: 1.07 }, { to: 1 }], duration: 430, ease: 'out(4)' });
+  animate(thumb, { scale: [{ to: 0.82 }, { to: 1.08 }, { to: 1 }], duration: 520, ease: 'out(4)' });
+}
+
+function renderVacation() {
+  if (state.session.user.role !== 'member') return;
+  const vacation = state.session.vacation ?? {};
+  const switchedOn = Boolean(vacation.manual?.enabled || ['active', 'scheduled'].includes(vacation.period?.status));
+  const status = node('section', `vacation-status vacation-${vacation.period?.status || vacation.sync?.status || 'available'}`);
+  const copy = node('div');
+  copy.append(node('span', 'vacation-state-label', vacationStatusLabel(vacation)));
+  const detail = vacation.period
+    ? `${formatDate(vacation.period.startsAt)}${vacation.period.endsAt ? ` – ${formatDate(vacation.period.endsAt)}` : ' · No return time detected'}`
+    : vacation.manual ? 'Vacation Mode is off. Turn it on when you plan time away.'
+      : vacation.configured ? `Last checked ${vacation.sync?.lastSuccessAt ? formatDate(vacation.sync.lastSuccessAt) : 'not yet'}` : 'Set your time away here, or ask an administrator to connect Microsoft 365.';
+  copy.append(node('p', '', detail));
+  if (vacation.sync?.lastError) copy.append(node('small', 'vacation-sync-error', vacation.sync.lastError));
+  const toggleWrap = node('div', 'vacation-toggle-wrap');
+  toggleWrap.append(node('span', 'vacation-toggle-label', switchedOn ? 'On' : 'Off'));
+  const toggle = node('button', `vacation-toggle${switchedOn ? ' is-on' : ''}`);
+  toggle.type = 'button';
+  toggle.dataset.vacationToggle = switchedOn ? 'off' : 'on';
+  toggle.setAttribute('role', 'switch');
+  toggle.setAttribute('aria-checked', String(switchedOn));
+  toggle.setAttribute('aria-label', switchedOn ? 'Turn Vacation Mode off' : 'Turn Vacation Mode on');
+  toggle.append(node('span', 'vacation-toggle-thumb'));
+  toggleWrap.append(toggle);
+  status.append(copy, toggleWrap);
+
+  const sample = node('section', 'vacation-sample-card');
+  const sampleCopy = node('div');
+  sampleCopy.append(node('span', 'sample-label', 'Sample data'), node('h3', '', 'Preview your return briefing'), node('p', '', 'See how priority emails, missed meetings, and work handled by the team will be summarized.'));
+  const preview = node('button', 'small-button', 'View sample summary');
+  preview.type = 'button';
+  preview.dataset.sampleBriefing = 'true';
+  sample.append(sampleCopy, preview);
+
+  const history = node('section', 'briefing-history');
+  history.append(node('h3', '', 'Return briefings'));
+  const briefings = state.vacationBriefings;
+  if (briefings === null) history.append(node('p', 'vacation-placeholder', 'Open this view to load your briefing history.'));
+  else if (!briefings.length) history.append(emptyState('No return briefings yet', 'A prioritized briefing will appear after Outlook marks you back.'));
+  else {
+    const list = node('div', 'briefing-history-list');
+    briefings.forEach(briefing => {
+      const button = node('button', 'briefing-history-item');
+      button.type = 'button';
+      button.dataset.briefingId = String(briefing.id);
+      const total = Object.values(briefing.counts ?? {}).reduce((sum, value) => sum + Number(value), 0);
+      button.append(node('strong', '', `Return briefing · ${formatDate(briefing.createdAt, false)}`), node('span', '', `${countLabel(total, 'priority item')} · ${briefing.status === 'partial' ? 'Calendar syncing' : 'Complete'}`));
+      list.append(button);
+    });
+    history.append(list);
+  }
+  elements.vacationContent.replaceChildren(status, sample, history);
+}
+
+function briefingItemNode(item) {
+  const article = node('article', `return-item priority-${item.priority.level}`);
+  const top = node('div', 'return-item-top');
+  top.append(node('span', 'priority-pill', item.priority.level), node('time', '', formatDate(item.occurredAt, false)));
+  article.append(top, node('h4', '', item.title), node('p', '', item.summary));
+  if (item.priority.reasons?.length) {
+    const reasons = node('div', 'priority-reasons');
+    item.priority.reasons.forEach(reason => reasons.append(node('span', '', reason)));
+    article.append(reasons);
+  }
+  if (item.webUrl && safeWebUrl(item.webUrl)) {
+    const link = node('a', '', item.type === 'meeting' ? 'Open meeting' : 'Open email');
+    link.href = safeWebUrl(item.webUrl);
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    article.append(link);
+  }
+  return article;
+}
+
+function displayReturnBriefing(briefing, id = null) {
+  const intro = node('div', `briefing-summary ${briefing.status}`);
+  intro.append(node('strong', '', briefing.sample ? 'Sample return summary' : briefing.status === 'partial' ? 'Email summary ready · Calendar still syncing' : 'Your return summary is ready'), node('p', '', 'Items are ranked using response timing, urgency, assignment state, and meeting responsibility.'));
+  const groups = [
+    ['high', 'High priority', briefing.items.filter(item => item.priority.level === 'high')],
+    ['open', 'Open emails', briefing.items.filter(item => item.section === 'open' && item.priority.level !== 'high')],
+    ['meetings', 'Missed meetings', briefing.items.filter(item => item.section === 'meetings' && item.priority.level !== 'high')],
+    ['handled', 'Handled by the team', briefing.items.filter(item => item.section === 'handled' && item.priority.level !== 'high')],
+  ];
+  const content = [intro];
+  groups.forEach(([, label, items]) => {
+    if (!items.length) return;
+    const section = node('section', 'return-group');
+    section.append(node('h3', '', `${label} · ${items.length}`));
+    const list = node('div', 'return-items');
+    items.forEach(item => list.append(briefingItemNode(item)));
+    section.append(list);
+    content.push(section);
+  });
+  elements.returnBriefingBody.replaceChildren(...content);
+  if (id) elements.returnBriefingDialog.dataset.briefingId = String(id);
+  else delete elements.returnBriefingDialog.dataset.briefingId;
+  if (!elements.returnBriefingDialog.open) elements.returnBriefingDialog.showModal();
+  if (!reducedMotion.matches) animate(elements.returnBriefingBody.querySelectorAll('.return-item'), { opacity: { from: 0 }, translateY: { from: 10 }, delay: stagger(35), duration: 360, ease: 'out(3)' });
+}
+
+async function openReturnBriefing(id) {
+  const result = await api(`/api/vacation/briefings/${id}`);
+  displayReturnBriefing(result.briefing, id);
+}
+
+async function loadVacationBriefings() {
+  const result = await api('/api/vacation/briefings');
+  state.vacationBriefings = result.briefings;
+  if (state.view === 'vacation') renderVacation();
+}
+
 function renderTeamMember(member, departments) {
   const item = node('article', 'team-member');
   const identity = node('div', 'team-member-copy');
@@ -755,6 +1206,9 @@ function renderTeamMember(member, departments) {
   copy.append(node('strong', '', member.name), node('small', '', member.email));
   identity.append(avatar, copy);
 
+  const controls = node('div', 'team-member-controls');
+  const vacationBadge = node('span', `member-vacation-badge ${member.vacation?.status || 'available'}`, member.vacation?.status === 'active' ? `Away · ${countLabel(member.vacation.heldCount, 'held email')}` : member.vacation?.status === 'scheduled' ? 'OOO scheduled' : member.vacation?.status === 'error' ? 'OOO sync error' : 'Available');
+  identity.querySelector('span:last-child').append(vacationBadge);
   const control = node('label', 'team-member-control');
   const label = node('span', 'visually-hidden', `Department for ${member.name}`);
   const select = node('select');
@@ -771,7 +1225,22 @@ function renderTeamMember(member, departments) {
   if (!options.some(option => option.selected) && options[0]) options[0].selected = true;
   select.dataset.previousValue = select.value;
   control.append(label, select);
-  item.append(identity, control);
+  const principalForm = node('form', 'microsoft-principal-form');
+  principalForm.dataset.memberId = String(member.id);
+  const principalLabel = node('label');
+  principalLabel.append(node('span', 'visually-hidden', `Microsoft principal for ${member.name}`));
+  const principalInput = node('input');
+  principalInput.type = 'email';
+  principalInput.name = 'microsoftPrincipal';
+  principalInput.placeholder = 'user@company.com';
+  principalInput.value = member.microsoftPrincipal || '';
+  principalInput.setAttribute('aria-label', `Microsoft principal for ${member.name}`);
+  principalLabel.append(principalInput);
+  const save = node('button', 'small-button', 'Save Microsoft');
+  save.type = 'submit';
+  principalForm.append(principalLabel, save);
+  controls.append(control, principalForm);
+  item.append(identity, controls);
   return item;
 }
 
@@ -915,7 +1384,7 @@ function renderSettings() {
   const members = state.session.team ?? [];
   const signature = [
     ...departments.map(department => `d:${department.id}:${department.name}`),
-    ...members.map(member => `m:${member.id}:${member.department}`)
+    ...members.map(member => `m:${member.id}:${member.department}:${member.microsoftPrincipal || ''}:${member.vacation?.status || ''}:${member.vacation?.heldCount || 0}`)
   ].join('|');
   if (elements.teamDepartmentList.dataset.signature !== signature) {
     elements.teamDepartmentList.replaceChildren(...(members.length
@@ -952,9 +1421,11 @@ function renderPanels() {
   elements.activityPanel.hidden = !isAdmin || (isFocus && state.view !== 'activity');
   elements.settingsPanel.hidden = !isAdmin || state.view !== 'settings';
   elements.notificationsPanel.hidden = isFocus ? state.view !== 'notifications' : isAdmin;
+  elements.vacationPanel.hidden = isAdmin || state.view !== 'vacation';
   elements.departmentSwitch.hidden = !canFilterDepartment;
   elements.workspaceToolbar.hidden = !canFilterDepartment;
   elements.metrics.hidden = isFocus;
+  elements.workflowChartRoot.hidden = isFocus;
   elements.dashboardHero.hidden = isFocus;
 }
 
@@ -966,7 +1437,8 @@ function renderHeader() {
     rules: 'Automation rules',
     activity: 'Activity',
     settings: 'Workspace settings',
-    notifications: 'Notifications'
+    notifications: 'Notifications',
+    vacation: 'Vacation Mode'
   };
   setText(elements.pageTitle, titles[state.view]);
   const mailbox = mailboxSummary();
@@ -1014,6 +1486,10 @@ function render() {
     showLogin();
     return;
   }
+  if (state.session.user.role === 'cfo') {
+    showCfo();
+    return;
+  }
   showApp();
   const isAdmin = state.session.user.role === 'admin';
   elements.adminNavigation.hidden = !isAdmin;
@@ -1027,6 +1503,7 @@ function render() {
   elements.notificationButton.setAttribute('aria-label', `View notifications, ${unreadCount} unread`);
   if (state.lastUnreadCount !== null && unreadCount > state.lastUnreadCount) {
     setText(elements.notificationAnnouncement, `${countLabel(unreadCount, 'unread notification')} available.`);
+    playNotificationChime();
   } else setText(elements.notificationAnnouncement, '');
   state.lastUnreadCount = unreadCount;
   renderIdentity();
@@ -1041,7 +1518,13 @@ function render() {
     renderSettings();
   }
   renderNotifications();
+  if (!isAdmin) renderVacation();
   renderPanels();
+  const pendingBriefing = !isAdmin ? state.session.vacation?.pendingBriefing : null;
+  if (pendingBriefing && state.briefingShownId !== pendingBriefing.id) {
+    state.briefingShownId = pendingBriefing.id;
+    window.requestAnimationFrame(() => openReturnBriefing(pendingBriefing.id).catch(error => showToast(error.message, true)));
+  }
 }
 
 function handleIntegrationReturn() {
@@ -1076,6 +1559,10 @@ function selectView(view) {
   normalizeView();
   closeSidebar();
   render();
+  if (view === 'vacation' && state.session?.user.role === 'member') {
+    loadVacationBriefings().catch(error => showToast(error.message, true));
+  }
+  animateWorkspaceModule();
   window.requestAnimationFrame(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
     elements.pageTitle.focus({ preventScroll: true });
@@ -1085,6 +1572,7 @@ function selectView(view) {
 function selectDepartment(department) {
   state.department = department;
   render();
+  animateWorkspaceModule();
 }
 
 function updateSidebarAccessibility() {
@@ -1142,9 +1630,11 @@ function openEmail(emailId, opener = document.activeElement) {
   if (canAssign) {
     const members = state.session.team ?? [];
     const options = members.map(member => {
-      const option = node('option', '', `${member.name} · ${member.department}`);
+      const away = member.vacation?.status === 'active';
+      const option = node('option', '', `${member.name} · ${member.department}${away ? ' · Away' : ''}`);
       option.value = String(member.id);
       option.selected = member.id === email.assignee?.id;
+      option.disabled = away && member.id !== email.assignee?.id;
       return option;
     });
     elements.emailAssigneeSelect.replaceChildren(...options);
@@ -1170,6 +1660,7 @@ function openEmail(emailId, opener = document.activeElement) {
   if (webUrl) elements.outlookLink.href = webUrl;
   else elements.outlookLink.removeAttribute('href');
   elements.emailDialog.showModal();
+  window.requestAnimationFrame(animateEmailDrawer);
 }
 
 function normalizedRuleValues(source) {
@@ -1236,9 +1727,11 @@ function openRuleDialog(rule = null, opener = document.activeElement) {
 
   const members = (state.session.team ?? []).filter(user => user.role === 'member');
   const options = members.map(member => {
-    const option = node('option', '', `${member.name} · ${member.department}`);
+    const away = member.vacation?.status === 'active';
+    const option = node('option', '', `${member.name} · ${member.department}${away ? ' · Away' : ''}`);
     option.value = String(member.id);
     option.selected = member.id === rule?.assignee?.id;
+    option.disabled = away && member.id !== rule?.assignee?.id;
     return option;
   });
   elements.ruleAssignee.replaceChildren(...options);
@@ -1300,6 +1793,7 @@ elements.loginForm.addEventListener('submit', async event => {
 
 document.querySelector('#logout-button').addEventListener('click', async () => {
   const button = document.querySelector('#logout-button');
+  closeAccountMenu();
   setButtonBusy(button, true, '…');
   try { await api('/api/logout', { method: 'POST' }); } catch (error) {
     if (state.session) showToast(error.message, true);
@@ -1316,6 +1810,15 @@ document.querySelector('#logout-button').addEventListener('click', async () => {
     showLogin();
     setButtonBusy(button, false, '…');
   }
+});
+
+window.addEventListener('lexflow:cfo-logout', () => {
+  state.session = null;
+  state.view = 'inbox';
+  state.department = 'All';
+  state.query = '';
+  state.dateFilter = '';
+  showLogin();
 });
 
 document.querySelectorAll('.nav-item[data-view]').forEach(button => {
@@ -1335,6 +1838,13 @@ elements.searchInput.addEventListener('input', event => {
   state.query = event.target.value.trim().toLocaleLowerCase();
   renderEmails();
 });
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k') {
+    event.preventDefault();
+    elements.searchInput.focus();
+    elements.searchInput.select();
+  }
+});
 elements.heroDateFilter.addEventListener('change', event => {
   state.dateFilter = dateFromLocalKey(event.target.value) ? event.target.value : '';
   render();
@@ -1351,6 +1861,67 @@ elements.emailList.addEventListener('click', event => {
 });
 
 elements.notificationButton.addEventListener('click', () => selectView('notifications'));
+elements.vacationRefresh.addEventListener('click', async () => {
+  setButtonBusy(elements.vacationRefresh, true, 'Checking…');
+  try {
+    await api('/api/vacation/refresh', { method: 'POST' });
+    await refresh({ quiet: true });
+    showToast('Outlook Vacation Mode status refreshed.');
+  } catch (error) {
+    if (state.session) showToast(error.message, true);
+  } finally {
+    setButtonBusy(elements.vacationRefresh, false, 'Checking…');
+  }
+});
+elements.vacationContent.addEventListener('click', event => {
+  const briefing = event.target.closest('[data-briefing-id]');
+  if (briefing) {
+    openReturnBriefing(briefing.dataset.briefingId).catch(error => showToast(error.message, true));
+    return;
+  }
+  if (event.target.closest('[data-sample-briefing]')) {
+    displayReturnBriefing(sampleBriefing());
+    return;
+  }
+  const toggle = event.target.closest('[data-vacation-toggle]');
+  if (!toggle) return;
+  armNotificationAudio();
+  if (toggle.dataset.vacationToggle === 'on') {
+    const start = new Date();
+    start.setMinutes(Math.ceil(start.getMinutes() / 15) * 15, 0, 0);
+    const end = new Date(start.getTime() + 7 * 86_400_000);
+    elements.vacationSetupForm.elements.namedItem('startsAt').value = datetimeLocalValue(start);
+    elements.vacationSetupForm.elements.namedItem('endsAt').value = datetimeLocalValue(end);
+    elements.vacationSetupError.hidden = true;
+    elements.vacationSetupDialog.showModal();
+    elements.vacationSetupForm.elements.namedItem('startsAt').focus();
+    return;
+  }
+  const wasActive = state.session.vacation?.period?.status === 'active';
+  toggle.disabled = true;
+  api('/api/vacation/manual', { method: 'PUT', body: { enabled: false } })
+    .then(() => {
+      playVacationOffSound();
+      return refresh({ quiet: true });
+    })
+    .then(() => {
+      animateVacationSwitch();
+      showToast(wasActive
+        ? 'Vacation Mode is off. Your return briefing is ready.'
+        : 'Vacation Mode is off. The scheduled time away was cancelled.');
+    })
+    .catch(error => {
+      if (state.session) showToast(error.message, true);
+      toggle.disabled = false;
+    });
+});
+elements.accountMenuButton.addEventListener('click', event => {
+  event.stopPropagation();
+  toggleAccountMenu();
+});
+document.addEventListener('click', event => {
+  if (!event.target.closest('.account-menu')) closeAccountMenu();
+});
 elements.heroAction.addEventListener('click', () => selectView(elements.heroAction.dataset.view));
 elements.navOpen.addEventListener('click', openSidebar);
 elements.navClose.addEventListener('click', () => closeSidebar(true));
@@ -1399,6 +1970,57 @@ elements.emailDialog.addEventListener('close', () => {
   state.emailDialogOpener = null;
   if (state.session && !elements.appView.hidden && (!opener || !opener.isConnected)) {
     elements.pageTitle.focus({ preventScroll: true });
+  }
+});
+
+elements.returnBriefingClose.addEventListener('click', () => elements.returnBriefingDialog.close());
+elements.vacationSetupClose.addEventListener('click', () => elements.vacationSetupDialog.close());
+elements.vacationSetupCancel.addEventListener('click', () => elements.vacationSetupDialog.close());
+elements.vacationSetupForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  elements.vacationSetupError.hidden = true;
+  const startValue = elements.vacationSetupForm.elements.namedItem('startsAt').value;
+  const endValue = elements.vacationSetupForm.elements.namedItem('endsAt').value;
+  const start = new Date(startValue);
+  const end = new Date(endValue);
+  if (!startValue || !endValue || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+    setText(elements.vacationSetupError, 'Choose a return time after your start time.');
+    elements.vacationSetupError.hidden = false;
+    return;
+  }
+  const submit = elements.vacationSetupForm.querySelector('[type="submit"]');
+  setButtonBusy(submit, true, 'Turning on…');
+  try {
+    await api('/api/vacation/manual', {
+      method: 'PUT',
+      body: { enabled: true, startsAt: start.toISOString(), endsAt: end.toISOString() }
+    });
+    elements.vacationSetupDialog.close();
+    playVacationOnSound();
+    await refresh({ quiet: true });
+    animateVacationSwitch();
+    showToast('Vacation Mode is on. New work will be held during your time away.');
+  } catch (error) {
+    if (!state.session) return;
+    setText(elements.vacationSetupError, error.message);
+    elements.vacationSetupError.hidden = false;
+  } finally {
+    setButtonBusy(submit, false, 'Turning on…');
+  }
+});
+elements.returnBriefingDialog.addEventListener('close', async () => {
+  const id = Number(elements.returnBriefingDialog.dataset.briefingId);
+  delete elements.returnBriefingDialog.dataset.briefingId;
+  if (state.session && !elements.appView.hidden) {
+    window.requestAnimationFrame(() => elements.pageTitle.focus({ preventScroll: true }));
+  }
+  if (!Number.isInteger(id) || !state.session || state.session.user.role !== 'member') return;
+  try {
+    await api(`/api/vacation/briefings/${id}/reviewed`, { method: 'POST' });
+    await refresh({ quiet: true });
+    if (state.vacationBriefings !== null) await loadVacationBriefings();
+  } catch (error) {
+    if (state.session) showToast(error.message, true);
   }
 });
 
@@ -1518,6 +2140,27 @@ elements.teamDepartmentList.addEventListener('change', async event => {
   } finally {
     select.disabled = false;
     select.setAttribute('aria-busy', 'false');
+  }
+});
+
+elements.teamDepartmentList.addEventListener('submit', async event => {
+  const form = event.target.closest('.microsoft-principal-form');
+  if (!form || state.session?.user.role !== 'admin') return;
+  event.preventDefault();
+  const submit = form.querySelector('[type="submit"]');
+  const memberName = form.closest('.team-member')?.querySelector('strong')?.textContent || 'Team member';
+  setButtonBusy(submit, true, 'Saving…');
+  try {
+    await api(`/api/team/${form.dataset.memberId}/microsoft-principal`, {
+      method: 'PATCH',
+      body: { microsoftPrincipal: form.elements.namedItem('microsoftPrincipal').value.trim() }
+    });
+    await refresh({ quiet: true });
+    showToast(`${memberName}'s Microsoft identity was updated.`);
+  } catch (error) {
+    if (state.session) showToast(error.message, true);
+  } finally {
+    setButtonBusy(submit, false, 'Saving…');
   }
 });
 
@@ -1649,6 +2292,7 @@ elements.completeButton.addEventListener('click', async () => {
     await mutate(`/api/emails/${state.selectedEmailId}/complete`);
     elements.emailDialog.close();
     elements.pageTitle.focus({ preventScroll: true });
+    playCompletionChime();
     showToast('Email marked complete.');
   } catch (error) {
     showToast(error.message, true);
@@ -1658,9 +2302,26 @@ elements.completeButton.addEventListener('click', async () => {
 });
 
 elements.notificationList.addEventListener('click', async event => {
+  const returnBriefing = event.target.closest('.open-return-briefing');
+  if (returnBriefing) {
+    try {
+      await openReturnBriefing(returnBriefing.dataset.briefingId);
+      await mutate(`/api/notifications/${returnBriefing.dataset.notificationId}/read`);
+      playReadChime();
+    } catch (error) {
+      showToast(error.message, true);
+    }
+    return;
+  }
   const open = event.target.closest('.open-notification');
   if (open) {
     openEmail(open.dataset.emailId);
+    try {
+      await mutate(`/api/notifications/${open.dataset.notificationId}/read`);
+      playReadChime();
+    } catch (error) {
+      showToast(error.message, true);
+    }
     return;
   }
   const read = event.target.closest('.read-notification');
@@ -1668,6 +2329,7 @@ elements.notificationList.addEventListener('click', async event => {
   setButtonBusy(read, true, '…');
   try {
     await mutate(`/api/notifications/${read.dataset.notificationId}/read`);
+    playReadChime();
   } catch (error) {
     showToast(error.message, true);
     setButtonBusy(read, false, '…');
@@ -1675,7 +2337,9 @@ elements.notificationList.addEventListener('click', async event => {
 });
 
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && state.sidebarOpen) closeSidebar(true);
+  if (event.key !== 'Escape') return;
+  if (!elements.accountMenu.hidden) closeAccountMenu({ restoreFocus: true });
+  if (state.sidebarOpen) closeSidebar(true);
 });
 
 document.addEventListener('visibilitychange', () => {

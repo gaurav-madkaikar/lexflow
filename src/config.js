@@ -55,6 +55,10 @@ export function loadConfig(env = process.env) {
   if (syncIntervalSeconds !== 0 && (syncIntervalSeconds < 60 || syncIntervalSeconds > 86_400)) {
     throw new RangeError('SYNC_INTERVAL_SECONDS must be 0 or between 60 and 86400');
   }
+  const vacationSyncIntervalSeconds = integerSetting(env, 'VACATION_SYNC_INTERVAL_SECONDS', 300);
+  if (vacationSyncIntervalSeconds !== 0 && (vacationSyncIntervalSeconds < 60 || vacationSyncIntervalSeconds > 86_400)) {
+    throw new RangeError('VACATION_SYNC_INTERVAL_SECONDS must be 0 or between 60 and 86400');
+  }
 
   const graph = {
     tenantId: String(env.GRAPH_TENANT_ID ?? '').trim(),
@@ -85,6 +89,7 @@ export function loadConfig(env = process.env) {
     port,
     databasePath: String(env.DATABASE_PATH ?? '').trim() || 'data/lexflow.db',
     syncIntervalSeconds,
+    vacationSyncIntervalSeconds,
     mode,
     graph,
     gmail: {
@@ -98,7 +103,8 @@ export function loadConfig(env = process.env) {
     bootstrapPasswords: {
       admin: String(env.BOOTSTRAP_ADMIN_PASSWORD ?? ''),
       maya: String(env.BOOTSTRAP_MAYA_PASSWORD ?? ''),
-      priya: String(env.BOOTSTRAP_PRIYA_PASSWORD ?? '')
+      priya: String(env.BOOTSTRAP_PRIYA_PASSWORD ?? ''),
+      cfo: String(env.BOOTSTRAP_CFO_PASSWORD ?? '')
     }
   };
 }

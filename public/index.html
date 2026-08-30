@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#fbfbfa">
   <title>LexFlow — Email assignment</title>
+  <link rel="stylesheet" href="/ui-assets/lexflow-ui.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -27,6 +28,7 @@
     <symbol id="icon-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M9 3h6"/></symbol>
     <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></symbol>
     <symbol id="icon-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/></symbol>
+    <symbol id="icon-vacation" viewBox="0 0 24 24"><path d="M4 14h16M7 14c.3-5 2-8 5-10 3 2 4.7 5 5 10M12 14v7M8 21h8"/><path d="M4 14c2-2 4-2 6 0 2-2 4-2 6 0 1.4-1.3 2.8-1.7 4-1.2"/></symbol>
     <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></symbol>
   </svg>
 
@@ -71,6 +73,10 @@
         <p class="demo-note">Local demo credentials are listed in the project README.</p>
       </div>
     </div>
+  </section>
+
+  <section class="cfo-view" id="cfo-view" aria-label="CFO finance workspace" hidden>
+    <div id="cfo-dashboard-root"></div>
   </section>
 
   <section class="app-shell" id="app-view" aria-label="LexFlow workspace" hidden>
@@ -152,6 +158,11 @@
               <span>Notifications</span>
               <span class="nav-badge" data-badge="notifications">0</span>
             </button>
+            <button class="nav-item" type="button" data-view="vacation">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-vacation"></use></svg>
+              <span>Vacation</span>
+              <span class="nav-badge" data-badge="briefings">0</span>
+            </button>
           </div>
         </div>
       </nav>
@@ -189,20 +200,14 @@
           </div>
         </div>
 
-        <div class="topbar-identity" aria-label="Signed-in account">
-          <span class="avatar" id="topbar-avatar" aria-hidden="true"></span>
-          <span class="user-copy">
-            <strong id="topbar-user"></strong>
-            <small id="topbar-role"></small>
-          </span>
-        </div>
+        <label class="search-field" for="search-input">
+          <svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+          <span class="visually-hidden">Search emails</span>
+          <input id="search-input" type="search" placeholder="Search emails…" autocomplete="off">
+          <kbd class="search-shortcut" aria-hidden="true">⌘K</kbd>
+        </label>
 
         <div class="top-actions">
-          <label class="search-field" for="search-input">
-            <svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg>
-            <span class="visually-hidden">Search emails</span>
-            <input id="search-input" type="search" placeholder="Search emails…" autocomplete="off">
-          </label>
           <button class="button sync-button" id="sync-button" type="button" aria-label="Sync connected mailboxes" hidden>
             <svg class="icon" aria-hidden="true"><use href="#icon-sync"></use></svg>
             <span class="button-label action-label" data-button-label>Sync now</span>
@@ -212,17 +217,30 @@
             <span class="notification-count" id="notification-count" aria-hidden="true">0</span>
           </button>
           <span class="visually-hidden" id="notification-announcement" role="status" aria-live="polite" aria-atomic="true"></span>
-          <button class="button logout-button" id="logout-button" type="button">
-            <svg class="icon" aria-hidden="true"><use href="#icon-logout"></use></svg>
-            <span class="button-label" data-button-label>Sign out</span>
-          </button>
+          <div class="account-menu">
+            <button class="account-trigger" id="account-menu-button" type="button" aria-label="Open account menu" aria-haspopup="menu" aria-controls="account-menu" aria-expanded="false">
+              <span class="avatar" id="topbar-avatar" aria-hidden="true"></span>
+            </button>
+            <div class="account-popover" id="account-menu" role="menu" hidden>
+              <div class="account-summary">
+                <span class="user-copy">
+                  <strong id="topbar-user"></strong>
+                  <small id="topbar-role"></small>
+                </span>
+              </div>
+              <button class="account-signout" id="logout-button" type="button" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#icon-logout"></use></svg>
+                <span class="button-label" data-button-label>Sign out</span>
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
       <main class="content" id="main-content" tabindex="-1">
         <div class="status-banner" id="status-banner" role="alert" hidden></div>
 
-        <section class="dashboard-hero" id="dashboard-hero" aria-labelledby="hero-title">
+        <section class="dashboard-hero" id="dashboard-hero" aria-label="Dashboard actions">
           <div class="hero-actions">
             <time class="hero-date" id="hero-date">
               <strong id="hero-day"></strong>
@@ -248,14 +266,14 @@
             <span class="visually-hidden" id="hero-date-filter-status" role="status" aria-live="polite" aria-atomic="true">Showing emails from all received dates.</span>
           </div>
 
-          <div class="hero-copy">
+          <div class="hero-copy" hidden>
             <span class="mode-chip" id="mode-chip">Demo mailbox</span>
             <p class="eyebrow" id="hero-eyebrow">Today’s workflow</p>
             <h2 id="hero-title">Keep every email moving.</h2>
             <p id="hero-summary">Loading the latest mailbox activity…</p>
           </div>
 
-          <span class="hero-orb" aria-hidden="true">
+          <span class="hero-orb" aria-hidden="true" hidden>
             <svg class="icon"><use href="#icon-mail"></use></svg>
           </span>
         </section>
@@ -317,6 +335,21 @@
                 </div>
               </div>
               <div class="notification-list" id="notification-list"></div>
+            </section>
+
+            <section class="card panel vacation-panel" id="vacation-panel" aria-labelledby="vacation-title" hidden>
+              <div class="card-head">
+                <div>
+                  <p class="card-kicker">Microsoft 365</p>
+                  <h2 id="vacation-title">Vacation Mode</h2>
+                  <p>Out-of-office status and return briefings</p>
+                </div>
+                <button class="small-button" id="vacation-refresh" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#icon-sync"></use></svg>
+                  <span data-button-label>Check now</span>
+                </button>
+              </div>
+              <div class="vacation-content" id="vacation-content"></div>
             </section>
 
             <section class="card panel settings-panel" id="settings-panel" aria-labelledby="settings-title" hidden>
@@ -389,10 +422,39 @@
               </div>
             </section>
           </aside>
+
+          <div class="react-dashboard-module" id="workflow-chart-root"></div>
         </div>
       </main>
     </div>
   </section>
+
+  <dialog class="dialog return-briefing-dialog" id="return-briefing-dialog" aria-labelledby="return-briefing-title">
+    <div class="dialog-head">
+      <div><p class="eyebrow">Welcome back</p><h2 id="return-briefing-title">Your return briefing</h2></div>
+      <button class="icon-button" id="return-briefing-close" type="button" aria-label="Close return briefing"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button>
+    </div>
+    <div class="return-briefing-body" id="return-briefing-body"></div>
+  </dialog>
+
+  <dialog class="dialog vacation-setup-dialog" id="vacation-setup-dialog" aria-labelledby="vacation-setup-title">
+    <div class="dialog-head">
+      <div><p class="eyebrow">Plan your time away</p><h2 id="vacation-setup-title">Turn on Vacation Mode</h2></div>
+      <button class="icon-button" id="vacation-setup-close" type="button" aria-label="Close vacation setup"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button>
+    </div>
+    <form class="vacation-setup-form" id="vacation-setup-form">
+      <p>Choose when Lex Flow should pause new assignments and prepare your return briefing.</p>
+      <div class="vacation-date-grid">
+        <label class="field"><span>Away from</span><input type="datetime-local" name="startsAt" required></label>
+        <label class="field"><span>Back at</span><input type="datetime-local" name="endsAt" required></label>
+      </div>
+      <p class="form-error" id="vacation-setup-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="button secondary" id="vacation-setup-cancel" type="button">Cancel</button>
+        <button class="button primary" type="submit"><span data-button-label>Turn on</span></button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="dialog rule-dialog" id="rule-dialog" aria-labelledby="rule-dialog-title" aria-describedby="rule-form-help">
     <div class="dialog-head">
@@ -476,6 +538,7 @@
   </dialog>
 
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
+  <script type="module" src="/ui-assets/lexflow-ui.js"></script>
 </body>
 </html>

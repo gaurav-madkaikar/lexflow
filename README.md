@@ -1,6 +1,6 @@
 # LexFlow Email Assignment
 
-A minimal email-intake app for rule-based and manual assignment. Admins manage routing, departments, response windows, and reassignments; members see only their work, receive assignment and overdue notifications, and can mark email complete. It runs with built-in demo mail by default and can sync one Microsoft 365 mailbox, one Gmail mailbox, or both into the same queue.
+A minimal email-intake app for rule-based and manual assignment, plus a read-only CFO finance command center. Admins manage routing, departments, response windows, and reassignments; members see only their work; CFO users receive an isolated operational-finance dashboard with deterministic demonstration data.
 
 ## Requirements
 
@@ -33,12 +33,15 @@ These credentials are for local demonstration only:
 | Admin | `admin@lexflow.local` | `admin123` |
 | Legal member | `maya@lexflow.local` | `welcome123` |
 | Finance member | `priya@lexflow.local` | `welcome123` |
+| CFO | `cfo@lexflow.local` | `welcome123` |
+
+The CFO account opens directly into a finance-only workspace. Its figures are sample data attributed to AR Revenue, AP, Tax, and Invoicing; they are not imported from the connected mailboxes.
 
 ## Microsoft Outlook connection
 
 1. Register an application in Microsoft Entra ID.
-2. Add the Microsoft Graph **application** permission `Mail.Read` and grant admin consent.
-3. Restrict application access to the intended mailbox with an appropriate tenant policy.
+2. Add the Microsoft Graph **application** permissions `Mail.Read`, `MailboxSettings.Read`, and `Calendars.ReadBasic`, then grant admin consent.
+3. Restrict the application to the intended organizational mailboxes with an Exchange application-access policy. Vacation Mode reads automatic-reply settings and basic default-calendar metadata only; it never reads meeting descriptions, attachments, transcripts, or attendee lists.
 4. Copy `.env.example` to `.env` and set all four values:
 
 ```dotenv
@@ -49,9 +52,12 @@ GRAPH_MAILBOX=shared-mailbox@example.com
 BOOTSTRAP_ADMIN_PASSWORD=choose-a-strong-admin-password
 BOOTSTRAP_MAYA_PASSWORD=choose-a-strong-member-password
 BOOTSTRAP_PRIYA_PASSWORD=choose-another-strong-member-password
+BOOTSTRAP_CFO_PASSWORD=choose-a-strong-cfo-password
 ```
 
-The three local account passwords are required whenever a live mail connector is configured and replace any earlier demo passwords, so a connected instance never retains the documented defaults. Outlook is enabled only when every Graph value is present. For an HTTPS deployment, also set `NODE_ENV=production` so session cookies use the `Secure` flag. Keep `.env` and client secrets out of version control.
+The four local account passwords are required whenever a live mail connector is configured and replace any earlier demo passwords, so a connected instance never retains the documented defaults. Outlook is enabled only when every Graph value is present. For an HTTPS deployment, also set `NODE_ENV=production` so session cookies use the `Secure` flag. Keep `.env` and client secrets out of version control.
+
+Vacation Mode polls Microsoft 365 every five minutes by default (`VACATION_SYNC_INTERVAL_SECONDS=300`). An administrator maps each member to a Microsoft principal in Workspace settings. Active Outlook OOO periods pause rule-based assignment to that member, retain the intended work in an admin-visible hold, and generate one deterministic in-app return briefing when the member becomes available again. Members change OOO settings in Outlook; Lex Flow is read-only against the provider.
 
 ## Gmail connection
 
@@ -78,6 +84,7 @@ TOKEN_ENCRYPTION_KEY=the-generated-base64-key
 BOOTSTRAP_ADMIN_PASSWORD=choose-a-strong-admin-password
 BOOTSTRAP_MAYA_PASSWORD=choose-a-strong-member-password
 BOOTSTRAP_PRIYA_PASSWORD=choose-another-strong-member-password
+BOOTSTRAP_CFO_PASSWORD=choose-a-strong-cfo-password
 ```
 
 Restart LexFlow, sign in as an admin, open **Settings → Email connections**, and select **Connect Gmail**. LexFlow requests read-only Gmail access, encrypts the refresh token in SQLite, and uses it only for background Inbox sync. Disconnecting makes a bounded attempt to revoke Google access, then removes the local connection and Gmail cursor; it does not delete imported work items.
@@ -91,7 +98,7 @@ Restart LexFlow, sign in as an admin, open **Settings → Email connections**, a
 - Creating or enabling a rule also checks currently unassigned email. Disabling or deleting a rule does not alter existing assignments.
 - Admins can also assign or reassign any open email from its detail drawer. Completed email is locked.
 - An assignment creates an in-app notification for the member and an activity entry for the admin. Members see only their assigned email and can mark it complete.
-- Completion creates an activity entry and notifies every admin, once per email.
+- Completion creates one activity entry and retires every notification tied to that email.
 - Admins can add departments, move members between them, and edit the two workspace-wide response windows in **Settings**.
 - Unassigned alerts notify admins based on the provider's received time. Assigned-but-incomplete alerts notify both admins and the assignee from the latest assignment time. Overdue alerts repeat once per hour until the email is assigned, reassigned, or completed as applicable.
 
@@ -103,7 +110,7 @@ Run the intentionally small suite:
 npm test
 ```
 
-The suite contains a compact set of automated contract tests covering migrations, Gmail and Outlook imports, OAuth safety, rule and manual assignment, reassignment, isolation, admin-only controls, departments, response windows, completion notifications, hourly overdue alerts, idempotency, and the one-minute sync default.
+The suite contains automated contract tests covering migrations, Gmail and Outlook imports, OAuth safety, rule and manual assignment, reassignment, isolation, admin-only controls, CFO finance access, finance-period contracts, departments, response windows, completion notifications, hourly overdue alerts, idempotency, and the one-minute sync default.
 
 For a browser smoke check, sign in as the admin, open an unassigned message and assign it, then sign in as its assignee. Confirm the notification and completion control. Return to the admin account to confirm the completion notification and activity entry. Admin settings should also expose department placement and both alert windows.
 

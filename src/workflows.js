@@ -1,3 +1,9 @@
+import {
+  holdEmailForAwayUser,
+  isUserAway,
+  resolveEmailHoldCoverage,
+} from './vacation.js';
+
 function runTransaction(db, operation) {
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -62,6 +68,7 @@ function recordAssignment(db, {
     WHERE id = ? AND ${eligibleStatus}
   `).run(assignee.id, assignedAt, email.id);
   if (updated.changes !== 1) return false;
+  resolveEmailHoldCoverage(db, email.id, new Date(assignedAt));
 
   if (email.assignee_id) {
     db.prepare(`
@@ -100,6 +107,15 @@ function assignEmailByRule(db, email, rule, assignedAt) {
   const assignee = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'member'")
     .get(rule.assignee_id);
   if (!assignee) return false;
+  if (isUserAway(db, assignee.id)) {
+    holdEmailForAwayUser(db, {
+      emailId: email.id,
+      userId: assignee.id,
+      ruleId: rule.id,
+      now: new Date(assignedAt),
+    });
+    return false;
+  }
   return recordAssignment(db, {
     email,
     assignee,
@@ -346,6 +362,9 @@ export function assignEmailManually({
     if (!email) throw workflowError(404, 'NOT_FOUND', 'Email not found.');
     if (!assignee) throw workflowError(404, 'NOT_FOUND', 'Team member not found.');
     if (!admin) throw workflowError(403, 'FORBIDDEN', 'Admin access is required.');
+    if (isUserAway(db, assigneeId)) {
+      throw workflowError(409, 'MEMBER_AWAY', `${assignee.name} is out of office and cannot receive new assignments.`);
+    }
     if (email.status === 'completed') {
       throw workflowError(409, 'CONFLICT', 'Completed emails cannot be reassigned.');
     }
@@ -387,11 +406,10 @@ export function completeAssignedEmail({ db, emailId, userId, now = new Date() })
         VALUES (?, ?, 'completed', ?, ?)
       `).run(userId, emailId, `${actor.name} completed "${email.subject}"`, completedAt);
       db.prepare(`
-        INSERT INTO notifications (user_id, email_id, kind, message, created_at)
-        SELECT id, ?, 'completion', ?, ?
-        FROM users
-        WHERE role = 'admin'
-      `).run(emailId, `${actor.name} completed "${email.subject}"`, completedAt);
+        UPDATE notifications
+        SET read_at = COALESCE(read_at, ?)
+        WHERE email_id = ?
+      `).run(completedAt, emailId);
       db.prepare(`
         DELETE FROM alert_deliveries
         WHERE email_id = ? AND kind = 'assigned_overdue'
