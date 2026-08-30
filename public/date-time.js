@@ -22,7 +22,7 @@ export function formatZonedDate(value, {
     dateStyle: 'medium', timeStyle: 'short', timeZone: resolvedTimezone(timezone), hour12: true,
   } : {
     hour: 'numeric', minute: '2-digit', timeZone: resolvedTimezone(timezone), hour12: true,
-  }).format(date);
+  }).format(date).replace(/\b(am|pm)\b/giu, value => value.toUpperCase());
 }
 
 export function localDateKey(value, timezone = DEFAULT_TIMEZONE) {
