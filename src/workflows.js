@@ -57,12 +57,13 @@ function setSyncState(db, key, value, organizationId = 1) {
   `).run(scopedStateKey(key, organizationId), value, organizationId);
 }
 
-function asMailMessage(row) {
+function asMailMessage(row, conversation = null) {
   return {
     subject: row.subject,
     preview: row.preview,
     senderName: row.sender_name,
     senderAddress: row.sender_address,
+    hasAttachments: Boolean(conversation?.has_attachments ?? row.has_attachments),
   };
 }
 
@@ -226,7 +227,8 @@ export function matchRule(message, rules) {
         const keywordsMatch = words.every((word) => searchable.includes(word));
         const senderMatch =
           !rule.sender_filter || sender.includes(rule.sender_filter.toLocaleLowerCase());
-        return keywordsMatch && senderMatch;
+        const attachmentMatch = Boolean(rule.has_attachments) === Boolean(message.hasAttachments);
+        return keywordsMatch && senderMatch && attachmentMatch;
       }) ?? null
   );
 }
@@ -349,7 +351,7 @@ export async function syncMailbox({ db, source }) {
       const attached = attachEmailToConversation(db, email.id);
       email = findEmail.get(message.providerId, organizationId);
       if (attached.created) {
-        const rule = matchRule(message, rules);
+        const rule = matchRule(asMailMessage(email, attached.conversation), rules);
         if (rule && assignEmailByRule(db, email, rule, now, organizationId)) assigned += 1;
         continue;
       }
@@ -373,7 +375,7 @@ export async function syncMailbox({ db, source }) {
         assigned += 1;
         continue;
       }
-      const rule = matchRule(message, rules);
+      const rule = matchRule(asMailMessage(email, attached.conversation), rules);
       if (rule && assignEmailByRule(db, email, rule, now, organizationId, true)) {
         assigned += 1;
         continue;
@@ -653,14 +655,18 @@ export function applyRuleToUnassigned(
     if (!rule) return { assigned: 0 };
 
     const emails = db.prepare(`
-      SELECT * FROM emails
-      WHERE organization_id = ? AND department_id = ? AND status = 'unassigned'
-      ORDER BY id
+      SELECT emails.*, conversations.has_attachments AS conversation_has_attachments
+      FROM emails
+      LEFT JOIN conversations ON conversations.id = emails.conversation_id
+      WHERE emails.organization_id = ? AND emails.department_id = ? AND emails.status = 'unassigned'
+      ORDER BY emails.id
     `).all(organizationId, departmentId);
     const now = (nowValue instanceof Date ? nowValue : new Date(nowValue)).toISOString();
     let assigned = 0;
     for (const email of emails) {
-      if (matchRule(asMailMessage(email), [rule]) && assignEmailByRule(db, email, rule, now, organizationId)) {
+      if (matchRule(asMailMessage(email, {
+        has_attachments: email.conversation_has_attachments ?? email.has_attachments,
+      }), [rule]) && assignEmailByRule(db, email, rule, now, organizationId)) {
         assigned += 1;
       }
     }

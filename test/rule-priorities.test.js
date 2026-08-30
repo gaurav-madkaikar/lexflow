@@ -40,3 +40,14 @@ test('matching evaluates Critical before High, Medium, and Low', () => {
   ]);
   assert.equal(rule.id, 4);
 });
+
+test('matching requires an exact conversation attachment state', () => {
+  const message = {
+    subject: 'Customer escalation', preview: 'review required',
+    senderName: 'Customer', senderAddress: 'customer@example.test',
+  };
+  const base = { id: 1, enabled: true, priority: 10, keywords: 'review', sender_filter: '' };
+  assert.equal(matchRule({ ...message, hasAttachments: true }, [{ ...base, has_attachments: 0 }]), null);
+  assert.equal(matchRule({ ...message, hasAttachments: false }, [{ ...base, has_attachments: 1 }]), null);
+  assert.equal(matchRule({ ...message, hasAttachments: true }, [{ ...base, has_attachments: 1 }])?.id, 1);
+});

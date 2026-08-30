@@ -277,6 +277,7 @@ function ruleFromRow(row) {
     senderFilter: row.sender_filter,
     priority: Number(row.priority),
     enabled: Boolean(row.enabled),
+    hasAttachments: Boolean(row.has_attachments),
     departmentId: Number(row.department_id),
     assignee: {
       id: Number(row.assignee_id),
@@ -436,6 +437,10 @@ function parseRule(body) {
   const senderFilter = typeof body.senderFilter === 'string' ? body.senderFilter.trim() : '';
   const assigneeId = Number(body.assigneeId);
   const priority = Number(body.priority);
+  if (body.hasAttachments !== undefined && typeof body.hasAttachments !== 'boolean') {
+    return { error: 'Choose whether attachments are required.', field: 'hasAttachments' };
+  }
+  const hasAttachments = body.hasAttachments === true;
 
   if (!name || name.length > 80) return { error: 'Enter a rule name of 80 characters or fewer.', field: 'name' };
   if (keywords.length > 240) return { error: 'Keywords must be 240 characters or fewer.', field: 'keywords' };
@@ -443,10 +448,10 @@ function parseRule(body) {
   if (!keywords && !senderFilter) return { error: 'Enter keywords or a sender filter.', field: 'keywords' };
   if (!Number.isInteger(assigneeId) || assigneeId < 1) return { error: 'Choose an assignee.', field: 'assigneeId' };
   if (!isRulePriority(priority)) return { error: RULE_PRIORITY_ERROR, field: 'priority' };
-  return { value: { name, keywords, senderFilter, assigneeId, priority } };
+  return { value: { name, keywords, senderFilter, assigneeId, priority, hasAttachments } };
 }
 
-const editableRuleFields = ['name', 'keywords', 'senderFilter', 'assigneeId', 'priority', 'enabled'];
+const editableRuleFields = ['name', 'keywords', 'senderFilter', 'assigneeId', 'priority', 'enabled', 'hasAttachments'];
 
 function parseRulePatch(body, current) {
   const hasField = (field) => Object.prototype.hasOwnProperty.call(body, field);
@@ -461,6 +466,7 @@ function parseRulePatch(body, current) {
     assigneeId: Number(current.assignee_id),
     priority: Number(current.priority),
     enabled: Boolean(current.enabled),
+    hasAttachments: Boolean(current.has_attachments),
   };
 
   if (hasField('name')) {
@@ -493,6 +499,12 @@ function parseRulePatch(body, current) {
     }
     value.enabled = body.enabled;
   }
+  if (hasField('hasAttachments')) {
+    if (typeof body.hasAttachments !== 'boolean') {
+      return { error: 'Choose whether attachments are required.', field: 'hasAttachments' };
+    }
+    value.hasAttachments = body.hasAttachments;
+  }
 
   if (!value.name || value.name.length > 80) {
     return { error: 'Enter a rule name of 80 characters or fewer.', field: 'name' };
@@ -519,6 +531,7 @@ function parseRulePatch(body, current) {
     || value.assigneeId !== Number(current.assignee_id)
     || value.priority !== Number(current.priority)
     || value.enabled !== Boolean(current.enabled)
+    || value.hasAttachments !== Boolean(current.has_attachments)
   );
   if (!changed) return { error: 'Change at least one rule field.' };
   return { value };
@@ -1095,8 +1108,9 @@ export function createApp({
       const id = runTransaction(db, () => {
         const result = db.prepare(`
           INSERT INTO rules
-            (name, keywords, sender_filter, assignee_id, priority, enabled, created_at, organization_id, department_id)
-          VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+            (name, keywords, sender_filter, assignee_id, priority, enabled, created_at,
+             organization_id, department_id, has_attachments)
+          VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
         `).run(
           parsed.value.name,
           parsed.value.keywords,
@@ -1106,6 +1120,7 @@ export function createApp({
           now,
           request.user.organization_id,
           request.user.headed_department_id,
+          parsed.value.hasAttachments ? 1 : 0,
         );
         const ruleId = Number(result.lastInsertRowid);
         applyRuleToUnassigned(db, ruleId, request.user.organization_id, request.user.headed_department_id);
@@ -1142,7 +1157,8 @@ export function createApp({
       runTransaction(db, () => {
         db.prepare(`
           UPDATE rules
-          SET name = ?, keywords = ?, sender_filter = ?, assignee_id = ?, priority = ?, enabled = ?
+          SET name = ?, keywords = ?, sender_filter = ?, assignee_id = ?, priority = ?, enabled = ?,
+              has_attachments = ?
           WHERE id = ? AND organization_id = ? AND department_id = ?
         `).run(
           parsed.value.name,
@@ -1151,6 +1167,7 @@ export function createApp({
           parsed.value.assigneeId,
           parsed.value.priority,
           parsed.value.enabled ? 1 : 0,
+          parsed.value.hasAttachments ? 1 : 0,
           id,
           request.user.organization_id,
           request.user.headed_department_id,
