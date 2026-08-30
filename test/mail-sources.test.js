@@ -511,6 +511,7 @@ test('Outlook delta sync keeps pagination, removal, and provider mapping intact'
           bodyPreview: 'Graph preview',
           receivedDateTime: '2026-08-14T08:30:00.000Z',
           webLink: 'https://outlook.office.com/mail/graph-1',
+          hasAttachments: true,
         },
         { id: 'removed', '@removed': { reason: 'deleted' } },
       ],
@@ -545,6 +546,7 @@ test('Outlook delta sync keeps pagination, removal, and provider mapping intact'
     receivedAt: '2026-08-14T08:30:00.000Z',
     webUrl: 'https://outlook.office.com/mail/graph-1',
     outlookUrl: 'https://outlook.office.com/mail/graph-1',
+    hasAttachments: true,
   });
   assert.equal(result.messages[1].subject, '(No subject)');
   assert.equal(result.messages[1].senderName, 'Unknown sender');
@@ -552,7 +554,7 @@ test('Outlook delta sync keeps pagination, removal, and provider mapping intact'
   assert.equal(graphCalls.length, 2);
   assert.equal(
     new URL(graphCalls[0].url).searchParams.get('$select'),
-    'id,conversationId,internetMessageId,subject,from,receivedDateTime,bodyPreview,webLink',
+    'id,conversationId,internetMessageId,subject,from,receivedDateTime,bodyPreview,webLink,hasAttachments',
   );
   assert.ok(graphCalls.every(call => call.options.headers.authorization === 'Bearer graph-access'));
   assert.ok(graphCalls.every(call => call.options.headers.prefer === 'IdType="ImmutableId"'));

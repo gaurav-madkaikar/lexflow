@@ -73,7 +73,8 @@ function mapGraphMessage(item, mailbox) {
     preview: item.bodyPreview || '',
     receivedAt: item.receivedDateTime,
     webUrl: item.webLink || null,
-    outlookUrl: item.webLink || null
+    outlookUrl: item.webLink || null,
+    hasAttachments: item.hasAttachments === true
   };
 }
 
@@ -122,7 +123,7 @@ export class GraphMailSource {
 
   async fetchChanges(cursor) {
     const token = await this.accessToken();
-    let url = cursor || `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(this.mailbox)}/mailFolders/inbox/messages/delta?$select=id,conversationId,internetMessageId,subject,from,receivedDateTime,bodyPreview,webLink`;
+    let url = cursor || `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(this.mailbox)}/mailFolders/inbox/messages/delta?$select=id,conversationId,internetMessageId,subject,from,receivedDateTime,bodyPreview,webLink,hasAttachments`;
     let nextCursor = cursor;
     let receivedDeltaLink = false;
     const messages = [];

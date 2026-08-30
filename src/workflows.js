@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   attachEmailToConversation,
+  recomputeConversationAttachmentState,
   updateConversationAssignment,
   updateConversationCompletion,
 } from './conversations.js';
@@ -283,13 +284,15 @@ export async function syncMailbox({ db, source }) {
       INSERT OR IGNORE INTO emails
         (provider_id, subject, sender_name, sender_address, preview, received_at,
          outlook_url, provider, mailbox_address, provider_conversation_id,
-         internet_message_id, status, created_at, organization_id, department_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned', ?, ?, ?)
+         internet_message_id, status, created_at, organization_id, department_id,
+         has_attachments)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unassigned', ?, ?, ?, ?)
     `);
     const updateEmail = db.prepare(`
       UPDATE emails
       SET subject = ?, sender_name = ?, sender_address = ?, preview = ?, received_at = ?,
-          outlook_url = ?, provider = ?, mailbox_address = ?, department_id = ?
+          outlook_url = ?, provider = ?, mailbox_address = ?, department_id = ?,
+          has_attachments = ?
       WHERE provider_id = ? AND organization_id = ?
     `);
     const findEmail = db.prepare('SELECT * FROM emails WHERE provider_id = ? AND organization_id = ?');
@@ -316,6 +319,7 @@ export async function syncMailbox({ db, source }) {
         now,
         organizationId,
         departmentId,
+        message.hasAttachments === true ? 1 : 0,
       );
 
       if (insertion.changes === 0) {
@@ -329,9 +333,14 @@ export async function syncMailbox({ db, source }) {
           provider,
           mailboxAddress,
           departmentId,
+          message.hasAttachments === true ? 1 : 0,
           message.providerId,
           organizationId,
         );
+        const existing = findEmail.get(message.providerId, organizationId);
+        if (existing?.conversation_id != null) {
+          recomputeConversationAttachmentState(db, existing.conversation_id);
+        }
         continue;
       }
 

@@ -28,6 +28,21 @@ function normalizedMailbox(value) {
   return String(value ?? '').trim().toLocaleLowerCase();
 }
 
+export function recomputeConversationAttachmentState(db, conversationId) {
+  db.prepare(`
+    UPDATE conversations
+    SET has_attachments = CASE WHEN EXISTS (
+      SELECT 1 FROM emails
+      WHERE emails.conversation_id = conversations.id
+        AND emails.has_attachments = 1
+    ) THEN 1 ELSE 0 END
+    WHERE id = ?
+  `).run(conversationId);
+  return Number(db.prepare(
+    'SELECT has_attachments FROM conversations WHERE id = ?'
+  ).get(conversationId)?.has_attachments ?? 0);
+}
+
 function resolveConversation(db, email) {
   const nativeConversationId = String(email.provider_conversation_id ?? '').trim() || null;
   const fallbackKey = nativeConversationId ? null : conversationIdentity({
@@ -71,6 +86,7 @@ export function attachEmailToConversation(db, emailId) {
   const email = db.prepare('SELECT * FROM emails WHERE id = ?').get(emailId);
   if (!email) throw new Error('Email not found while resolving its conversation.');
   if (email.conversation_id != null) {
+    recomputeConversationAttachmentState(db, email.conversation_id);
     return {
       conversation: db.prepare('SELECT * FROM conversations WHERE id = ?').get(email.conversation_id),
       created: false,
@@ -105,6 +121,7 @@ export function attachEmailToConversation(db, emailId) {
     email.received_at, email.received_at, email.received_at, email.id,
     email.created_at, conversation.id,
   );
+  recomputeConversationAttachmentState(db, conversation.id);
   return {
     conversation: db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversation.id),
     created,
@@ -199,6 +216,7 @@ export function reconcileConversationWorkflowState(db) {
     LIMIT 1
   `);
   for (const row of conversations) {
+    recomputeConversationAttachmentState(db, row.id);
     const event = latestEvent.get(row.id);
     if (!event) continue;
     const assignment = event.event_type === 'completed' ? latestAssignment.get(row.id) : event;

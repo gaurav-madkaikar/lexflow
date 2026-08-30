@@ -4,6 +4,7 @@ import {
   attachEmailToConversation,
   conversationIdentity,
   normalizeFallbackSubject,
+  recomputeConversationAttachmentState,
   reconcileConversationWorkflowState,
 } from '../src/conversations.js';
 import { createDatabase } from '../src/db.js';
@@ -39,6 +40,31 @@ test('database creates conversation task storage', () => {
     assert.ok(db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name='has_attachments'`).get());
   }
   assert.equal(db.prepare('SELECT timezone FROM organizations WHERE id = 1').get().timezone, 'Asia/Kolkata');
+  db.close();
+});
+
+test('conversation attachment state is the OR of all linked messages', () => {
+  const db = createDatabase(':memory:');
+  const now = '2026-08-31T10:00:00.000Z';
+  const departmentId = Number(db.prepare(`
+    INSERT INTO departments (name, shared_mailbox, created_at, organization_id)
+    VALUES ('Legal', 'legal@example.test', ?, 1)
+  `).run(now).lastInsertRowid);
+  const insert = db.prepare(`
+    INSERT INTO emails
+      (provider_id, provider, mailbox_address, provider_conversation_id, subject,
+       sender_name, sender_address, preview, received_at, status, created_at,
+       organization_id, department_id, has_attachments)
+    VALUES (?, 'outlook', 'legal@example.test', 'attachment-thread', ?,
+      'Sender', 'sender@example.test', '', ?, 'unassigned', ?, 1, ?, ?)
+  `);
+  const first = Number(insert.run('first', 'First', now, now, departmentId, 1).lastInsertRowid);
+  const second = Number(insert.run('second', 'Second', '2026-08-31T11:00:00.000Z', now, departmentId, 0).lastInsertRowid);
+  const conversationId = attachEmailToConversation(db, first).conversation.id;
+  attachEmailToConversation(db, second);
+  assert.equal(db.prepare('SELECT has_attachments FROM conversations WHERE id = ?').get(conversationId).has_attachments, 1);
+  db.prepare('UPDATE emails SET has_attachments = 0 WHERE id = ?').run(first);
+  assert.equal(recomputeConversationAttachmentState(db, conversationId), 0);
   db.close();
 });
 
