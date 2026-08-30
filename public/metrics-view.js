@@ -1,4 +1,5 @@
 import { createMetricsCharts } from './metrics-charts.js';
+import { DEFAULT_TIMEZONE, formatZonedDate, localDateKey } from './date-time.js';
 import {
   formatMetricValue,
   metricsEndpointForRole,
@@ -17,10 +18,6 @@ function element(tag, className = '', value = '') {
 
 function setText(node, value = '') {
   node.textContent = String(value ?? '');
-}
-
-function localDate(date) {
-  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 }
 
 function roleCopy(role, departmentName = '') {
@@ -48,25 +45,25 @@ function roleCopy(role, departmentName = '') {
   }[role] ?? { kicker: 'Reporting', title: 'Metrics', summary: 'Operational reporting.' };
 }
 
-function secondaryText(secondary) {
+function secondaryText(secondary, timezone) {
   if (!secondary) return '';
   if (secondary.label) return `${secondary.label}: ${formatMetricValue(secondary.value, secondary.format)}`;
   if (Number.isFinite(secondary.open) || Number.isFinite(secondary.overdue)) {
     return `${secondary.open ?? 0} within SLA · ${secondary.overdue ?? 0} overdue`;
   }
   if (secondary.lastSuccessAt) {
-    return `Last success ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(secondary.lastSuccessAt))}`;
+    return `Last success ${formatZonedDate(secondary.lastSuccessAt, { timezone })}`;
   }
   return '';
 }
 
-function renderCards(container, cards = []) {
+function renderCards(container, cards = [], timezone = DEFAULT_TIMEZONE) {
   container.style.setProperty('--metrics-kpi-count', String(Math.min(Math.max(cards.length, 1), 6)));
   container.replaceChildren(...cards.map((item, index) => {
     const card = element('article', `metrics-kpi tone-${index % 4}`);
     const label = element('p', 'metrics-kpi-label', item.label);
     const value = element('strong', 'metrics-kpi-value', formatMetricValue(item.value, item.format));
-    const note = element('p', 'metrics-kpi-note', secondaryText(item.secondary) || 'Selected period');
+    const note = element('p', 'metrics-kpi-note', secondaryText(item.secondary, timezone) || 'Selected period');
     card.append(label, value, note);
     return card;
   }));
@@ -76,17 +73,17 @@ function readableHeading(key) {
   return String(key).replace(/([a-z])([A-Z])/gu, '$1 $2').replace(/^./u, letter => letter.toUpperCase());
 }
 
-function detailValue(key, value) {
+function detailValue(key, value, timezone) {
   if (value === null || value === undefined || value === '') return 'Not available';
   if (/duration|freshness/iu.test(key) && typeof value === 'number') return formatMetricValue(value, 'duration');
   if (/At$|created/iu.test(key) && !Number.isNaN(Date.parse(value))) {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+    return formatZonedDate(value, { timezone });
   }
   if (typeof value === 'number') return formatMetricValue(value);
   return String(value).replaceAll('_', ' ');
 }
 
-function detailTable(title, rows) {
+function detailTable(title, rows, timezone) {
   const section = element('section', 'metrics-detail-section');
   section.append(element('h4', '', title));
   if (!rows.length) {
@@ -107,7 +104,7 @@ function detailTable(title, rows) {
   const tbody = element('tbody');
   for (const row of rows) {
     const tableRow = element('tr');
-    for (const column of columns) tableRow.append(element('td', '', detailValue(column, row[column])));
+    for (const column of columns) tableRow.append(element('td', '', detailValue(column, row[column], timezone)));
     tbody.append(tableRow);
   }
   table.append(thead, tbody);
@@ -116,14 +113,14 @@ function detailTable(title, rows) {
   return section;
 }
 
-function renderDetails(panel, content, title, payload) {
+function renderDetails(panel, content, title, payload, timezone) {
   const sections = [];
   if (payload.scope === 'platform') {
-    sections.push(detailTable('Tenant directory', payload.details?.tenants ?? []));
-    if (payload.details?.lifecycle?.length) sections.push(detailTable('Lifecycle changes', payload.details.lifecycle));
+    sections.push(detailTable('Tenant directory', payload.details?.tenants ?? [], timezone));
+    if (payload.details?.lifecycle?.length) sections.push(detailTable('Lifecycle changes', payload.details.lifecycle, timezone));
   } else if (payload.scope === 'organization') {
-    sections.push(detailTable('Department mailbox health', payload.details?.graphMailboxes ?? []));
-    if (payload.details?.lifecycle?.length) sections.push(detailTable('People lifecycle details', payload.details.lifecycle));
+    sections.push(detailTable('Department mailbox health', payload.details?.graphMailboxes ?? [], timezone));
+    if (payload.details?.lifecycle?.length) sections.push(detailTable('People lifecycle details', payload.details.lifecycle, timezone));
   }
   panel.hidden = sections.length === 0;
   if (!sections.length) {
@@ -135,15 +132,13 @@ function renderDetails(panel, content, title, payload) {
 }
 
 function timezoneFor(context) {
-  if (context?.user?.role === 'platform_admin') {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  }
-  return context?.organization?.timezone || 'UTC';
+  if (context?.user?.role === 'platform_admin') return DEFAULT_TIMEZONE;
+  return context?.organization?.timezone || DEFAULT_TIMEZONE;
 }
 
-function currentRangeIncludesToday(state) {
+function currentRangeIncludesToday(state, timezone) {
   if (state.preset !== 'custom') return true;
-  return !state.to || state.to >= localDate(new Date());
+  return !state.to || state.to >= localDateKey(new Date(), timezone);
 }
 
 export function createMetricsView({ root, request, notify = () => {}, isActive = () => false } = {}) {
@@ -274,13 +269,13 @@ export function createMetricsView({ root, request, notify = () => {}, isActive =
 
   function renderPayload() {
     if (!payload) return;
-    renderCards(kpis, payload.cards);
+    renderCards(kpis, payload.cards, payload.period.timezone);
     renderFilterOptions();
     renderCompleteness();
     const plots = visibleMetricPlots(payload, state.performanceView);
-    charts.render(plots);
+    charts.render(plots, payload.period.timezone);
     updatePerformanceTabs(plots);
-    renderDetails(detailPanel, detailContent, detailTitle, payload);
+    renderDetails(detailPanel, detailContent, detailTitle, payload, payload.period.timezone);
     const period = payload.period;
     setText(stateRegion, `Updated now · grouped by ${period.bucket} · ${period.timezone}.`);
     root.classList.remove('is-loading', 'is-stale');
@@ -343,11 +338,10 @@ export function createMetricsView({ root, request, notify = () => {}, isActive =
 
   function setCustomDefaults() {
     if (state.from && state.to) return;
-    const end = new Date();
-    const start = new Date(end);
-    start.setDate(start.getDate() - 29);
-    state.from = localDate(start);
-    state.to = localDate(end);
+    state.to = localDateKey(new Date(), timezoneFor(context));
+    const start = new Date(`${state.to}T12:00:00.000Z`);
+    start.setUTCDate(start.getUTCDate() - 29);
+    state.from = start.toISOString().slice(0, 10);
   }
 
   root.querySelectorAll('[data-metrics-preset]').forEach(button => {
@@ -400,7 +394,9 @@ export function createMetricsView({ root, request, notify = () => {}, isActive =
         payload = null;
         charts.render([]);
       }
-      const dueForPoll = Boolean(payload) && poll && currentRangeIncludesToday(state) && Date.now() - lastLoadedAt >= 19_000;
+      const dueForPoll = Boolean(payload) && poll
+        && currentRangeIncludesToday(state, timezoneFor(context))
+        && Date.now() - lastLoadedAt >= 19_000;
       if (!payload || contextChanged || dueForPoll) void load({ force: dueForPoll });
       else renderPayload();
     },

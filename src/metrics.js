@@ -40,7 +40,9 @@ function autoBucket(from, to) {
   return 'month';
 }
 
-export function normalizeMetricsQuery({ query = {}, timezone = 'UTC', now = new Date() } = {}) {
+export const DEFAULT_TIMEZONE = 'Asia/Kolkata';
+
+export function normalizeMetricsQuery({ query = {}, timezone = DEFAULT_TIMEZONE, now = new Date() } = {}) {
   const zone = normalizeTimezone(timezone);
   const nowInstant = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(nowInstant.getTime())) {

@@ -1,6 +1,13 @@
 import { overviewPreview } from './overview-model.js';
 import { createFeedbackQueue, pendingTaskNotice } from './feedback.js';
 import { createMetricsView } from './metrics-view.js';
+import {
+  DEFAULT_TIMEZONE,
+  formatDateKey,
+  formatZonedDate,
+  isDateKey,
+  localDateKey,
+} from './date-time.js';
 import { reconcileExpandedGroups, teamGroups, usernameFromEmail } from './team-model.js';
 import {
   DEFAULT_RULE_PRIORITY,
@@ -280,38 +287,20 @@ function countLabel(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function localDateKey(value) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, '0'),
-    String(date.getDate()).padStart(2, '0')
-  ].join('-');
-}
-
 function dateFromLocalKey(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return null;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  return localDateKey(date) === value ? date : null;
+  return isDateKey(value) ? new Date(`${value}T12:00:00.000Z`) : null;
 }
 
 function selectedDateLabel(value, style = 'long') {
-  const date = dateFromLocalKey(value);
-  if (!date) return '';
-  return new Intl.DateTimeFormat(undefined, style === 'short'
-    ? { month: 'short', day: 'numeric', year: 'numeric' }
-    : { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(date);
+  return formatDateKey(value, { style });
+}
+
+function sessionTimezone() {
+  return state.session?.organization?.timezone || DEFAULT_TIMEZONE;
 }
 
 function formatDate(value, includeDate = true) {
-  if (!value) return 'Not available';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Not available';
-  return new Intl.DateTimeFormat(undefined, includeDate
-    ? { dateStyle: 'medium', timeStyle: 'short' }
-    : { hour: 'numeric', minute: '2-digit' }).format(date);
+  return formatZonedDate(value, { timezone: sessionTimezone(), includeDate });
 }
 
 function emailProvider(email) {
@@ -568,7 +557,7 @@ function metric(label, value, note) {
 }
 
 function emailMatchesDate(email) {
-  return !state.dateFilter || localDateKey(email.receivedAt) === state.dateFilter;
+  return !state.dateFilter || localDateKey(email.receivedAt, sessionTimezone()) === state.dateFilter;
 }
 
 function emailsForSelectedDate() {
@@ -607,13 +596,12 @@ function renderMetrics() {
 }
 
 function renderHero() {
-  const today = new Date();
-  const displayedDate = dateFromLocalKey(state.dateFilter) || today;
-  const displayedDateKey = localDateKey(displayedDate);
+  const displayedDateKey = state.dateFilter || localDateKey(new Date(), sessionTimezone());
+  const displayedDate = dateFromLocalKey(displayedDateKey);
   const totals = counts(emailsForSelectedDate());
   const isAdmin = state.session.user.role === 'dep_admin';
-  const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(displayedDate);
-  const month = new Intl.DateTimeFormat(undefined, { month: 'long' }).format(displayedDate);
+  const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: 'UTC' }).format(displayedDate);
+  const month = new Intl.DateTimeFormat(undefined, { month: 'long', timeZone: 'UTC' }).format(displayedDate);
   elements.heroDate.dateTime = displayedDateKey;
   elements.heroDate.classList.toggle('filtered', Boolean(state.dateFilter));
   setText(elements.heroDay, displayedDate.getDate());
@@ -1169,7 +1157,7 @@ function renderSettings() {
   if (organization && !state.organizationProfileDirty && !elements.organizationProfileForm.contains(document.activeElement)) {
     elements.organizationProfileForm.elements.namedItem('name').value = organization.name ?? '';
     elements.organizationProfileForm.elements.namedItem('domain').value = organization.domain ?? '';
-    elements.organizationProfileForm.elements.namedItem('timezone').value = organization.timezone ?? 'UTC';
+    elements.organizationProfileForm.elements.namedItem('timezone').value = organization.timezone ?? DEFAULT_TIMEZONE;
   }
   renderIntegrations();
   const settings = state.session.settings;
@@ -2134,7 +2122,7 @@ elements.searchInput.addEventListener('input', event => {
   renderEmails();
 });
 elements.heroDateFilter.addEventListener('change', event => {
-  state.dateFilter = dateFromLocalKey(event.target.value) ? event.target.value : '';
+  state.dateFilter = isDateKey(event.target.value) ? event.target.value : '';
   render();
 });
 elements.heroDateClear.addEventListener('click', () => {

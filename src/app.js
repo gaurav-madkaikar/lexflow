@@ -665,7 +665,7 @@ export function createApp({
     try {
       const period = normalizeMetricsQuery({
         query: request.query,
-        timezone: request.query?.timezone ?? 'UTC',
+        timezone: 'Asia/Kolkata',
         now: clock(),
       });
       response.json(getPlatformMetrics({ db, period }));
@@ -687,7 +687,7 @@ export function createApp({
       }
       const period = normalizeMetricsQuery({
         query: request.query,
-        timezone: request.user.organization_timezone ?? 'UTC',
+        timezone: request.user.organization_timezone ?? 'Asia/Kolkata',
         now: clock(),
       });
       response.json(getOrganizationMetrics({
@@ -710,7 +710,7 @@ export function createApp({
       }
       const period = normalizeMetricsQuery({
         query: request.query,
-        timezone: request.user.organization_timezone ?? 'UTC',
+        timezone: request.user.organization_timezone ?? 'Asia/Kolkata',
         now: clock(),
       });
       response.json(getDepartmentMetrics({
@@ -736,7 +736,7 @@ export function createApp({
       }
       const period = normalizeMetricsQuery({
         query: request.query,
-        timezone: request.user.organization_timezone ?? 'UTC',
+        timezone: request.user.organization_timezone ?? 'Asia/Kolkata',
         now: clock(),
       });
       response.json(getMemberMetrics({

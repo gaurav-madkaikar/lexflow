@@ -1,4 +1,5 @@
 import { formatMetricValue } from './metrics-model.js';
+import { DEFAULT_TIMEZONE, formatZonedDate } from './date-time.js';
 
 const PALETTE = ['#c94b31', '#2f5d7c', '#8a5700', '#23744a', '#6f5a8a', '#4e6862'];
 const POINT_STYLES = ['circle', 'rect', 'triangle', 'rectRot', 'star', 'crossRot'];
@@ -13,7 +14,7 @@ function labelFromKey(key) {
     .replace(/^./u, character => character.toUpperCase());
 }
 
-function cellValue(key, value) {
+function cellValue(key, value, timezone) {
   if (value === null || value === undefined) return 'Not available';
   if (/rate|percentage/iu.test(key)) return formatMetricValue(value, 'percentage');
   if (/duration|resolution|handling|freshness|sla/iu.test(key) && typeof value === 'number') {
@@ -21,12 +22,12 @@ function cellValue(key, value) {
   }
   if (typeof value === 'number') return formatMetricValue(value);
   if (/At$/u.test(key) && !Number.isNaN(Date.parse(value))) {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+    return formatZonedDate(value, { timezone });
   }
   return String(value).replaceAll('_', ' ');
 }
 
-function renderTable(container, rows = []) {
+function renderTable(container, rows = [], timezone = DEFAULT_TIMEZONE) {
   container.replaceChildren();
   if (!rows.length) {
     const empty = document.createElement('p');
@@ -54,7 +55,7 @@ function renderTable(container, rows = []) {
     const tableRow = document.createElement('tr');
     for (const column of columns) {
       const cell = document.createElement('td');
-      cell.textContent = cellValue(column, row[column]);
+      cell.textContent = cellValue(column, row[column], timezone);
       tableRow.append(cell);
     }
     body.append(tableRow);
@@ -173,7 +174,7 @@ export function createMetricsCharts({ root, onSelect } = {}) {
     instances.delete(index);
   }
 
-  function renderSlot(plot, index) {
+  function renderSlot(plot, index, timezone) {
     const suffix = index + 1;
     const card = root.querySelector(`#metrics-chart-card-${suffix}`);
     destroy(index);
@@ -184,7 +185,7 @@ export function createMetricsCharts({ root, onSelect } = {}) {
     card.hidden = false;
     text(root.querySelector(`#metrics-chart-title-${suffix}`), plot.title);
     text(root.querySelector(`#metrics-chart-summary-${suffix}`), plot.summary);
-    renderTable(root.querySelector(`#metrics-data-table-${suffix}`), plot.table);
+    renderTable(root.querySelector(`#metrics-data-table-${suffix}`), plot.table, timezone);
     const legend = root.querySelector(`#metrics-chart-legend-${suffix}`);
     const canvasWrap = card.querySelector('.metrics-canvas-wrap');
     const empty = card.querySelector('.metrics-chart-empty');
@@ -218,10 +219,10 @@ export function createMetricsCharts({ root, onSelect } = {}) {
   }
 
   return {
-    render(plots = []) {
+    render(plots = [], timezone = DEFAULT_TIMEZONE) {
       root.querySelector('#metrics-chart-grid')?.classList.toggle('single-chart', plots.filter(Boolean).length < 2);
-      renderSlot(plots[0], 0);
-      renderSlot(plots[1], 1);
+      renderSlot(plots[0], 0, timezone);
+      renderSlot(plots[1], 1, timezone);
     },
     resize() {
       for (const chart of instances.values()) chart.resize();
