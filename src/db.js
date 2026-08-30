@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { backfillReportingEvents } from './reporting-events.js';
-import { backfillConversations } from './conversations.js';
+import { backfillConversations, reconcileConversationWorkflowState } from './conversations.js';
 
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
@@ -832,6 +832,7 @@ export function migrate(db) {
     `);
     backfillConversations(db);
     backfillReportingEvents(db, new Date(createdAt));
+    reconcileConversationWorkflowState(db);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { conversationIdentity, normalizeFallbackSubject } from '../src/conversations.js';
+import {
+  attachEmailToConversation,
+  conversationIdentity,
+  normalizeFallbackSubject,
+  reconcileConversationWorkflowState,
+} from '../src/conversations.js';
 import { createDatabase } from '../src/db.js';
+import { recordTaskEvent } from '../src/reporting-events.js';
 import { completeAssignedEmail, syncMailbox } from '../src/workflows.js';
 
 test('native Outlook conversation identity is authoritative', () => {
@@ -88,6 +94,55 @@ test('a new Outlook reply reopens a completed conversation to its previous assig
     db.prepare('SELECT assignment_source FROM assignment_cycles WHERE conversation_id = ? ORDER BY id').all(conversation.id)
       .map(row => row.assignment_source),
     ['rule', 'reopen_previous'],
+  );
+  db.close();
+});
+
+test('workflow reconciliation uses the latest assignment event and normalizes every message', () => {
+  const db = createDatabase(':memory:');
+  const createdAt = '2026-08-31T08:00:00.000Z';
+  const departmentId = Number(db.prepare(`
+    INSERT INTO departments (name, shared_mailbox, created_at, organization_id)
+    VALUES ('Legal', 'legal@example.test', ?, 1)
+  `).run(createdAt).lastInsertRowid);
+  const addUser = db.prepare(`
+    INSERT INTO users
+      (email, name, initials, department, role, organization_id, auth_provider,
+       account_status, department_id)
+    VALUES (?, ?, ?, 'Legal', 'member', 1, 'entra', 'active', ?)
+  `);
+  const firstUser = Number(addUser.run('first@example.test', 'First User', 'FU', departmentId).lastInsertRowid);
+  const secondUser = Number(addUser.run('second@example.test', 'Second User', 'SU', departmentId).lastInsertRowid);
+  const addEmail = db.prepare(`
+    INSERT INTO emails
+      (provider_id, provider, mailbox_address, provider_conversation_id, subject,
+       sender_name, sender_address, preview, received_at, status, created_at,
+       organization_id, department_id)
+    VALUES (?, 'outlook', 'legal@example.test', 'thread-reconcile', 'Case',
+      'Client', 'client@example.test', '', ?, 'unassigned', ?, 1, ?)
+  `);
+  const firstEmail = Number(addEmail.run('reconcile-1', createdAt, createdAt, departmentId).lastInsertRowid);
+  const secondEmail = Number(addEmail.run('reconcile-2', '2026-08-31T09:00:00.000Z', createdAt, departmentId).lastInsertRowid);
+  attachEmailToConversation(db, firstEmail);
+  const { conversation } = attachEmailToConversation(db, secondEmail);
+  recordTaskEvent(db, {
+    organizationId: 1, departmentId, emailId: firstEmail, assigneeId: firstUser,
+    eventType: 'assigned', assignmentSource: 'manual', receivedAt: createdAt,
+    occurredAt: '2026-08-31T08:30:00.000Z', assigneeNameSnapshot: 'First User',
+  });
+  recordTaskEvent(db, {
+    organizationId: 1, departmentId, emailId: secondEmail, assigneeId: secondUser,
+    eventType: 'assigned', assignmentSource: 'rule', receivedAt: '2026-08-31T09:00:00.000Z',
+    occurredAt: '2026-08-31T09:30:00.000Z', assigneeNameSnapshot: 'Second User',
+  });
+
+  reconcileConversationWorkflowState(db);
+
+  assert.equal(Number(db.prepare('SELECT assignee_id FROM conversations WHERE id = ?').get(conversation.id).assignee_id), secondUser);
+  assert.deepEqual(
+    db.prepare('SELECT DISTINCT status, assignee_id FROM emails WHERE conversation_id = ?').all(conversation.id)
+      .map(row => ({ status: row.status, assignee_id: Number(row.assignee_id) })),
+    [{ status: 'assigned', assignee_id: secondUser }],
   );
   db.close();
 });

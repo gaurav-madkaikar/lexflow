@@ -89,12 +89,12 @@ function emailFromRow(row) {
     webUrl: row.outlook_url,
     outlookUrl: row.outlook_url,
     status: row.conversation_status ?? row.status,
-    assignedAt: row.assigned_at,
+    assignedAt: row.conversation_assigned_at ?? row.assigned_at,
     departmentId: row.department_id == null ? null : Number(row.department_id),
     department: row.email_department ?? row.assignee_department ?? null,
     sharedMailbox: row.department_mailbox ?? row.mailbox_address ?? null,
-    assignee: row.assignee_id ? {
-      id: Number(row.assignee_id),
+    assignee: (row.conversation_assignee_id ?? row.assignee_id) ? {
+      id: Number(row.conversation_assignee_id ?? row.assignee_id),
       email: row.assignee_email,
       name: row.assignee_name,
       initials: row.assignee_initials,
@@ -117,8 +117,17 @@ function listEmails(db, user) {
     SELECT latest.*,
       conversations.id AS conversation_task_id,
       conversations.status AS conversation_status,
+      conversations.assignee_id AS conversation_assignee_id,
       conversations.message_count AS conversation_message_count,
       conversations.completed_at AS conversation_completed_at,
+      COALESCE(
+        (SELECT cycles.started_at FROM assignment_cycles cycles
+         WHERE cycles.conversation_id = conversations.id
+         ORDER BY cycles.started_at DESC, cycles.id DESC LIMIT 1),
+        (SELECT MAX(messages.assigned_at) FROM emails messages
+         WHERE messages.conversation_id = conversations.id
+           AND messages.assignee_id = conversations.assignee_id)
+      ) AS conversation_assigned_at,
       (SELECT group_concat(
         messages.subject || ' ' || messages.sender_name || ' ' || messages.sender_address || ' ' || messages.preview,
         ' '

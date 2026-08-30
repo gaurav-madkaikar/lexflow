@@ -177,3 +177,49 @@ export function backfillConversations(db) {
       email.received_at, email.id, email.created_at, conversation.id);
   }
 }
+
+export function reconcileConversationWorkflowState(db) {
+  const conversations = db.prepare('SELECT id FROM conversations ORDER BY id').all();
+  const latestEvent = db.prepare(`
+    SELECT events.*
+    FROM task_events events
+    JOIN emails ON emails.id = events.email_id
+    WHERE emails.conversation_id = ?
+      AND events.event_type IN ('assigned', 'reassigned', 'completed')
+    ORDER BY events.occurred_at DESC, events.id DESC
+    LIMIT 1
+  `);
+  const latestAssignment = db.prepare(`
+    SELECT events.*
+    FROM task_events events
+    JOIN emails ON emails.id = events.email_id
+    WHERE emails.conversation_id = ?
+      AND events.event_type IN ('assigned', 'reassigned')
+    ORDER BY events.occurred_at DESC, events.id DESC
+    LIMIT 1
+  `);
+  for (const row of conversations) {
+    const event = latestEvent.get(row.id);
+    if (!event) continue;
+    const assignment = event.event_type === 'completed' ? latestAssignment.get(row.id) : event;
+    const status = event.event_type === 'completed' ? 'completed' : 'assigned';
+    const assigneeId = event.assignee_id ?? assignment?.assignee_id ?? null;
+    const completedAt = status === 'completed' ? event.occurred_at : null;
+    db.prepare(`
+      UPDATE conversations
+      SET status = ?, assignee_id = ?, completed_at = ?, updated_at = MAX(updated_at, ?)
+      WHERE id = ?
+    `).run(status, assigneeId, completedAt, event.occurred_at, row.id);
+    db.prepare(`
+      UPDATE emails
+      SET status = ?, assignee_id = ?,
+          assigned_at = COALESCE(?, assigned_at),
+          completed_by = CASE WHEN ? = 'completed' THEN ? ELSE NULL END,
+          completed_at = ?
+      WHERE conversation_id = ?
+    `).run(
+      status, assigneeId, assignment?.occurred_at ?? null,
+      status, status === 'completed' ? assigneeId : null, completedAt, row.id,
+    );
+  }
+}
