@@ -4056,6 +4056,43 @@ html[data-theme="dark"] .dialog::backdrop { background: rgb(0 0 0 / 66%); }
   .login-copy { margin-bottom: 23px; }
 }
 
+@media (max-width: 900px) {
+  .login-workspace-shell { grid-template-columns: minmax(270px, .78fr) minmax(0, 1.22fr); }
+  .login-brand-rail,
+  .login-main-surface { padding: 30px; }
+}
+
+@media (max-width: 767px) {
+  .login-view { place-items: start center; padding: 0; }
+  .login-workspace-shell {
+    min-height: 100dvh;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+  }
+  .login-brand-rail {
+    padding: 24px 22px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .login-rail-copy,
+  .login-proof { display: none; }
+  .login-route { margin: 28px 0 0; }
+  .login-main-surface { min-height: 520px; padding: 22px; }
+  .login-card { grid-row: auto; padding: 30px 24px; }
+  .login-card > .eyebrow { margin-top: 0; }
+}
+
+@media (max-width: 480px) {
+  .login-route { padding-inline: 10px; }
+  .login-route-step strong { font-size: 10px; }
+  .login-route-step small { font-size: 9px; }
+  .login-route-icon { width: 40px; height: 40px; }
+  .login-route-line { margin-top: 20px; }
+  .login-card h1 { font-size: 34px; }
+}
+
 @media (max-height: 820px) and (min-width: 768px) {
   .login-layout { padding-block: 20px 14px; }
   .login-header { min-height: 44px; }
@@ -4079,8 +4116,7 @@ html[data-theme="dark"] .dialog::backdrop { background: rgb(0 0 0 / 66%); }
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
   }
-  .login-flow-line i,
-  .login-live-dot { animation: none !important; }
+  .login-route-line i { animation: none !important; }
   .metric:hover,
   .metrics-kpi:hover { transform: none; }
 }

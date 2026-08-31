@@ -78,6 +78,13 @@ test('Entra login uses shared workspace tokens instead of an isolated blue theme
   assert.doesNotMatch(styles, /\.login-atmosphere|\.login-aurora|\.login-pointer-glow/);
 });
 
+test('workspace-aligned login stacks responsively and respects reduced motion', () => {
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.login-workspace-shell\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.login-brand-rail\s*\{[^}]*border-right:\s*0/s);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.login-route-line i[^}]*animation:\s*none !important/s);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.metric:hover/s);
+});
+
 test('OrgAdmin people controls live on a collapsible Team page', () => {
   assert.match(html, /data-view="departments">[\s\S]*?<span>Team<\/span>/);
   assert.match(html, /<h2 id="departments-panel-title">Team<\/h2>/);
