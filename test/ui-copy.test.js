@@ -85,6 +85,12 @@ test('workspace-aligned login stacks responsively and respects reduced motion', 
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.metric:hover/s);
 });
 
+test('workspace-aligned login avoids decorative status copy and keeps the restrained hero type', () => {
+  assert.doesNotMatch(html, /Systems operational|Protected workspace|Intelligent mailbox orchestration/);
+  assert.match(styles, /\.login-statement\s*\{[^}]*font-family:\s*var\(--font-ui\)[^}]*font-weight:\s*500/s);
+  assert.match(styles, /\.login-main-surface\s*\{[^}]*grid-template-rows:\s*1fr/s);
+});
+
 test('OrgAdmin people controls live on a collapsible Team page', () => {
   assert.match(html, /data-view="departments">[\s\S]*?<span>Team<\/span>/);
   assert.match(html, /<h2 id="departments-panel-title">Team<\/h2>/);

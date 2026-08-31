@@ -3598,10 +3598,11 @@ html[data-theme="dark"] {
   max-width: 11ch;
   margin: 18px 0 20px;
   color: var(--color-ink);
+  font-family: var(--font-ui);
   font-size: clamp(42px, 4.4vw, 64px);
-  font-weight: 550;
-  letter-spacing: -.06em;
-  line-height: .96;
+  font-weight: 500;
+  letter-spacing: -.055em;
+  line-height: .98;
 }
 
 .login-statement span { color: var(--color-coral); }
@@ -3723,7 +3724,7 @@ html[data-theme="dark"] {
 .login-main-surface {
   min-width: 0;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: 1fr;
   padding: clamp(28px, 4vw, 54px);
   background: var(--color-canvas);
 }
