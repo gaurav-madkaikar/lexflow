@@ -68,15 +68,20 @@ test('Entra login echoes the workspace shell without changing authentication hoo
   assert.equal(Object.keys(dependencies).some(name => name.startsWith('@visx/')), false);
 });
 
-test('Entra login uses a charcoal, warm-white, and coral workspace palette without changing its content', () => {
-  assert.match(styles, /\.login-view\s*\{[^}]*--login-rail-bg:\s*#1d1d20[^}]*--login-main-bg:\s*#f3f1ed[^}]*--login-card-bg:\s*#ffffff/s);
+test('Entra login reproduces the charcoal split-screen reference with coral replacing blue', () => {
+  assert.match(styles, /\.login-view\s*\{[^}]*--login-rail-bg:\s*#1d1d20[^}]*--login-main-bg:\s*#ffffff[^}]*--login-accent:\s*#c94b31/s);
   assert.match(styles, /\.login-workspace-shell\s*\{[^}]*background:\s*var\(--login-main-bg\)/s);
+  assert.match(styles, /\.login-workspace-shell\s*\{[^}]*width:\s*100%[^}]*min-height:\s*100dvh[^}]*grid-template-columns:\s*minmax\(0, 56fr\) minmax\(420px, 44fr\)/s);
   assert.match(styles, /\.login-brand-rail\s*\{[^}]*background:\s*var\(--login-rail-bg\)/s);
   assert.match(styles, /\.login-main-surface\s*\{[^}]*background:\s*var\(--login-main-bg\)/s);
-  assert.match(styles, /\.login-brand-rail \.login-brand \.logo\s*\{[^}]*background:\s*var\(--color-coral\)/s);
-  assert.match(styles, /html\[data-theme="dark"\] \.login-main-surface \.login-card\.card\s*\{[^}]*background:\s*var\(--login-card-bg\)/s);
-  assert.match(styles, /\.login-card \.login-submit\s*\{[^}]*background:\s*var\(--color-coral\)/s);
-  assert.match(styles, /\.login-route-line i\s*\{[^}]*var\(--color-coral\)/s);
+  assert.match(styles, /\.login-brand-rail::after\s*\{[^}]*background:\s*var\(--login-accent\)[^}]*border-radius:\s*50%/s);
+  assert.match(styles, /\.login-brand-rail \.login-brand \.logo\s*\{[^}]*background:\s*var\(--login-accent\)/s);
+  assert.match(styles, /\.login-card\s*\{[^}]*background:\s*transparent[^}]*border:\s*0[^}]*box-shadow:\s*none/s);
+  assert.match(styles, /html\[data-theme="dark"\] \.login-main-surface \.login-card\.card\s*\{[^}]*background:\s*transparent/s);
+  assert.match(styles, /\.login-card \.login-submit\s*\{[^}]*background:\s*var\(--login-accent\)/s);
+  assert.match(styles, /\.login-route-line i\s*\{[^}]*var\(--login-accent\)/s);
+  assert.match(styles, /\.login-route\s*\{[^}]*display:\s*none/s);
+  assert.match(styles, /\.login-proof\s*\{[^}]*margin:\s*auto 0 0/s);
   assert.doesNotMatch(styles, /--login-blue|--login-cyan|#2188ff|#68d7ff|#005bea|#32b7ff/i);
   assert.doesNotMatch(styles, /\.login-atmosphere|\.login-aurora|\.login-pointer-glow/);
 });
@@ -90,7 +95,7 @@ test('workspace-aligned login stacks responsively and respects reduced motion', 
 
 test('workspace-aligned login avoids decorative status copy and keeps the restrained hero type', () => {
   assert.doesNotMatch(html, /Systems operational|Protected workspace|Intelligent mailbox orchestration/);
-  assert.match(styles, /\.login-statement\s*\{[^}]*font-family:\s*var\(--font-ui\)[^}]*font-weight:\s*500/s);
+  assert.match(styles, /\.login-statement\s*\{[^}]*font-family:\s*var\(--font-ui\)[^}]*font-weight:\s*450/s);
   assert.match(styles, /\.login-main-surface\s*\{[^}]*grid-template-rows:\s*1fr/s);
 });
 
