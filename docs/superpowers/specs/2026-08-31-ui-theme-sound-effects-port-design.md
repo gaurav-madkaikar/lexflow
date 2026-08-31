@@ -169,6 +169,7 @@ Expected implementation files:
 - `public/index.html`
 - `public/styles.css`
 - `public/app.js`
+- `public/metrics-charts.js` only for theme-aware chart presentation colors
 - `public/theme.js` (new)
 - `public/ui-effects.js` (new)
 - `public/notification-audio.js` (new)
