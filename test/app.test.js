@@ -131,6 +131,7 @@ async function createApiHarness(
     return {
       status: response.status,
       body: text ? (contentType.includes('application/json') ? JSON.parse(text) : text) : null,
+      headers: Object.fromEntries(response.headers.entries()),
       cookie: response.headers.get('set-cookie')?.split(';', 1)[0] ?? null,
       location: response.headers.get('location'),
     };
@@ -995,6 +996,15 @@ test('metrics routes enforce role scope and return email-blind payloads', async 
     (await harness.get(`/api/metrics/department${range}&employeeId=${financeMember}`, depAdmin)).status,
     404,
   );
+});
+
+test('serves local vendor bundles with immutable caching', async context => {
+  const harness = await createApiHarness(context);
+  const animeBundle = await harness.get('/vendor/animejs.js');
+  assert.equal(animeBundle.status, 200);
+  assert.match(animeBundle.headers['content-type'], /javascript/);
+  assert.match(animeBundle.body, /function animate|const animate|export \{/);
+  assert.equal(animeBundle.headers['cache-control'], 'public, max-age=31536000, immutable');
 });
 
 test('multi-source sync is idempotent and isolates provider failures and cursors', async (context) => {

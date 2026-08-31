@@ -56,6 +56,10 @@ import {
 
 const publicDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 const chartBundle = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/chart.js/dist/chart.umd.js');
+const animeBundle = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../node_modules/animejs/dist/bundles/anime.esm.js',
+);
 
 function safeUser(row) {
   return {
@@ -562,6 +566,11 @@ export function createApp({
   app.get('/vendor/chart.js', (request, response) => {
     response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     response.sendFile(chartBundle);
+  });
+
+  app.get('/vendor/animejs.js', (request, response) => {
+    response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    response.type('text/javascript').sendFile(animeBundle);
   });
 
   const identity = entraAuth ?? createEntraAuth({ db, config: entraConfig, clock });
