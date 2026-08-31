@@ -3332,7 +3332,7 @@ html[data-theme="dark"] {
 .login-brand .logo {
   width: 42px;
   height: 42px;
-  color: #fff;
+  color: var(--color-card);
   background: var(--color-ink);
   border: 1px solid var(--color-line-strong);
   box-shadow: none;
@@ -3674,6 +3674,8 @@ html[data-theme="dark"] {
   color: var(--color-ink);
   font-size: 10px;
   font-weight: 700;
+  line-height: 1.25;
+  white-space: normal;
 }
 
 .login-route-line {
@@ -4060,6 +4062,11 @@ html[data-theme="dark"] .dialog::backdrop { background: rgb(0 0 0 / 66%); }
   .login-workspace-shell { grid-template-columns: minmax(270px, .78fr) minmax(0, 1.22fr); }
   .login-brand-rail,
   .login-main-surface { padding: 30px; }
+  .login-route {
+    grid-template-columns: minmax(0, 1fr) 8px minmax(0, 1fr) 8px minmax(0, 1fr);
+    gap: 2px;
+    padding-inline: 8px;
+  }
 }
 
 @media (max-width: 767px) {
