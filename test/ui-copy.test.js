@@ -71,7 +71,7 @@ test('Entra login echoes the workspace shell without changing authentication hoo
 test('Entra login uses shared workspace tokens instead of an isolated blue theme', () => {
   assert.match(styles, /\.login-workspace-shell\s*\{[^}]*background:\s*var\(--color-canvas\)/s);
   assert.match(styles, /\.login-brand-rail\s*\{[^}]*background:\s*var\(--color-card\)/s);
-  assert.match(styles, /\.login-main-surface\s*\{[^}]*background:\s*var\(--color-canvas\)/s);
+  assert.match(styles, /\.login-main-surface\s*\{[^}]*background:\s*var\(--color-soft\)/s);
   assert.match(styles, /\.login-card \.login-submit\s*\{[^}]*background:\s*var\(--color-coral\)/s);
   assert.match(styles, /\.login-route-line i\s*\{[^}]*var\(--color-coral\)/s);
   assert.doesNotMatch(styles, /--login-blue|--login-cyan|#2188ff|#68d7ff|#005bea|#32b7ff/i);

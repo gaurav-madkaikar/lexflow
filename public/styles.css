@@ -3726,7 +3726,7 @@ html[data-theme="dark"] {
   display: grid;
   grid-template-rows: 1fr;
   padding: clamp(28px, 4vw, 54px);
-  background: var(--color-canvas);
+  background: var(--color-soft);
 }
 
 .login-system-state,
