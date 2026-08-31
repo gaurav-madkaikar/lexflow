@@ -3,9 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#fbfbfa">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#05070b">
   <title>LexFlow — Email assignment</title>
+  <script>
+    (() => {
+      try {
+        const saved = localStorage.getItem('lexflow-theme');
+        const theme = saved === 'light' || saved === 'dark'
+          ? saved
+          : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.classList.toggle('dark', theme === 'dark');
+      } catch {}
+    })();
+  </script>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -37,35 +49,71 @@
   <a class="skip-link" id="skip-link" href="#main-content" hidden>Skip to main content</a>
 
   <section class="login-view" id="login-view" aria-labelledby="login-title">
+    <div class="login-atmosphere" aria-hidden="true">
+      <span class="login-aurora login-aurora-one"></span>
+      <span class="login-aurora login-aurora-two"></span>
+      <span class="login-pointer-glow"></span>
+    </div>
+
     <div class="login-layout">
-      <aside class="login-intro" aria-label="LexFlow overview">
+      <header class="login-header" data-login-reveal>
         <div class="brand login-brand" aria-label="LexFlow">
           <span class="logo" aria-hidden="true">L</span>
           <span class="brand-name">LexFlow</span>
         </div>
-        <div class="login-intro-copy">
-          <p class="eyebrow">Shared mailbox operations</p>
-          <p class="login-statement">Every message has an owner. Every handoff has a record.</p>
-          <p>Route Outlook and Gmail messages, monitor response windows, and keep work accountable from one workspace.</p>
-        </div>
-        <div class="login-proof" aria-label="Workflow principles">
-          <span><svg class="icon" aria-hidden="true"><use href="#icon-rules"></use></svg> Rule-based routing</span>
-          <span><svg class="icon" aria-hidden="true"><use href="#icon-activity"></use></svg> Visible audit trail</span>
-        </div>
-      </aside>
+        <div class="login-system-state"><span aria-hidden="true"></span> Systems operational</div>
+      </header>
 
-      <div class="login-card" role="main">
-        <p class="eyebrow">Secure workspace</p>
-        <h1 id="login-title">Welcome back</h1>
-        <p class="login-copy">Sign in to review and manage assigned email work.</p>
+      <main class="login-stage">
+        <section class="login-intro" aria-label="LexFlow overview">
+          <div class="login-intro-copy" data-login-reveal>
+            <p class="eyebrow">Intelligent mailbox orchestration</p>
+            <p class="login-statement">Work moves.<br><span>Nothing gets lost.</span></p>
+            <p>LexFlow turns every shared message into clear ownership, accountable action, and a visible outcome.</p>
+          </div>
 
-        <form id="login-form" novalidate>
-          <p class="form-error" id="login-error" role="alert" hidden></p>
-          <button class="button primary login-submit" type="submit"><span class="button-label" data-button-label>Continue with Microsoft</span></button>
-        </form>
+          <div class="login-flow" aria-label="A message moving from inbox to an accountable owner" data-login-reveal>
+            <div class="login-flow-head">
+              <div><span class="login-live-dot" aria-hidden="true"></span><strong>Live workflow</strong></div>
+              <span>Routing in real time</span>
+            </div>
+            <div class="login-flow-track">
+              <span class="login-flow-line" aria-hidden="true"><i></i></span>
+              <div class="login-flow-node is-active">
+                <span class="login-flow-icon"><svg class="icon" aria-hidden="true"><use href="#icon-mail"></use></svg></span>
+                <span><small>Incoming</small><strong>Shared request</strong></span>
+              </div>
+              <div class="login-flow-node">
+                <span class="login-flow-icon"><svg class="icon" aria-hidden="true"><use href="#icon-rules"></use></svg></span>
+                <span><small>Rule matched</small><strong>Priority routed</strong></span>
+              </div>
+              <div class="login-flow-node is-complete">
+                <span class="login-flow-icon"><svg class="icon" aria-hidden="true"><use href="#icon-complete"></use></svg></span>
+                <span><small>Accountable</small><strong>Owner assigned</strong></span>
+              </div>
+            </div>
+          </div>
 
-        <p class="demo-note">Use your organization’s enterprise Microsoft account.</p>
-      </div>
+          <div class="login-proof" aria-label="Workflow principles" data-login-reveal>
+            <span><svg class="icon" aria-hidden="true"><use href="#icon-activity"></use></svg> Complete audit trail</span>
+            <span><svg class="icon" aria-hidden="true"><use href="#icon-timer"></use></svg> SLA visibility</span>
+          </div>
+        </section>
+
+        <section class="login-card" aria-label="Sign in" data-login-reveal>
+          <div class="login-card-status"><span aria-hidden="true"></span> Protected workspace</div>
+          <p class="eyebrow">Secure access</p>
+          <h1 id="login-title">Welcome back</h1>
+          <p class="login-copy">Continue with your organization’s Microsoft account.</p>
+
+          <form id="login-form" novalidate>
+            <p class="form-error" id="login-error" role="alert" hidden></p>
+            <button class="button primary login-submit" type="submit"><span class="button-label" data-button-label>Continue with Microsoft</span></button>
+          </form>
+
+          <p class="demo-note">Enterprise Microsoft Entra sign-in</p>
+        </section>
+      </main>
     </div>
   </section>
 

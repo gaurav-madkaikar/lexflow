@@ -4,6 +4,12 @@ import { DEFAULT_TIMEZONE, formatZonedDate } from './date-time.js';
 const PALETTE = ['#c94b31', '#2f5d7c', '#8a5700', '#23744a', '#6f5a8a', '#4e6862'];
 const POINT_STYLES = ['circle', 'rect', 'triangle', 'rectRot', 'star', 'crossRot'];
 
+export function chartTheme(theme = document.documentElement.dataset.theme) {
+  return theme === 'dark'
+    ? { grid: '#29313c', ticks: '#b3bbc6', doughnutBorder: '#11161d' }
+    : { grid: '#ecece8', ticks: '#65655f', doughnutBorder: '#ffffff' };
+}
+
 function text(node, value = '') {
   node.textContent = String(value ?? '');
 }
@@ -70,7 +76,7 @@ function chartType(plot) {
   return 'bar';
 }
 
-function chartDatasets(plot) {
+function chartDatasets(plot, colors) {
   return (plot.series ?? []).map((series, index) => {
     const color = PALETTE[index % PALETTE.length];
     const line = plot.kind === 'line';
@@ -79,7 +85,7 @@ function chartDatasets(plot) {
       data: series.data,
       _format: series.format ?? 'number',
       backgroundColor: plot.kind === 'doughnut' ? PALETTE.slice(0, series.data.length) : line ? `${color}1f` : color,
-      borderColor: plot.kind === 'doughnut' ? '#ffffff' : color,
+      borderColor: plot.kind === 'doughnut' ? colors.doughnutBorder : color,
       borderWidth: plot.kind === 'doughnut' ? 3 : line ? 2.5 : 1,
       borderDash: line && index % 2 ? [7, 5] : [],
       pointStyle: POINT_STYLES[index % POINT_STYLES.length],
@@ -93,7 +99,7 @@ function chartDatasets(plot) {
   });
 }
 
-function chartOptions(plot, onSelect) {
+function chartOptions(plot, onSelect, colors) {
   const stacked = plot.kind === 'stackedBar';
   const horizontal = plot.kind === 'horizontalBar';
   const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -123,16 +129,16 @@ function chartOptions(plot, onSelect) {
       x: {
         stacked,
         beginAtZero: horizontal,
-        grid: { display: horizontal, color: '#ecece8' },
+        grid: { display: horizontal, color: colors.grid },
         border: { display: false },
-        ticks: { color: '#65655f', maxRotation: 0, autoSkip: true, maxTicksLimit: horizontal ? 6 : 8 },
+        ticks: { color: colors.ticks, maxRotation: 0, autoSkip: true, maxTicksLimit: horizontal ? 6 : 8 },
       },
       y: {
         stacked,
         beginAtZero: !horizontal,
-        grid: { display: !horizontal, color: '#ecece8' },
+        grid: { display: !horizontal, color: colors.grid },
         border: { display: false },
-        ticks: { color: '#65655f', precision: 0 },
+        ticks: { color: colors.ticks, precision: 0 },
       },
     },
     cutout: plot.kind === 'doughnut' ? '67%' : undefined,
@@ -209,10 +215,11 @@ export function createMetricsCharts({ root, onSelect } = {}) {
     }
     canvasWrap.hidden = false;
     legend.hidden = false;
+    const colors = chartTheme();
     const chart = new ChartConstructor(canvas, {
       type: chartType(plot),
-      data: { labels: plot.labels ?? [], datasets: chartDatasets(plot) },
-      options: chartOptions(plot, onSelect),
+      data: { labels: plot.labels ?? [], datasets: chartDatasets(plot, colors) },
+      options: chartOptions(plot, onSelect, colors),
     });
     instances.set(index, chart);
     renderLegend(legend, chart);

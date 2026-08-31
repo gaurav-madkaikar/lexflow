@@ -7,6 +7,7 @@ const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const charts = readFileSync(new URL('../public/metrics-charts.js', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 test('OrgAdmin settings use a Microsoft Graph health panel', () => {
   assert.match(html, /Microsoft Graph integration/);
@@ -42,6 +43,26 @@ test('account menu exposes theme and sound controls with success-only hooks', ()
   assert.match(app, /await mutate\(`\/api\/notifications\/\$\{read\.dataset\.notificationId\}\/read`\)[\s\S]*notificationAudio\.playRead\(\)/);
   assert.match(html, /<script src="\/vendor\/chart\.js"><\/script>\s*<script type="module" src="\/app\.js"><\/script>/);
   assert.doesNotMatch(html, /<script[^>]+src="\/vendor\/animejs\.js"/);
+});
+
+test('atmospheric login and dark motion stay inside the presentation boundary', () => {
+  assert.match(html, /<meta name="color-scheme" content="light dark">/);
+  assert.match(html, /localStorage\.getItem\('lexflow-theme'\)/);
+  assert.match(html, /class="login-atmosphere"/);
+  assert.match(html, /class="login-flow"/);
+  assert.match(html, /Continue with Microsoft/);
+  assert.doesNotMatch(html, /type="password"|demo credentials|ui-assets|icon-vacation/i);
+  assert.doesNotMatch(app, /\/api\/login|vacation|cfo/i);
+  assert.match(styles, /html\[data-theme="dark"\]/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(app, /uiEffects\.emailList\([\s\S]*visibleEmailSignature\(emails\)/);
+  assert.match(app, /uiEffects\.metrics\([\s\S]*visibleMetricSignature\(items\)/);
+
+  const dependencies = { ...packageJson.dependencies, ...packageJson.devDependencies };
+  for (const dependency of ['react', 'react-dom', 'tailwindcss', 'vite', 'motion']) {
+    assert.equal(dependencies[dependency], undefined);
+  }
+  assert.equal(Object.keys(dependencies).some(name => name.startsWith('@visx/')), false);
 });
 
 test('OrgAdmin people controls live on a collapsible Team page', () => {

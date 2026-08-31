@@ -530,6 +530,7 @@ function showLogin() {
   }
   theme.syncControls();
   elements.loginForm.querySelector('[type="submit"]').focus();
+  uiEffects.login(elements.loginView.querySelectorAll('[data-login-reveal]'));
 }
 
 function showApp() {
@@ -646,6 +647,20 @@ function counts(emails = state.session?.emails ?? []) {
   };
 }
 
+function visibleEmailSignature(emails) {
+  return emails.map(email => [
+    email.id,
+    email.status,
+    email.assignee?.id ?? '',
+    email.messageCount ?? 1,
+    email.reopened ? 1 : 0,
+  ].join(':')).join('|');
+}
+
+function visibleMetricSignature(items) {
+  return items.map(([label, value]) => `${label}:${value}`).join('|');
+}
+
 function renderMetrics() {
   const totals = counts(emailsForSelectedDate());
   const isAdmin = state.session.user.role === 'dep_admin';
@@ -665,6 +680,10 @@ function renderMetrics() {
       ];
   elements.metrics.style.setProperty('--metric-count', String(items.length));
   elements.metrics.replaceChildren(...items.map(item => metric(...item)));
+  uiEffects.metrics(
+    elements.metrics.querySelectorAll('.metric'),
+    visibleMetricSignature(items),
+  );
 }
 
 function renderHero() {
@@ -938,6 +957,10 @@ function renderEmails() {
       ? employeeGroups.map(renderEmployeeGroup)
       : emails.map(email => renderConversationItem(email, { compact: isOverview }))
     : [emptyState('Nothing here', emptyMessage)]));
+  uiEffects.emailList(
+    elements.emailList.querySelectorAll('[data-email-id]'),
+    visibleEmailSignature(emails),
+  );
 
   renderOverviewFooter({
     footer: elements.inboxOverviewFooter,
@@ -1643,6 +1666,10 @@ function render() {
   if (isPlatform) renderPlatform();
   renderNotifications();
   renderPanels();
+  uiEffects.workspace(
+    elements.mainContent.querySelectorAll('.card:not([hidden])'),
+    state.view,
+  );
   if (state.view === 'metrics') metricsView.activate(state.session);
   else metricsView.deactivate();
   if (!state.entryNoticeShown) {
@@ -1843,6 +1870,9 @@ function openEmail(emailId, opener = document.activeElement) {
 
   const emailLinkRequestId = ++state.emailLinkRequestId;
   elements.emailDialog.showModal();
+  uiEffects.emailDetail(
+    elements.emailDialog.querySelectorAll('.email-dialog-head, .email-meta, .email-detail-preview, .dialog-actions'),
+  );
   void prepareEmailLink(email, emailLinkRequestId);
 }
 
@@ -2147,6 +2177,7 @@ elements.accountMenuButton.addEventListener('click', event => {
 elements.themeToggle.addEventListener('click', () => {
   theme.toggle();
   uiEffects.themeToggle(elements.themeToggle.querySelector('.theme-switch'));
+  if (state.view === 'metrics' && state.session) metricsView.activate(state.session);
 });
 
 elements.soundToggle.addEventListener('click', () => {
@@ -2166,6 +2197,30 @@ document.addEventListener('keydown', event => {
 
 syncSoundControl();
 
+for (const metricRoot of [elements.metrics, elements.metricsPage]) {
+  metricRoot.addEventListener('pointermove', event => {
+    const card = event.target.closest('.metric, .metrics-kpi');
+    if (card) uiEffects.pointerSpotlight(card, event);
+  });
+}
+
+elements.loginView.addEventListener('pointermove', event => {
+  if (reducedMotion.matches || event.pointerType === 'touch'
+    || !window.matchMedia('(pointer: fine)').matches) return;
+  elements.loginView.style.setProperty('--login-pointer-x', `${event.clientX}px`);
+  elements.loginView.style.setProperty('--login-pointer-y', `${event.clientY}px`);
+});
+
+const metricsObserver = new MutationObserver(() => {
+  window.requestAnimationFrame(() => {
+    if (state.view !== 'metrics') return;
+    const cards = elements.metricsPage.querySelectorAll('.metrics-kpi');
+    const signature = [...cards].map(card => card.textContent.trim()).join('|');
+    uiEffects.metrics(cards, signature);
+  });
+});
+metricsObserver.observe(elements.metricsPage, { childList: true, subtree: true, characterData: true });
+
 document.querySelector('#logout-button').addEventListener('click', async () => {
   const button = document.querySelector('#logout-button');
   closeAccountMenu();
@@ -2183,6 +2238,7 @@ document.querySelector('#logout-button').addEventListener('click', async () => {
     state.settingsDirty = false;
     state.lastUnreadCount = null;
     elements.searchInput.value = '';
+    uiEffects.reset();
     showLogin();
     setButtonBusy(button, false, '…');
     if (logoutError) reportError(logoutError, 'LexFlow could not complete sign-out on the server.');
