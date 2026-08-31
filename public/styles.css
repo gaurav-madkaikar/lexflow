@@ -197,6 +197,16 @@ select:not(:disabled) { cursor: pointer; }
 
 /* Authentication */
 .login-view {
+  --login-rail-bg: #1d1d20;
+  --login-rail-surface: #27272b;
+  --login-rail-line: #3c3c40;
+  --login-rail-ink: #fbfaf8;
+  --login-rail-muted: #c6c3bd;
+  --login-main-bg: #f3f1ed;
+  --login-card-bg: #ffffff;
+  --login-card-ink: #171715;
+  --login-card-muted: #696761;
+  --login-card-line: #d9d5ce;
   min-height: 100dvh;
   display: grid;
   place-items: center;
@@ -3571,8 +3581,8 @@ html[data-theme="dark"] {
   display: grid;
   grid-template-columns: minmax(300px, .72fr) minmax(0, 1.28fr);
   overflow: hidden;
-  background: var(--color-canvas);
-  border: 1px solid var(--color-line);
+  background: var(--login-main-bg);
+  border: 1px solid var(--login-card-line);
   border-radius: var(--radius-shell);
   box-shadow: 0 18px 70px rgb(17 17 15 / 10%);
 }
@@ -3582,11 +3592,19 @@ html[data-theme="dark"] {
   display: flex;
   flex-direction: column;
   padding: clamp(30px, 4vw, 52px);
-  background: var(--color-card);
-  border-right: 1px solid var(--color-line);
+  color: var(--login-rail-ink);
+  background: var(--login-rail-bg);
+  border-right: 1px solid var(--login-rail-line);
 }
 
-.login-brand .brand-lockup small { color: var(--color-muted); }
+.login-brand-rail .login-brand .logo {
+  color: #fff;
+  background: var(--color-coral);
+  border-color: var(--color-coral);
+}
+
+.login-brand-rail .login-brand .brand-name { color: var(--login-rail-ink); }
+.login-brand-rail .login-brand .brand-lockup small { color: var(--login-rail-muted); }
 
 .login-rail-copy {
   margin: auto 0 38px;
@@ -3597,7 +3615,7 @@ html[data-theme="dark"] {
 .login-statement {
   max-width: 11ch;
   margin: 18px 0 20px;
-  color: var(--color-ink);
+  color: var(--login-rail-ink);
   font-family: var(--font-ui);
   font-size: clamp(42px, 4.4vw, 64px);
   font-weight: 500;
@@ -3610,7 +3628,7 @@ html[data-theme="dark"] {
 .login-rail-copy > p:last-child {
   max-width: 38ch;
   margin: 0;
-  color: var(--color-muted);
+  color: var(--login-rail-muted);
   font-size: 14px;
   line-height: 1.65;
 }
@@ -3622,8 +3640,8 @@ html[data-theme="dark"] {
   gap: 4px;
   margin-bottom: 28px;
   padding: 18px 14px;
-  background: var(--color-soft);
-  border: 1px solid var(--color-line);
+  background: var(--login-rail-surface);
+  border: 1px solid var(--login-rail-line);
   border-radius: var(--radius-small);
 }
 
@@ -3640,21 +3658,22 @@ html[data-theme="dark"] {
   height: 44px;
   display: grid;
   place-items: center;
-  color: var(--color-muted);
-  background: var(--color-card);
-  border: 1px solid var(--color-line);
+  color: var(--login-rail-muted);
+  background: var(--login-rail-bg);
+  border: 1px solid var(--login-rail-line);
   border-radius: var(--radius-small);
 }
 
 .login-route-step.is-current .login-route-icon {
   color: var(--color-coral);
-  background: var(--color-coral-soft);
+  background: rgb(var(--color-coral-rgb) / 14%);
   border-color: rgb(var(--color-coral-rgb) / 35%);
 }
 
 .login-route-step.is-complete .login-route-icon {
-  color: var(--color-success);
-  background: var(--color-success-soft);
+  color: var(--color-coral);
+  background: rgb(var(--color-coral-rgb) / 14%);
+  border-color: rgb(var(--color-coral-rgb) / 35%);
 }
 
 .login-route-step small,
@@ -3666,13 +3685,13 @@ html[data-theme="dark"] {
 }
 
 .login-route-step small {
-  color: var(--color-subtle);
+  color: var(--login-rail-muted);
   font-size: 9px;
 }
 
 .login-route-step strong {
   margin-top: 2px;
-  color: var(--color-ink);
+  color: var(--login-rail-ink);
   font-size: 10px;
   font-weight: 700;
   line-height: 1.25;
@@ -3684,7 +3703,7 @@ html[data-theme="dark"] {
   height: 1px;
   margin-top: 22px;
   overflow: hidden;
-  background: var(--color-line-strong);
+  background: var(--login-rail-line);
 }
 
 .login-route-line i {
@@ -3700,7 +3719,7 @@ html[data-theme="dark"] {
   flex-wrap: wrap;
   gap: 10px;
   margin: 0;
-  color: var(--color-muted);
+  color: var(--login-rail-muted);
   font-size: 10px;
   font-weight: 650;
 }
@@ -3710,8 +3729,8 @@ html[data-theme="dark"] {
   align-items: center;
   gap: 7px;
   padding: 8px 11px;
-  background: var(--color-soft);
-  border: 1px solid var(--color-line);
+  background: var(--login-rail-surface);
+  border: 1px solid var(--login-rail-line);
   border-radius: var(--radius-control);
 }
 
@@ -3726,7 +3745,7 @@ html[data-theme="dark"] {
   display: grid;
   grid-template-rows: 1fr;
   padding: clamp(28px, 4vw, 54px);
-  background: var(--color-soft);
+  background: var(--login-main-bg);
 }
 
 .login-system-state,
@@ -3758,9 +3777,9 @@ html[data-theme="dark"] {
   justify-self: center;
   padding: clamp(30px, 4vw, 48px);
   overflow: visible;
-  color: var(--color-ink);
-  background: var(--color-card);
-  border: 1px solid var(--color-line);
+  color: var(--login-card-ink);
+  background: var(--login-card-bg);
+  border: 1px solid var(--login-card-line);
   border-radius: var(--radius-card);
   box-shadow: 0 18px 54px rgb(17 17 15 / 10%);
   backdrop-filter: none;
@@ -3775,12 +3794,12 @@ html[data-theme="dark"] {
 
 .login-card > .eyebrow {
   margin: 0;
-  color: var(--color-subtle);
+  color: var(--login-card-muted);
 }
 
 .login-card h1 {
   margin: 12px 0 0;
-  color: var(--color-ink);
+  color: var(--login-card-ink);
   font-size: clamp(38px, 4vw, 48px);
   font-weight: 600;
   letter-spacing: -.055em;
@@ -3790,7 +3809,7 @@ html[data-theme="dark"] {
 .login-copy {
   max-width: 38ch;
   margin: 14px 0 28px;
-  color: var(--color-muted);
+  color: var(--login-card-muted);
   font-size: 14px;
   line-height: 1.6;
 }
@@ -3820,11 +3839,17 @@ html[data-theme="dark"] {
   transform: none;
 }
 
-.login-card .demo-note { color: var(--color-muted); }
+.login-card .demo-note { color: var(--login-card-muted); }
 
 html[data-theme="dark"] .login-workspace-shell,
 html[data-theme="dark"] .login-card {
-  box-shadow: 0 20px 64px rgb(0 0 0 / 34%);
+  box-shadow: 0 20px 64px rgb(0 0 0 / 20%);
+}
+
+html[data-theme="dark"] .login-main-surface .login-card.card {
+  color: var(--login-card-ink);
+  background: var(--login-card-bg);
+  border-color: var(--login-card-line);
 }
 
 /* Account presentation controls */
