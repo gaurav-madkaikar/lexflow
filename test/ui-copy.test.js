@@ -29,6 +29,21 @@ test('global feedback replaces inline Graph outcomes and Members hide mailbox st
   assert.match(app, /setText\(elements\.sidebarSync, user\.role === 'dep_admin'/);
 });
 
+test('account menu exposes theme and sound controls with success-only hooks', () => {
+  assert.match(html, /id="account-menu-button"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"/);
+  assert.match(html, /id="account-menu"[^>]*role="menu"[^>]*hidden/);
+  assert.match(html, /id="theme-toggle"[^>]*aria-pressed="false"/);
+  assert.match(html, /id="sound-toggle"[^>]*aria-pressed="true"/);
+  assert.match(html, /Notification sounds/);
+  assert.match(app, /createThemeController\(/);
+  assert.match(app, /createNotificationAudio\(/);
+  assert.match(app, /unreadCount > state\.lastUnreadCount[\s\S]*notificationAudio\.playNotification\(\)/);
+  assert.match(app, /await mutate\(`\/api\/emails\/\$\{state\.selectedEmailId\}\/complete`\)[\s\S]*notificationAudio\.playCompletion\(\)/);
+  assert.match(app, /await mutate\(`\/api\/notifications\/\$\{read\.dataset\.notificationId\}\/read`\)[\s\S]*notificationAudio\.playRead\(\)/);
+  assert.match(html, /<script src="\/vendor\/chart\.js"><\/script>\s*<script type="module" src="\/app\.js"><\/script>/);
+  assert.doesNotMatch(html, /<script[^>]+src="\/vendor\/animejs\.js"/);
+});
+
 test('OrgAdmin people controls live on a collapsible Team page', () => {
   assert.match(html, /data-view="departments">[\s\S]*?<span>Team<\/span>/);
   assert.match(html, /<h2 id="departments-panel-title">Team<\/h2>/);

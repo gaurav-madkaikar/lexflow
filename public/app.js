@@ -1,7 +1,11 @@
+import { animate, stagger } from '/vendor/animejs.js';
 import { overviewPreview } from './overview-model.js';
 import { createFeedbackQueue, pendingTaskNotice } from './feedback.js';
 import { createMetricsView } from './metrics-view.js';
 import { conversationClickIntent } from './conversation-interactions.js';
+import { createNotificationAudio } from './notification-audio.js';
+import { createThemeController } from './theme.js';
+import { createUiEffects } from './ui-effects.js';
 import {
   DEFAULT_TIMEZONE,
   formatDateKey,
@@ -46,6 +50,7 @@ const state = {
 };
 
 const elements = {
+  themeColor: document.querySelector('meta[name="theme-color"]'),
   skipLink: document.querySelector('#skip-link'),
   loginView: document.querySelector('#login-view'),
   loginForm: document.querySelector('#login-form'),
@@ -54,6 +59,7 @@ const elements = {
   navBackdrop: document.querySelector('#nav-backdrop'),
   sidebar: document.querySelector('#sidebar'),
   mainColumn: document.querySelector('#main-column'),
+  mainContent: document.querySelector('#main-content'),
   navOpen: document.querySelector('#nav-open'),
   navClose: document.querySelector('#nav-close'),
   sidebarBrandLogo: document.querySelector('#sidebar-brand-logo'),
@@ -64,6 +70,12 @@ const elements = {
   topbarAvatar: document.querySelector('#topbar-avatar'),
   topbarUser: document.querySelector('#topbar-user'),
   topbarRole: document.querySelector('#topbar-role'),
+  accountMenuButton: document.querySelector('#account-menu-button'),
+  accountMenu: document.querySelector('#account-menu'),
+  themeToggle: document.querySelector('#theme-toggle'),
+  themeLabel: document.querySelector('[data-theme-label]'),
+  soundToggle: document.querySelector('#sound-toggle'),
+  soundLabel: document.querySelector('[data-sound-label]'),
   modeChip: document.querySelector('#mode-chip'),
   depAdminNavigation: document.querySelector('#dep-admin-navigation'),
   orgAdminNavigation: document.querySelector('#org-admin-navigation'),
@@ -221,6 +233,62 @@ const feedback = createFeedbackQueue({ onChange: renderFeedback });
 function setText(element, value, fallback = '') {
   const next = value === null || value === undefined || value === '' ? fallback : String(value);
   if (element.textContent !== next) element.textContent = next;
+}
+
+function browserStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const theme = createThemeController({
+  root: document.documentElement,
+  storage: browserStorage(),
+  mediaQuery: window.matchMedia('(prefers-color-scheme: dark)'),
+  themeColor: {
+    setContent: value => elements.themeColor?.setAttribute('content', value),
+  },
+  controls: [{
+    setPressed: value => elements.themeToggle.setAttribute('aria-pressed', value),
+    setLabel: value => setText(elements.themeLabel, value),
+    setAriaLabel: value => elements.themeToggle.setAttribute('aria-label', value),
+  }],
+  isLoginVisible: () => !elements.loginView.hidden,
+});
+const notificationAudio = createNotificationAudio({
+  storage: browserStorage(),
+  AudioContextClass: window.AudioContext || window.webkitAudioContext,
+  eventTarget: document,
+});
+const uiEffects = createUiEffects({
+  animate,
+  stagger,
+  reducedMotion,
+  requestFrame: callback => window.requestAnimationFrame(callback),
+});
+
+function syncSoundControl() {
+  const enabled = notificationAudio.enabled();
+  elements.soundToggle.setAttribute('aria-pressed', String(enabled));
+  setText(elements.soundLabel, enabled ? 'On' : 'Muted');
+  elements.soundToggle.setAttribute('aria-label', `Notification sounds ${enabled ? 'on' : 'muted'}`);
+}
+
+function openAccountMenu() {
+  elements.accountMenu.hidden = false;
+  elements.accountMenuButton.setAttribute('aria-expanded', 'true');
+  uiEffects.accountMenu(elements.accountMenu);
+  elements.accountMenu.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
+}
+
+function closeAccountMenu({ restoreFocus = false } = {}) {
+  if (elements.accountMenu.hidden) return;
+  elements.accountMenu.hidden = true;
+  elements.accountMenuButton.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) elements.accountMenuButton.focus({ preventScroll: true });
 }
 
 function renderBrandLogo(element, organization) {
@@ -416,6 +484,7 @@ async function mutate(path, method = 'POST', body) {
 function showLogin() {
   stopPolling();
   feedback.clear();
+  closeAccountMenu();
   closeSidebar();
   state.emailLinkRequestId += 1;
   if (elements.emailDialog.open) elements.emailDialog.close();
@@ -459,6 +528,7 @@ function showLogin() {
     elements.loginError.hidden = true;
     elements.loginError.textContent = '';
   }
+  theme.syncControls();
   elements.loginForm.querySelector('[type="submit"]').focus();
 }
 
@@ -466,6 +536,7 @@ function showApp() {
   elements.loginView.hidden = true;
   elements.appView.hidden = false;
   elements.skipLink.hidden = false;
+  theme.syncControls();
 }
 
 function normalizeView() {
@@ -1555,6 +1626,7 @@ function render() {
   elements.notificationButton.setAttribute('aria-label', `View notifications, ${unreadCount} unread`);
   if (state.lastUnreadCount !== null && unreadCount > state.lastUnreadCount) {
     setText(elements.notificationAnnouncement, `${countLabel(unreadCount, 'unread notification')} available.`);
+    notificationAudio.playNotification();
   } else setText(elements.notificationAnnouncement, '');
   state.lastUnreadCount = unreadCount;
   renderIdentity();
@@ -2066,8 +2138,37 @@ elements.departmentManagementList.addEventListener('change', async event => {
   }
 });
 
+elements.accountMenuButton.addEventListener('click', event => {
+  event.stopPropagation();
+  if (elements.accountMenu.hidden) openAccountMenu();
+  else closeAccountMenu({ restoreFocus: true });
+});
+
+elements.themeToggle.addEventListener('click', () => {
+  theme.toggle();
+  uiEffects.themeToggle(elements.themeToggle.querySelector('.theme-switch'));
+});
+
+elements.soundToggle.addEventListener('click', () => {
+  notificationAudio.toggle();
+  syncSoundControl();
+});
+
+document.addEventListener('click', event => {
+  if (!event.target.closest('.account-menu')) closeAccountMenu();
+});
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !elements.accountMenu.hidden) {
+    closeAccountMenu({ restoreFocus: true });
+  }
+});
+
+syncSoundControl();
+
 document.querySelector('#logout-button').addEventListener('click', async () => {
   const button = document.querySelector('#logout-button');
+  closeAccountMenu();
   setButtonBusy(button, true, '…');
   let logoutError = null;
   try { await api('/api/logout', { method: 'POST' }); } catch (error) {
@@ -2525,6 +2626,7 @@ elements.completeButton.addEventListener('click', async () => {
       state.expandedConversations.delete(selected.conversationId);
     }
     await mutate(`/api/emails/${state.selectedEmailId}/complete`);
+    notificationAudio.playCompletion();
     elements.emailDialog.close();
     elements.pageTitle.focus({ preventScroll: true });
     showToast('Email marked complete.');
@@ -2546,6 +2648,7 @@ elements.notificationList.addEventListener('click', async event => {
   setButtonBusy(read, true, '…');
   try {
     await mutate(`/api/notifications/${read.dataset.notificationId}/read`);
+    notificationAudio.playRead();
     showToast('Notification marked as read.');
   } catch (error) {
     reportError(error);
