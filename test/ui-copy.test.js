@@ -45,18 +45,21 @@ test('account menu exposes theme and sound controls with success-only hooks', ()
   assert.doesNotMatch(html, /<script[^>]+src="\/vendor\/animejs\.js"/);
 });
 
-test('atmospheric login and dark motion stay inside the presentation boundary', () => {
+test('Entra login echoes the workspace shell without changing authentication hooks', () => {
   assert.match(html, /<meta name="color-scheme" content="light dark">/);
   assert.match(html, /localStorage\.getItem\('lexflow-theme'\)/);
-  assert.match(html, /class="login-atmosphere"/);
-  assert.match(html, /class="login-flow"/);
+  assert.match(html, /id="login-view"[^>]*aria-labelledby="login-title"/);
+  assert.match(html, /class="login-layout login-workspace-shell"/);
+  assert.match(html, /class="login-brand-rail"/);
+  assert.match(html, /class="login-main-surface"/);
+  assert.match(html, /id="login-form"/);
+  assert.match(html, /id="login-error"[^>]*role="alert"/);
   assert.match(html, /Continue with Microsoft/);
-  assert.doesNotMatch(html, /type="password"|demo credentials|ui-assets|icon-vacation/i);
+  assert.doesNotMatch(html, /login-atmosphere|login-aurora|login-pointer-glow/);
+  assert.doesNotMatch(html, /type="password"|demo credentials|icon-vacation/i);
   assert.doesNotMatch(app, /\/api\/login|vacation|cfo/i);
-  assert.match(styles, /html\[data-theme="dark"\]/);
-  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(app, /uiEffects\.emailList\([\s\S]*visibleEmailSignature\(emails\)/);
-  assert.match(app, /uiEffects\.metrics\([\s\S]*visibleMetricSignature\(items\)/);
+  assert.match(app, /loginForm\.addEventListener\('submit'/);
+  assert.match(app, /\/api\/auth\/outlook\/start/);
 
   const dependencies = { ...packageJson.dependencies, ...packageJson.devDependencies };
   for (const dependency of ['react', 'react-dom', 'tailwindcss', 'vite', 'motion']) {
