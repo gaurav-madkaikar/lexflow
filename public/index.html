@@ -49,58 +49,48 @@
   <a class="skip-link" id="skip-link" href="#main-content" hidden>Skip to main content</a>
 
   <section class="login-view" id="login-view" aria-labelledby="login-title">
-    <div class="login-atmosphere" aria-hidden="true">
-      <span class="login-aurora login-aurora-one"></span>
-      <span class="login-aurora login-aurora-two"></span>
-      <span class="login-pointer-glow"></span>
-    </div>
-
-    <div class="login-layout">
-      <header class="login-header" data-login-reveal>
+    <div class="login-layout login-workspace-shell">
+      <aside class="login-brand-rail" aria-label="LexFlow introduction" data-login-reveal>
         <div class="brand login-brand" aria-label="LexFlow">
           <span class="logo" aria-hidden="true">L</span>
-          <span class="brand-name">LexFlow</span>
+          <span class="brand-lockup">
+            <span class="brand-name">LexFlow</span>
+            <small>Mailbox operations</small>
+          </span>
         </div>
-        <div class="login-system-state"><span aria-hidden="true"></span> Systems operational</div>
-      </header>
 
-      <main class="login-stage">
-        <section class="login-intro" aria-label="LexFlow overview">
-          <div class="login-intro-copy" data-login-reveal>
-            <p class="eyebrow">Intelligent mailbox orchestration</p>
-            <p class="login-statement">Work moves.<br><span>Nothing gets lost.</span></p>
-            <p>LexFlow turns every shared message into clear ownership, accountable action, and a visible outcome.</p>
+        <div class="login-rail-copy">
+          <p class="eyebrow">Intelligent mailbox orchestration</p>
+          <p class="login-statement">Work moves.<br><span>Nothing gets lost.</span></p>
+          <p>Turn shared messages into clear ownership, accountable action, and visible outcomes.</p>
+        </div>
+
+        <div class="login-route" aria-label="Inbox to accountable assignment">
+          <div class="login-route-step is-current">
+            <span class="login-route-icon"><svg class="icon" aria-hidden="true"><use href="#icon-mail"></use></svg></span>
+            <span><small>Inbox</small><strong>Request received</strong></span>
           </div>
-
-          <div class="login-flow" aria-label="A message moving from inbox to an accountable owner" data-login-reveal>
-            <div class="login-flow-head">
-              <div><span class="login-live-dot" aria-hidden="true"></span><strong>Live workflow</strong></div>
-              <span>Routing in real time</span>
-            </div>
-            <div class="login-flow-track">
-              <span class="login-flow-line" aria-hidden="true"><i></i></span>
-              <div class="login-flow-node is-active">
-                <span class="login-flow-icon"><svg class="icon" aria-hidden="true"><use href="#icon-mail"></use></svg></span>
-                <span><small>Incoming</small><strong>Shared request</strong></span>
-              </div>
-              <div class="login-flow-node">
-                <span class="login-flow-icon"><svg class="icon" aria-hidden="true"><use href="#icon-rules"></use></svg></span>
-                <span><small>Rule matched</small><strong>Priority routed</strong></span>
-              </div>
-              <div class="login-flow-node is-complete">
-                <span class="login-flow-icon"><svg class="icon" aria-hidden="true"><use href="#icon-complete"></use></svg></span>
-                <span><small>Accountable</small><strong>Owner assigned</strong></span>
-              </div>
-            </div>
+          <span class="login-route-line" aria-hidden="true"><i></i></span>
+          <div class="login-route-step">
+            <span class="login-route-icon"><svg class="icon" aria-hidden="true"><use href="#icon-rules"></use></svg></span>
+            <span><small>Rules</small><strong>Priority routed</strong></span>
           </div>
-
-          <div class="login-proof" aria-label="Workflow principles" data-login-reveal>
-            <span><svg class="icon" aria-hidden="true"><use href="#icon-activity"></use></svg> Complete audit trail</span>
-            <span><svg class="icon" aria-hidden="true"><use href="#icon-timer"></use></svg> SLA visibility</span>
+          <span class="login-route-line" aria-hidden="true"><i></i></span>
+          <div class="login-route-step is-complete">
+            <span class="login-route-icon"><svg class="icon" aria-hidden="true"><use href="#icon-assigned"></use></svg></span>
+            <span><small>Assignment</small><strong>Owner accountable</strong></span>
           </div>
-        </section>
+        </div>
 
-        <section class="login-card" aria-label="Sign in" data-login-reveal>
+        <div class="login-proof" aria-label="Workspace principles">
+          <span><svg class="icon" aria-hidden="true"><use href="#icon-activity"></use></svg> Complete audit trail</span>
+          <span><svg class="icon" aria-hidden="true"><use href="#icon-timer"></use></svg> SLA visibility</span>
+        </div>
+      </aside>
+
+      <main class="login-main-surface">
+        <div class="login-system-state" data-login-reveal><span aria-hidden="true"></span> Systems operational</div>
+        <section class="login-card card" aria-label="Sign in" data-login-reveal>
           <div class="login-card-status"><span aria-hidden="true"></span> Protected workspace</div>
           <p class="eyebrow">Secure access</p>
           <h1 id="login-title">Welcome back</h1>
