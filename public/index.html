@@ -155,6 +155,10 @@
               <span>Automation rules</span>
               <span class="nav-badge" data-badge="rules">0</span>
             </button>
+            <button class="nav-item" type="button" data-view="escalations">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-timer"></use></svg>
+              <span>Escalations</span>
+            </button>
             <button class="nav-item" type="button" data-view="activity">
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-activity"></use></svg>
               <span>Activity</span>
@@ -487,6 +491,24 @@
               <div class="activity-list" id="activity-list"></div>
             </section>
 
+            <section class="card panel" id="escalations-panel" aria-labelledby="escalations-title" hidden>
+              <div class="card-head">
+                <div>
+                  <p class="card-kicker">Department workflow</p>
+                  <h2 id="escalations-title">Escalations</h2>
+                  <p id="escalations-interval">Escalate every 24 hours</p>
+                </div>
+              </div>
+              <form class="escalations-form" id="escalations-form" novalidate>
+                <p class="form-help">Add recipients in escalation order. Each level receives one email only while the assigned work remains incomplete.</p>
+                <div id="escalation-recipients"></div>
+                <button class="button" id="add-escalation-recipient" type="button">Add recipient</button>
+                <p class="form-error" id="escalations-error" role="alert" hidden></p>
+                <div class="settings-actions"><button class="button primary" type="submit"><span class="button-label" data-button-label>Save hierarchy</span></button></div>
+              </form>
+              <div class="escalation-history" id="escalation-history"></div>
+            </section>
+
             <section class="card panel" id="notifications-panel" aria-labelledby="notifications-title" hidden>
               <div class="card-head">
                 <div>
@@ -622,6 +644,11 @@
                         <small>Measured from the email’s received time.</small>
                       </label>
                       <label class="field">
+                        <span>Escalation interval <em>hours</em></span>
+                        <input name="escalationIntervalHours" type="number" min="1" max="8760" step="1" inputmode="numeric" required>
+                        <small>Controls the time between department escalation levels.</small>
+                      </label>
+                      <label class="field">
                         <span>Assigned, not complete <em>hours</em></span>
                         <input name="timeAssignedUnmarkedHours" type="number" min="1" max="8760" step="1" inputmode="numeric" required>
                         <small>Restarts whenever the email is reassigned.</small>
@@ -728,6 +755,12 @@
         <label class="field" for="email-assignee-select">
           <span id="email-assignment-label">Assign to</span>
           <select name="assigneeId" id="email-assignee-select" required></select>
+        </label>
+        <label class="field" for="email-priority-select">
+          <span>Priority</span>
+          <select name="priority" id="email-priority-select" required>
+            <option value="40">Low</option><option value="30" selected>Medium</option><option value="20">High</option><option value="10">Critical</option>
+          </select>
         </label>
         <p class="form-error" id="assignment-error" role="alert" hidden></p>
       </form>

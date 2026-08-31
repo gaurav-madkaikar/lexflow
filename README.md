@@ -65,6 +65,12 @@ An OrgAdmin connects their organization once from Settings and a Microsoft 365 t
 
 Use Exchange Online Application RBAC to assign the `Application Mail.Read` role to the tenant's LexFlow service principal with a resource scope containing only the approved shared mailboxes. Do not also grant the unscoped Microsoft Graph `Mail.Read` application permission in Entra: Entra grants and Exchange App RBAC grants are additive, which would otherwise make every mailbox readable. Exchange RBAC changes can take 30 minutes to 2 hours to propagate. For HTTPS deployments set `NODE_ENV=production` so the server-side session cookie includes `Secure`.
 
+## Email escalations
+
+An OrgAdmin sets one escalation interval for the organization. Each DepAdmin can then configure an ordered escalation list for their own department. An assigned task sends one escalation at a time from that department's shared mailbox: the first level is due after the assignment interval, and each later level is due after the previous successful escalation. Completion, reassignment, or a reopened thread starts or stops the relevant cycle as appropriate.
+
+For sending, add the Exchange Online Application RBAC role `Application Mail.Send` to the LexFlow service principal with the same approved shared-mailbox resource scope. Do not add an unrestricted Entra `Mail.Send` application permission: Graph and Exchange RBAC permissions are additive. Escalations are saved in the shared mailbox Sent Items and contain only task, department, assignee, priority, and elapsed-time metadata—never the original email content, sender, attachments, or Outlook link. Failed sends retry with bounded backoff and appear to the relevant DepAdmin as a notification. New departments have an empty escalation hierarchy and cannot send until their DepAdmin adds recipients.
+
 OrgAdmins are responsible for ensuring members have the appropriate Full Access and Send As permissions for a department's shared mailbox before assigning them to that department. LexFlow treats department assignment as this administrative confirmation; it does not inspect or modify individual Exchange permissions.
 
 ## Administration

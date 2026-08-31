@@ -78,6 +78,7 @@ function recordAssignment(db, {
   conversationSource = assignmentSource,
   reopened = false,
   rule = null,
+  priority = 30,
 }) {
   const eligibleStatus = allowReassignment
     ? "status IN ('unassigned', 'assigned')"
@@ -161,6 +162,7 @@ function recordAssignment(db, {
       assigneeId: Number(assignee.id),
       source: conversationSource,
       ruleId: assignmentSource === 'rule' ? rule?.id ?? null : null,
+      priority,
       startedAt: assignedAt,
     });
   }
@@ -193,6 +195,7 @@ function assignEmailByRule(db, email, rule, assignedAt, organizationId = 1, reop
     assignmentSource: 'rule',
     reopened,
     rule,
+    priority: Number(rule.priority),
   });
 }
 
@@ -371,6 +374,10 @@ export async function syncMailbox({ db, source }) {
       if (previous && recordAssignment(db, {
         email, assignee: previous, assignedAt: now, organizationId,
         assignmentSource: 'manual', conversationSource: 'reopen_previous', reopened: true,
+        priority: Number(db.prepare(`
+          SELECT priority FROM assignment_cycles
+          WHERE conversation_id = ? ORDER BY started_at DESC, id DESC LIMIT 1
+        `).get(attached.conversation.id)?.priority ?? 30),
       })) {
         assigned += 1;
         continue;
@@ -682,6 +689,7 @@ export function assignEmailManually({
   adminId,
   organizationId = 1,
   departmentId,
+  priority = 30,
   now = new Date(),
 }) {
   return runTransaction(db, () => {
@@ -704,6 +712,9 @@ export function assignEmailManually({
     if (!email) throw workflowError(404, 'NOT_FOUND', 'Email not found.');
     if (!assignee) throw workflowError(404, 'NOT_FOUND', 'Team member not found.');
     if (!department) throw workflowError(403, 'FORBIDDEN', 'Department administrator access is required.');
+    if (![10, 20, 30, 40].includes(Number(priority))) {
+      throw workflowError(400, 'INVALID_INPUT', 'Choose a valid priority.');
+    }
     if (email.status === 'completed') {
       throw workflowError(409, 'CONFLICT', 'Completed emails cannot be reassigned.');
     }
@@ -719,6 +730,7 @@ export function assignEmailManually({
       allowReassignment: true,
       organizationId,
       assignmentSource: 'manual',
+      priority: Number(priority),
     });
     if (!changed) {
       throw workflowError(409, 'CONFLICT', 'Email assignment changed. Refresh and try again.');

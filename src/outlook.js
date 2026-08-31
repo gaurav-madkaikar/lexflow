@@ -292,6 +292,59 @@ export function createOutlookIntegration({ db, config = {}, clock = () => new Da
     return match.safeWebUrl;
   }
 
+  async function sendEscalation({ organizationId, departmentId, recipient, subject, html, deliveryKey }) {
+    if (!configured) throw integrationError(503, 'OUTLOOK_NOT_CONFIGURED', 'Microsoft 365 connection is not configured on this server.');
+    const connection = db.prepare(`
+      SELECT c.tenant_id, d.shared_mailbox
+      FROM outlook_connections c
+      JOIN organizations o ON o.id = c.organization_id AND o.status = 'active'
+      JOIN departments d ON d.id = ? AND d.organization_id = c.organization_id
+      WHERE c.organization_id = ?
+      LIMIT 1
+    `).get(departmentId, organizationId);
+    if (!connection?.tenant_id || !connection?.shared_mailbox) {
+      throw integrationError(409, 'OUTLOOK_NOT_CONNECTED', 'Microsoft Graph is not connected for this shared mailbox.');
+    }
+    let token;
+    try {
+      token = await accessToken(connection.tenant_id);
+    } catch (error) {
+      if (error?.expose) throw error;
+      throw integrationError(502, 'OUTLOOK_TOKEN_FAILED', 'Microsoft 365 consent could not be verified.');
+    }
+    let response;
+    try {
+      response = await fetchImpl(
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(connection.shared_mailbox)}/sendMail`,
+        {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            message: {
+              subject,
+              body: { contentType: 'HTML', content: html },
+              toRecipients: [{ emailAddress: { address: recipient } }],
+              internetMessageHeaders: [{ name: 'X-LexFlow-Escalation-ID', value: deliveryKey }],
+            },
+            saveToSentItems: true,
+          }),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+    } catch (cause) {
+      const error = integrationError(502, 'OUTLOOK_SEND_FAILED', 'Microsoft Graph could not send the escalation email.');
+      error.cause = cause;
+      throw error;
+    }
+    if (!response.ok) {
+      const error = integrationError(response.status, 'OUTLOOK_SEND_FAILED', 'Microsoft Graph could not send the escalation email.');
+      const retryAfter = Number(response.headers.get('retry-after'));
+      if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterSeconds = retryAfter;
+      throw error;
+    }
+    return { requestId: response.headers.get('request-id') ?? response.headers.get('client-request-id') ?? null };
+  }
+
   function disconnect({ organizationId }) {
     const connection = db.prepare('SELECT tenant_id FROM outlook_connections WHERE organization_id = ?').get(organizationId);
     db.prepare('DELETE FROM outlook_connections WHERE organization_id = ?').run(organizationId);
@@ -303,7 +356,7 @@ export function createOutlookIntegration({ db, config = {}, clock = () => new Da
     }
   }
 
-  return { configured, authorizationUrl, completeAuthorization, disconnect, resolveWebLink, sources, status };
+  return { configured, authorizationUrl, completeAuthorization, disconnect, resolveWebLink, sendEscalation, sources, status };
 }
 
 export { GRAPH_SCOPE };

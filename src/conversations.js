@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
+function canonicalPriority(value) {
+  const priority = Number(value);
+  if ([10, 20, 30, 40].includes(priority)) return priority;
+  return new Map([[1, 10], [2, 20], [3, 30], [4, 40]]).get(priority) ?? 30;
+}
+
 export function normalizeFallbackSubject(subject) {
   return String(subject || '(No subject)')
     .replace(/^\s*((re|fw|fwd)\s*:\s*)+/i, '')
@@ -128,7 +134,9 @@ export function attachEmailToConversation(db, emailId) {
   };
 }
 
-export function updateConversationAssignment(db, { conversationId, assigneeId, source, ruleId = null, startedAt }) {
+export function updateConversationAssignment(db, {
+  conversationId, assigneeId, source, ruleId = null, priority = 30, startedAt,
+}) {
   const conversation = db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversationId);
   if (!conversation) return false;
   db.prepare(`
@@ -143,13 +151,18 @@ export function updateConversationAssignment(db, { conversationId, assigneeId, s
     WHERE conversation_id = ?
   `).run(assigneeId, startedAt, conversationId);
   db.prepare(`
+    UPDATE assignment_cycles
+    SET superseded_at = ?
+    WHERE conversation_id = ? AND completed_at IS NULL AND superseded_at IS NULL
+  `).run(startedAt, conversationId);
+  db.prepare(`
     INSERT INTO assignment_cycles
       (conversation_id, organization_id, department_id, assignee_id,
-       assignment_source, rule_id, started_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       assignment_source, rule_id, priority, started_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     conversationId, conversation.organization_id, conversation.department_id,
-    assigneeId, source, ruleId, startedAt, startedAt,
+    assigneeId, source, ruleId, canonicalPriority(priority), startedAt, startedAt,
   );
   return true;
 }
@@ -169,7 +182,7 @@ export function updateConversationCompletion(db, { conversationId, userId, compl
     UPDATE assignment_cycles SET completed_at = ?
     WHERE id = (
       SELECT id FROM assignment_cycles
-      WHERE conversation_id = ? AND completed_at IS NULL
+      WHERE conversation_id = ? AND completed_at IS NULL AND superseded_at IS NULL
       ORDER BY started_at DESC, id DESC LIMIT 1
     )
   `).run(completedAt, conversationId);

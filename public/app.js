@@ -47,6 +47,7 @@ const state = {
   expandedConversations: new Set(),
   conversationMessages: new Map(),
   pollFailureActive: false,
+  escalationRecipients: null,
 };
 
 const elements = {
@@ -106,6 +107,13 @@ const elements = {
   inboxOverviewSummary: document.querySelector('#inbox-overview-summary'),
   inboxOverviewAction: document.querySelector('[data-overview-view="inbox"]'),
   rulesPanel: document.querySelector('#rules-panel'),
+  escalationsPanel: document.querySelector('#escalations-panel'),
+  escalationsForm: document.querySelector('#escalations-form'),
+  escalationRecipients: document.querySelector('#escalation-recipients'),
+  addEscalationRecipient: document.querySelector('#add-escalation-recipient'),
+  escalationsError: document.querySelector('#escalations-error'),
+  escalationsInterval: document.querySelector('#escalations-interval'),
+  escalationHistory: document.querySelector('#escalation-history'),
   rulesCaption: document.querySelector('#rules-caption'),
   ruleList: document.querySelector('#rule-list'),
   rulesOverviewFooter: document.querySelector('#rules-overview-footer'),
@@ -169,6 +177,7 @@ const elements = {
   emailCompletionNote: document.querySelector('#email-completion-note'),
   emailAssignmentForm: document.querySelector('#email-assignment-form'),
   emailAssigneeSelect: document.querySelector('#email-assignee-select'),
+  emailPrioritySelect: document.querySelector('#email-priority-select'),
   emailAssignmentLabel: document.querySelector('#email-assignment-label'),
   assignmentError: document.querySelector('#assignment-error'),
   emailLinkError: document.querySelector('#email-link-error'),
@@ -495,6 +504,7 @@ function showLogin() {
   state.ruleDialogOpener = null;
   state.editingRuleId = null;
   state.editingRuleSnapshot = null;
+  state.escalationRecipients = null;
   state.settingsDirty = false;
   state.organizationProfileDirty = false;
   state.editingOrganizationId = null;
@@ -545,7 +555,7 @@ function normalizeView() {
   const viewsByRole = {
     platform_admin: ['platform', 'metrics'],
     org_admin: ['settings', 'departments', 'metrics'],
-    dep_admin: ['overview', 'inbox', 'assigned', 'completed', 'rules', 'activity', 'notifications', 'metrics'],
+    dep_admin: ['overview', 'inbox', 'assigned', 'completed', 'rules', 'escalations', 'activity', 'notifications', 'metrics'],
     member: ['assigned', 'completed', 'notifications', 'metrics'],
   };
   const allowed = viewsByRole[role] ?? viewsByRole.member;
@@ -1029,6 +1039,37 @@ function renderRules() {
   });
 }
 
+function renderEscalations() {
+  if (state.session.user.role !== 'dep_admin') return;
+  const data = state.session.escalations ?? { intervalHours: 24, recipients: [], deliveries: [] };
+  const recipients = state.escalationRecipients ?? data.recipients.map(item => item.email);
+  setText(elements.escalationsInterval, `Escalate every ${data.intervalHours} hour${Number(data.intervalHours) === 1 ? '' : 's'}`);
+  elements.escalationRecipients.replaceChildren(...(recipients.length ? recipients.map((email, index) => {
+    const row = node('div', 'escalation-recipient-row');
+    const order = node('span', 'escalation-order', `Order ${index + 1}`);
+    const input = document.createElement('input');
+    input.type = 'email'; input.required = true; input.value = email; input.maxLength = 254;
+    input.autocomplete = 'email'; input.dataset.escalationRecipient = String(index);
+    input.setAttribute('aria-label', `Escalation recipient order ${index + 1}`);
+    const actions = node('div', 'escalation-recipient-actions');
+    for (const [action, label] of [['up', 'Move up'], ['down', 'Move down'], ['remove', 'Remove']]) {
+      const button = node('button', 'small-button', label); button.type = 'button';
+      button.dataset.escalationAction = action; button.dataset.escalationIndex = String(index);
+      button.disabled = (action === 'up' && index === 0) || (action === 'down' && index === recipients.length - 1);
+      actions.append(button);
+    }
+    row.append(order, input, actions); return row;
+  }) : [emptyState('No escalation recipients', 'Add a recipient to enable department escalations.')]));
+  const deliveries = data.deliveries ?? [];
+  elements.escalationHistory.replaceChildren(...(deliveries.length ? deliveries.map(delivery => {
+    const item = node('article', 'activity-item');
+    item.append(node('strong', '', `Order ${delivery.level} · ${delivery.state}`),
+      node('p', '', `${delivery.subject} → ${delivery.recipient}`),
+      node('small', '', formatDate(delivery.sentAt ?? delivery.createdAt, false)));
+    return item;
+  }) : [emptyState('No escalation activity', 'Sent and failed escalation attempts will appear here.')]));
+}
+
 function renderActivityItem(item) {
   const wrapper = node('article', 'activity-item');
   const top = node('div', 'activity-top');
@@ -1261,6 +1302,7 @@ function renderSettings() {
   if (settings && !state.settingsDirty) {
     elements.timingForm.elements.namedItem('timeUnassignedHours').value = String(settings.timeUnassignedHours);
     elements.timingForm.elements.namedItem('timeAssignedUnmarkedHours').value = String(settings.timeAssignedUnmarkedHours);
+    elements.timingForm.elements.namedItem('escalationIntervalHours').value = String(settings.escalationIntervalHours ?? 24);
   }
 
   const activeAdmins = (state.session.members ?? []).filter(member => (
@@ -1543,6 +1585,7 @@ function renderPanels() {
   elements.dashboardLayout.classList.toggle('single-column', !isOverview);
   elements.queuePanel.hidden = !(isOverview || isQueue);
   elements.rulesPanel.hidden = !isDepAdmin || !['overview', 'rules'].includes(state.view);
+  elements.escalationsPanel.hidden = !isDepAdmin || state.view !== 'escalations';
   elements.activityPanel.hidden = !isDepAdmin || state.view !== 'activity';
   elements.settingsPanel.hidden = !isOrgAdmin || state.view !== 'settings';
   elements.departmentsPanel.hidden = !isOrgAdmin || state.view !== 'departments';
@@ -1564,6 +1607,7 @@ function renderHeader() {
     assigned: state.session.user.role === 'dep_admin' ? 'Assigned work' : 'My work',
     completed: 'Completed',
     rules: 'Automation rules',
+    escalations: 'Escalations',
     activity: 'Activity',
     settings: 'Workspace settings',
     departments: 'Team',
@@ -1660,6 +1704,7 @@ function render() {
   renderEmails();
   if (isDepAdmin) {
     renderRules();
+    renderEscalations();
     renderActivity();
   }
   if (isOrgAdmin) renderSettings();
@@ -1855,6 +1900,7 @@ function openEmail(emailId, opener = document.activeElement) {
       return option;
     });
     elements.emailAssigneeSelect.replaceChildren(...options);
+    elements.emailPrioritySelect.value = String(email.priority ?? 30);
     if (!options.some(option => option.selected) && options[0]) options[0].selected = true;
     const reassigning = email.status === 'assigned';
     setText(elements.emailAssignmentLabel, reassigning ? 'Reassign to' : 'Assign to');
@@ -1866,6 +1912,7 @@ function openEmail(emailId, opener = document.activeElement) {
     }
   } else {
     elements.emailAssigneeSelect.replaceChildren();
+    elements.emailPrioritySelect.value = '30';
   }
 
   const emailLinkRequestId = ++state.emailLinkRequestId;
@@ -2421,7 +2468,8 @@ elements.timingForm.addEventListener('submit', async event => {
       method: 'PATCH',
       body: {
         timeUnassignedHours: Number(form.get('timeUnassignedHours')),
-        timeAssignedUnmarkedHours: Number(form.get('timeAssignedUnmarkedHours'))
+        timeAssignedUnmarkedHours: Number(form.get('timeAssignedUnmarkedHours')),
+        escalationIntervalHours: Number(form.get('escalationIntervalHours')),
       }
     });
     state.session.settings = result.settings;
@@ -2432,6 +2480,57 @@ elements.timingForm.addEventListener('submit', async event => {
     if (!state.session) return;
     state.settingsDirty = true;
     showFormError(elements.timingForm, elements.timingError, error);
+  } finally {
+    setButtonBusy(submit, false, 'Saving…');
+  }
+});
+
+elements.addEscalationRecipient.addEventListener('click', () => {
+  const current = state.escalationRecipients ?? (state.session?.escalations?.recipients ?? []).map(item => item.email);
+  state.escalationRecipients = [...current, ''];
+  renderEscalations();
+  elements.escalationRecipients.querySelector('input:last-of-type')?.focus();
+});
+
+elements.escalationRecipients.addEventListener('input', event => {
+  const input = event.target.closest('[data-escalation-recipient]');
+  if (!input) return;
+  const current = state.escalationRecipients ?? (state.session?.escalations?.recipients ?? []).map(item => item.email);
+  current[Number(input.dataset.escalationRecipient)] = input.value;
+  state.escalationRecipients = current;
+});
+
+elements.escalationRecipients.addEventListener('click', event => {
+  const button = event.target.closest('[data-escalation-action]');
+  if (!button) return;
+  const current = [...(state.escalationRecipients ?? (state.session?.escalations?.recipients ?? []).map(item => item.email))];
+  const index = Number(button.dataset.escalationIndex);
+  if (button.dataset.escalationAction === 'remove') current.splice(index, 1);
+  if (button.dataset.escalationAction === 'up' && index > 0) [current[index - 1], current[index]] = [current[index], current[index - 1]];
+  if (button.dataset.escalationAction === 'down' && index < current.length - 1) [current[index + 1], current[index]] = [current[index], current[index + 1]];
+  state.escalationRecipients = current;
+  renderEscalations();
+  const target = Math.max(0, Math.min(index, current.length - 1));
+  elements.escalationRecipients.querySelector(`[data-escalation-recipient="${target}"]`)?.focus();
+});
+
+elements.escalationsForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  clearFieldErrors(elements.escalationsForm);
+  elements.escalationsError.hidden = true;
+  const recipients = [...elements.escalationRecipients.querySelectorAll('[data-escalation-recipient]')].map(input => input.value.trim());
+  if (recipients.some(value => !value)) {
+    showFormError(elements.escalationsForm, elements.escalationsError, new Error('Enter an email address or remove the blank recipient.'));
+    return;
+  }
+  const submit = elements.escalationsForm.querySelector('[type="submit"]');
+  setButtonBusy(submit, true, 'Saving…');
+  try {
+    await mutate('/api/escalations', 'PUT', { recipients });
+    state.escalationRecipients = null;
+    showToast('Escalation hierarchy updated.');
+  } catch (error) {
+    showFormError(elements.escalationsForm, elements.escalationsError, error);
   } finally {
     setButtonBusy(submit, false, 'Saving…');
   }
@@ -2649,6 +2748,7 @@ elements.emailAssignmentForm.addEventListener('submit', async event => {
   }
 
   const assigneeId = Number(elements.emailAssigneeSelect.value);
+  const priority = Number(elements.emailPrioritySelect.value);
   const selectedMember = (state.session.team ?? []).find(member => member.id === assigneeId);
   const wasAssigned = email.status === 'assigned';
   setButtonBusy(elements.assignButton, true, wasAssigned ? 'Reassigning…' : 'Assigning…');
@@ -2657,7 +2757,7 @@ elements.emailAssignmentForm.addEventListener('submit', async event => {
       state.conversationMessages.delete(email.conversationId);
       state.expandedConversations.delete(email.conversationId);
     }
-    const result = await mutate(`/api/emails/${email.id}/assign`, 'POST', { assigneeId });
+    const result = await mutate(`/api/emails/${email.id}/assign`, 'POST', { assigneeId, priority });
     elements.emailDialog.close();
     state.selectedEmailId = null;
     elements.pageTitle.focus({ preventScroll: true });

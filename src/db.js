@@ -139,6 +139,8 @@ CREATE TABLE IF NOT EXISTS workspace_settings (
     CHECK (time_unassigned_hours BETWEEN 1 AND 8760),
   time_assigned_unmarked_hours INTEGER NOT NULL
     CHECK (time_assigned_unmarked_hours BETWEEN 1 AND 8760),
+  escalation_interval_hours INTEGER NOT NULL DEFAULT 24
+    CHECK (escalation_interval_hours BETWEEN 1 AND 8760),
   organization_id INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS alert_deliveries (
@@ -200,9 +202,45 @@ CREATE TABLE IF NOT EXISTS assignment_cycles (
   assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   assignment_source TEXT NOT NULL CHECK (assignment_source IN ('manual', 'rule', 'reopen_previous', 'historical_unknown')),
   rule_id INTEGER REFERENCES rules(id) ON DELETE SET NULL,
+  priority INTEGER NOT NULL DEFAULT 30 CHECK (priority IN (10, 20, 30, 40)),
   started_at TEXT NOT NULL,
   completed_at TEXT,
+  superseded_at TEXT,
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS escalation_recipients (
+  id INTEGER PRIMARY KEY,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL CHECK (position >= 1),
+  email TEXT NOT NULL COLLATE NOCASE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (department_id, position),
+  UNIQUE (department_id, email)
+);
+CREATE TABLE IF NOT EXISTS escalation_deliveries (
+  id INTEGER PRIMARY KEY,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  assignment_cycle_id INTEGER NOT NULL REFERENCES assignment_cycles(id) ON DELETE CASCADE,
+  level INTEGER NOT NULL CHECK (level >= 1),
+  recipient_email TEXT NOT NULL,
+  delivery_key TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'processing', 'sent', 'failed', 'blocked', 'cancelled')),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  claim_token TEXT,
+  claim_expires_at TEXT,
+  last_attempt_at TEXT,
+  next_attempt_at TEXT,
+  sent_at TEXT,
+  last_error TEXT,
+  failure_category TEXT,
+  provider_request_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (assignment_cycle_id, level)
 );
 CREATE TABLE IF NOT EXISTS auth_transactions (
   state_digest TEXT PRIMARY KEY,
@@ -422,7 +460,9 @@ function migrateNotifications(db) {
   const definition = String(db.prepare(`
     SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'
   `).get()?.sql ?? '').toLocaleLowerCase();
-  const supportsAllKinds = definition.includes('completion') && definition.includes('assigned_overdue');
+  const supportsAllKinds = definition.includes('completion')
+    && definition.includes('assigned_overdue')
+    && definition.includes('escalation_failed');
   const blocksRepeats = definition.includes('unique(user_id, email_id, kind)');
   if (supportsAllKinds && !blocksRepeats) {
     // A prior organization-aware build created this partial unique index for
@@ -432,6 +472,10 @@ function migrateNotifications(db) {
     return;
   }
 
+  const hasOrganization = tableHasColumn(db, 'notifications', 'organization_id');
+  const hasDepartment = tableHasColumn(db, 'notifications', 'department_id');
+  const organizationSource = hasOrganization ? 'organization_id' : '1';
+  const departmentSource = hasDepartment ? 'department_id' : 'NULL';
   db.exec(`
     DROP TABLE IF EXISTS notifications_next;
     CREATE TABLE notifications_next (
@@ -439,21 +483,31 @@ function migrateNotifications(db) {
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       email_id INTEGER NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
       kind TEXT NOT NULL CHECK (
-        kind IN ('assignment', 'completion', 'unassigned_overdue', 'assigned_overdue')
+        kind IN ('assignment', 'completion', 'unassigned_overdue', 'assigned_overdue', 'escalation_failed')
       ),
       message TEXT NOT NULL,
       read_at TEXT,
       created_at TEXT NOT NULL
+      ,organization_id INTEGER NOT NULL DEFAULT 1
+      ,department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL
     );
     INSERT INTO notifications_next
-      (id, user_id, email_id, kind, message, read_at, created_at)
-    SELECT id, user_id, email_id, kind, message, read_at, created_at
+      (id, user_id, email_id, kind, message, read_at, created_at, organization_id, department_id)
+    SELECT id, user_id, email_id, kind, message, read_at, created_at, ${organizationSource}, ${departmentSource}
     FROM notifications;
     DROP TABLE notifications;
     ALTER TABLE notifications_next RENAME TO notifications;
   `);
 
   db.exec('DROP INDEX IF EXISTS notifications_overdue_unique');
+}
+
+function migrateEscalations(db) {
+  addColumn(db, 'workspace_settings', 'escalation_interval_hours', 'INTEGER NOT NULL DEFAULT 24 CHECK (escalation_interval_hours BETWEEN 1 AND 8760)');
+  addColumn(db, 'assignment_cycles', 'priority', 'INTEGER NOT NULL DEFAULT 30 CHECK (priority IN (10, 20, 30, 40))');
+  addColumn(db, 'assignment_cycles', 'superseded_at', 'TEXT');
+  db.prepare('UPDATE workspace_settings SET escalation_interval_hours = 24 WHERE escalation_interval_hours IS NULL').run();
+  db.prepare('UPDATE assignment_cycles SET priority = 30 WHERE priority IS NULL OR priority NOT IN (10, 20, 30, 40)').run();
 }
 
 function migrateWorkspaceSettings(db) {
@@ -545,6 +599,7 @@ export function migrate(db) {
     migrateWorkspaceSettings(db);
     migrateAlertDeliveries(db);
     migrateSyncState(db);
+    migrateEscalations(db);
 
     const createdAt = new Date().toISOString();
     // Compatibility for the previous organization-aware local schema. Keep
@@ -752,6 +807,12 @@ export function migrate(db) {
       ON emails (conversation_id, received_at, id);
       CREATE INDEX IF NOT EXISTS assignment_cycles_scope_started
       ON assignment_cycles (organization_id, department_id, started_at);
+      CREATE INDEX IF NOT EXISTS assignment_cycles_active_escalation
+      ON assignment_cycles (organization_id, department_id, completed_at, superseded_at, started_at);
+      CREATE INDEX IF NOT EXISTS escalation_deliveries_due
+      ON escalation_deliveries (organization_id, state, next_attempt_at, claim_expires_at);
+      CREATE INDEX IF NOT EXISTS escalation_deliveries_cycle
+      ON escalation_deliveries (assignment_cycle_id, level, state);
       CREATE INDEX IF NOT EXISTS rules_organization_department_priority
       ON rules (organization_id, department_id, enabled, priority, id);
       CREATE INDEX IF NOT EXISTS activity_organization_department_created
@@ -839,8 +900,8 @@ export function migrate(db) {
     `).run();
     db.prepare(`
       INSERT OR IGNORE INTO workspace_settings
-        (id, time_unassigned_hours, time_assigned_unmarked_hours, organization_id)
-      VALUES (1, 1, 24, 1)
+        (id, time_unassigned_hours, time_assigned_unmarked_hours, escalation_interval_hours, organization_id)
+      VALUES (1, 1, 24, 24, 1)
     `).run();
     db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS users_entra_identity_unique

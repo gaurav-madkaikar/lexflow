@@ -635,6 +635,7 @@ test('only OrgAdmins manage departments, team placement, heads, and workspace li
   assert.deepEqual(settings.body.settings, {
     timeUnassignedHours: 2,
     timeAssignedUnmarkedHours: 12,
+    escalationIntervalHours: 24,
   });
 
   const adminBootstrap = await harness.get('/api/bootstrap', adminCookie);

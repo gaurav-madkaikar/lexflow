@@ -61,7 +61,58 @@ export function getWorkspaceSettings(db, organizationId = 1) {
   return {
     timeUnassignedHours: Number(row.time_unassigned_hours),
     timeAssignedUnmarkedHours: Number(row.time_assigned_unmarked_hours),
+    escalationIntervalHours: Number(row.escalation_interval_hours ?? 24),
   };
+}
+
+function escalationEmail(value) {
+  const email = typeof value === 'string' ? value.trim().toLocaleLowerCase() : '';
+  if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) {
+    throw invalid('recipients', 'Enter a valid escalation email address.');
+  }
+  return email;
+}
+
+export function listEscalationRecipients(db, organizationId, departmentId) {
+  return db.prepare(`
+    SELECT id, position, email, created_at, updated_at
+    FROM escalation_recipients
+    WHERE organization_id = ? AND department_id = ?
+    ORDER BY position, id
+  `).all(organizationId, departmentId).map(row => ({
+    id: Number(row.id), position: Number(row.position), email: row.email,
+    createdAt: row.created_at, updatedAt: row.updated_at,
+  }));
+}
+
+export function replaceEscalationRecipients({
+  db, organizationId, departmentId, recipients, now = new Date(),
+}) {
+  if (!Array.isArray(recipients) || recipients.length > 25) {
+    throw invalid('recipients', 'Add between zero and 25 escalation recipients.');
+  }
+  const normalized = recipients.map(escalationEmail);
+  if (new Set(normalized).size !== normalized.length) {
+    throw invalid('recipients', 'Each escalation recipient can appear only once.');
+  }
+  return transaction(db, () => {
+    const department = db.prepare(`
+      SELECT id FROM departments WHERE id = ? AND organization_id = ?
+    `).get(departmentId, organizationId);
+    if (!department) throw domainError(404, 'NOT_FOUND', 'Department not found.');
+    db.prepare('DELETE FROM escalation_recipients WHERE organization_id = ? AND department_id = ?')
+      .run(organizationId, departmentId);
+    const timestamp = now.toISOString();
+    const insert = db.prepare(`
+      INSERT INTO escalation_recipients
+        (organization_id, department_id, position, email, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    normalized.forEach((email, index) => insert.run(
+      organizationId, departmentId, index + 1, email, timestamp, timestamp,
+    ));
+    return listEscalationRecipients(db, organizationId, departmentId);
+  });
 }
 
 export function listDepartments(db, organizationId = 1) {
@@ -423,6 +474,7 @@ export function updateWorkspaceSettings({
   db,
   timeUnassignedHours,
   timeAssignedUnmarkedHours,
+  escalationIntervalHours,
   organizationId = 1,
 }) {
   const unassigned = settingValue(
@@ -435,11 +487,17 @@ export function updateWorkspaceSettings({
     'timeAssignedUnmarkedHours',
     'Time assigned but not complete',
   );
+  const current = getWorkspaceSettings(db, organizationId);
+  const escalation = settingValue(
+    escalationIntervalHours == null ? current.escalationIntervalHours : escalationIntervalHours,
+    'escalationIntervalHours',
+    'Escalation interval',
+  );
 
   db.prepare(`
     UPDATE workspace_settings
-    SET time_unassigned_hours = ?, time_assigned_unmarked_hours = ?
+    SET time_unassigned_hours = ?, time_assigned_unmarked_hours = ?, escalation_interval_hours = ?
     WHERE organization_id = ?
-  `).run(unassigned, assigned, organizationId);
+  `).run(unassigned, assigned, escalation, organizationId);
   return getWorkspaceSettings(db, organizationId);
 }

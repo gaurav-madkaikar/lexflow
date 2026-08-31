@@ -56,6 +56,7 @@ test('workspace defaults and departments are persisted', (context) => {
   assert.deepEqual(getWorkspaceSettings(db), {
     timeUnassignedHours: 1,
     timeAssignedUnmarkedHours: 24,
+    escalationIntervalHours: 24,
   });
   assert.deepEqual(listDepartments(db).map(item => item.name), [
     'Finance',
@@ -104,6 +105,7 @@ test('workspace validation rejects duplicate departments and invalid limits', (c
   assert.deepEqual(getWorkspaceSettings(db), {
     timeUnassignedHours: 1,
     timeAssignedUnmarkedHours: 24,
+    escalationIntervalHours: 24,
   });
 });
 

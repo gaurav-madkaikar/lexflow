@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { createApp } from './app.js';
 import { createAlertRunner } from './alerts.js';
+import { createEscalationRunner } from './escalations.js';
 import { loadConfig } from './config.js';
 import { assertNoLocalAccounts, createDatabase } from './db.js';
 import { createGmailIntegration } from './gmail.js';
@@ -44,6 +45,11 @@ const alertRunner = createAlertRunner({
   db,
   organizationIds: () => db.prepare("SELECT id FROM organizations WHERE status = 'active'").all().map(row => Number(row.id)),
 });
+const escalationRunner = createEscalationRunner({
+  db,
+  outlook: outlookIntegration,
+  organizationIds: () => db.prepare("SELECT id FROM organizations WHERE status = 'active'").all().map(row => Number(row.id)),
+});
 const app = createApp({
   db,
   syncRunner,
@@ -82,12 +88,23 @@ const alertTimer = setInterval(() => {
 }, 60_000);
 alertTimer.unref();
 
+function reportEscalationError(error) {
+  console.error(`Escalation sweep failed: ${error.message}`);
+}
+
+escalationRunner.run().catch(reportEscalationError);
+const escalationTimer = setInterval(() => {
+  escalationRunner.run().catch(reportEscalationError);
+}, 60_000);
+escalationTimer.unref();
+
 let stopping = false;
 function stop() {
   if (stopping) return;
   stopping = true;
   if (syncTimer) clearInterval(syncTimer);
   clearInterval(alertTimer);
+  clearInterval(escalationTimer);
   server.close(() => {
     db.close();
   });

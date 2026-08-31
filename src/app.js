@@ -48,7 +48,9 @@ import {
   getWorkspaceSettings,
   listDepartmentMembers,
   listDepartments,
+  listEscalationRecipients,
   moveMemberToDepartment,
+  replaceEscalationRecipients,
   setDepartmentHead,
   updateDepartment,
   updateWorkspaceSettings,
@@ -109,7 +111,8 @@ function emailFromRow(row) {
       id: Number(row.completed_by),
       name: row.completed_by_name
     } : null,
-    completedAt: row.conversation_completed_at ?? row.completed_at
+    completedAt: row.conversation_completed_at ?? row.completed_at,
+    priority: Number(row.conversation_priority ?? 30),
   };
 }
 
@@ -134,6 +137,10 @@ function listEmails(db, user) {
          WHERE messages.conversation_id = conversations.id
            AND messages.assignee_id = conversations.assignee_id)
       ) AS conversation_assigned_at,
+      COALESCE((SELECT cycles.priority FROM assignment_cycles cycles
+         WHERE cycles.conversation_id = conversations.id
+           AND cycles.completed_at IS NULL AND cycles.superseded_at IS NULL
+         ORDER BY cycles.started_at DESC, cycles.id DESC LIMIT 1), 30) AS conversation_priority,
       (SELECT group_concat(
         messages.subject || ' ' || messages.sender_name || ' ' || messages.sender_address || ' ' || messages.preview,
         ' '
@@ -338,6 +345,22 @@ function listActivity(db, organizationId, departmentId) {
       name: row.actor_name,
       initials: row.actor_initials
     } : null
+  }));
+}
+
+function listEscalationDeliveries(db, organizationId, departmentId) {
+  return db.prepare(`
+    SELECT deliveries.id, deliveries.level, deliveries.recipient_email, deliveries.state,
+      deliveries.sent_at, deliveries.last_error, deliveries.created_at, conversations.subject
+    FROM escalation_deliveries deliveries
+    JOIN conversations ON conversations.id = deliveries.conversation_id
+    WHERE deliveries.organization_id = ? AND deliveries.department_id = ?
+    ORDER BY COALESCE(deliveries.sent_at, deliveries.created_at) DESC, deliveries.id DESC
+    LIMIT 20
+  `).all(organizationId, departmentId).map(row => ({
+    id: Number(row.id), level: Number(row.level), recipient: row.recipient_email,
+    state: row.state, subject: row.subject, sentAt: row.sent_at,
+    error: row.last_error, createdAt: row.created_at,
   }));
 }
 
@@ -644,6 +667,10 @@ export function createApp({
         .find(item => item.id === Number(departmentId)) ?? null;
       payload.emails = listEmails(db, request.user);
       payload.rules = listRules(db, request.user.organization_id, departmentId);
+      payload.escalations = {
+        intervalHours: getWorkspaceSettings(db, request.user.organization_id).escalationIntervalHours,
+        recipients: listEscalationRecipients(db, request.user.organization_id, departmentId),
+      };
       payload.activity = listActivity(db, request.user.organization_id, departmentId);
       payload.notifications = notifications;
       payload.unreadCount = notifications.filter(item => !item.readAt).length;
@@ -1091,7 +1118,40 @@ export function createApp({
           organizationId: request.user.organization_id,
           timeUnassignedHours: Number(request.body?.timeUnassignedHours),
           timeAssignedUnmarkedHours: Number(request.body?.timeAssignedUnmarkedHours),
+          escalationIntervalHours: request.body?.escalationIntervalHours == null
+            ? undefined : Number(request.body.escalationIntervalHours),
         }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/escalations', requireDepAdmin, (request, response) => {
+    const organizationId = Number(request.user.organization_id);
+    const departmentId = Number(request.user.headed_department_id);
+    response.json({
+      intervalHours: getWorkspaceSettings(db, organizationId).escalationIntervalHours,
+      recipients: listEscalationRecipients(db, organizationId, departmentId),
+      deliveries: listEscalationDeliveries(db, organizationId, departmentId),
+    });
+  });
+
+  app.put('/api/escalations', requireDepAdmin, (request, response, next) => {
+    try {
+      const recipients = request.body?.recipients;
+      if (!Array.isArray(recipients)) return validationError(response, 'Provide an ordered list of escalation recipients.', 'recipients');
+      if (!recipients.every(value => typeof value === 'string')) {
+        return validationError(response, 'Each escalation recipient must be an email address.', 'recipients');
+      }
+      const organizationId = Number(request.user.organization_id);
+      const departmentId = Number(request.user.headed_department_id);
+      response.json({
+        intervalHours: getWorkspaceSettings(db, organizationId).escalationIntervalHours,
+        recipients: replaceEscalationRecipients({
+          db, organizationId, departmentId, recipients, now: clock(),
+        }),
+        deliveries: listEscalationDeliveries(db, organizationId, departmentId),
       });
     } catch (error) {
       next(error);
@@ -1289,10 +1349,12 @@ export function createApp({
     try {
       const emailId = resourceId(request.params.id);
       const assigneeId = resourceId(request.body?.assigneeId);
+      const priority = Number(request.body?.priority ?? 30);
       if (!emailId) return notFound(response, 'Email not found.');
       if (!assigneeId) {
         return validationError(response, 'Choose a valid team member.', 'assigneeId');
       }
+      if (!isRulePriority(priority)) return validationError(response, RULE_PRIORITY_ERROR, 'priority');
 
       const result = assignEmailManually({
         db,
@@ -1301,6 +1363,7 @@ export function createApp({
         actorId: Number(request.user.id),
         organizationId: request.user.organization_id,
         departmentId: request.user.headed_department_id,
+        priority,
         now: clock(),
       });
       response.json({

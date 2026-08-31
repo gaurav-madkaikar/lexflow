@@ -1806,6 +1806,24 @@ select:not(:disabled) { cursor: pointer; }
   border-color: #efc7c7;
 }
 
+.escalations-form { padding: 20px; border-bottom: 1px solid var(--color-line); }
+.escalation-recipient-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin: 10px 0;
+}
+.escalation-recipient-row input { min-width: 0; min-height: 44px; }
+.escalation-order { color: var(--color-muted); font-size: 12px; font-weight: 700; }
+.escalation-recipient-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.escalation-recipient-actions .small-button { min-height: 44px; }
+.escalation-history { padding: 0 20px 12px; }
+@media (max-width: 640px) {
+  .escalation-recipient-row { grid-template-columns: 1fr; gap: 7px; }
+  .escalation-recipient-actions { justify-content: flex-start; }
+}
+
 .activity-list,
 .notification-list { padding: 5px 20px 10px; }
 

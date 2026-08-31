@@ -134,10 +134,18 @@ test('DepAdmin overview provides bounded inbox and rule previews', () => {
   assert.match(html, /id="rules-overview-footer"/);
   assert.match(html, /data-overview-view="inbox"/);
   assert.match(html, /data-overview-view="rules"/);
-  assert.match(app, /dep_admin: \['overview', 'inbox', 'assigned', 'completed', 'rules', 'activity', 'notifications', 'metrics'\]/);
+  assert.match(app, /dep_admin: \['overview', 'inbox', 'assigned', 'completed', 'rules', 'escalations', 'activity', 'notifications', 'metrics'\]/);
   assert.match(app, /document\.querySelectorAll\('\[data-overview-view\]'\)/);
   assert.doesNotMatch(app, /(?:platform_admin|org_admin|member): \[[^\]]*'overview'/);
   assert.equal(OVERVIEW_PREVIEW_LIMIT, 5);
+});
+
+test('DepAdmins can configure an accessible escalation hierarchy', () => {
+  assert.match(html, /data-view="escalations"/);
+  assert.match(html, /id="escalations-form"/);
+  assert.match(html, /Escalation interval/);
+  assert.match(html, /name="priority" id="email-priority-select"/);
+  assert.match(app, /\/api\/escalations/);
 });
 
 test('all roles receive an accessible, locally bundled Metrics module', () => {
