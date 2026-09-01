@@ -4,6 +4,7 @@ import test from 'node:test';
 import { createDatabase } from '../src/db.js';
 import { evaluateEscalations } from '../src/escalations.js';
 import { replaceEscalationRecipients, updateWorkspaceSettings } from '../src/workspace.js';
+import { syncMailbox } from '../src/workflows.js';
 
 function fixture() {
   const db = createDatabase(':memory:');
@@ -47,6 +48,56 @@ test('due escalation sends one safe shared-mailbox message and records its level
   assert.match(calls[0].html, /Maya Shah/);
   assert.doesNotMatch(calls[0].html, /private preview|Client/);
   assert.equal(db.prepare("SELECT state FROM escalation_deliveries").get().state, 'sent');
+  db.close();
+});
+
+test('an Exchange bounce stays unassigned and reconciles the escalation delivery', async () => {
+  const { db, departmentId } = fixture();
+  await evaluateEscalations({
+    db, organizationId: 1, now: new Date('2026-09-02T00:01:00.000Z'),
+    outlook: { async sendEscalation() { return { requestId: 'request-1' }; } },
+  });
+
+  const result = await syncMailbox({
+    db,
+    source: {
+      provider: 'outlook',
+      organizationId: 1,
+      departmentId,
+      mailboxAddress: 'legal@example.test',
+      cursorKey: 'mail_cursor:ndr-test',
+      async fetchChanges() {
+        return {
+          messages: [{
+            providerId: 'ndr-1',
+            provider: 'outlook',
+            mailboxAddress: 'legal@example.test',
+            subject: 'Undeliverable: Escalation Level 1: Contract review',
+            senderName: 'Microsoft Outlook',
+            senderAddress: 'MicrosoftExchange@example.test',
+            preview: 'Delivery has failed to these recipients or groups:\nlead@example.test\nYour message wasn\'t delivered.',
+            receivedAt: '2026-09-02T00:02:00.000Z',
+            webUrl: null,
+            hasAttachments: false,
+          }],
+          nextCursor: 'ndr-cursor',
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(result, { imported: 1, assigned: 0 });
+  assert.deepEqual({ ...db.prepare('SELECT state, failure_category, next_attempt_at FROM escalation_deliveries').get() }, {
+    state: 'failed', failure_category: 'recipient_bounce', next_attempt_at: null,
+  });
+  assert.equal(db.prepare("SELECT status, assignee_id FROM emails WHERE provider_id = 'ndr-1'").get().status, 'unassigned');
+  assert.equal(db.prepare("SELECT count(*) AS count FROM notifications WHERE kind = 'escalation_failed'").get().count, 1);
+
+  const retry = await evaluateEscalations({
+    db, organizationId: 1, now: new Date('2026-09-03T00:01:00.000Z'),
+    outlook: { async sendEscalation() { throw new Error('a bounced recipient must not be retried automatically'); } },
+  });
+  assert.deepEqual(retry, { sent: 0, failed: 0, skipped: 0 });
   db.close();
 });
 

@@ -95,6 +95,9 @@ function emailFromRow(row) {
     mailboxAddress: row.mailbox_address ?? null,
     webUrl: row.outlook_url,
     outlookUrl: row.outlook_url,
+    sourceState: row.source_state ?? 'active',
+    sourceRemovedAt: row.source_removed_at ?? null,
+    sourceRemovalReason: row.source_removed_reason ?? null,
     status: row.conversation_status ?? row.status,
     assignedAt: row.conversation_assigned_at ?? row.assigned_at,
     departmentId: row.department_id == null ? null : Number(row.department_id),
@@ -173,7 +176,38 @@ function listEmails(db, user) {
     user.organization_id,
     departmentAccess ? user.headed_department_id : user.id,
   );
-  return rows.map(emailFromRow);
+  const deletedRows = db.prepare(`
+    SELECT emails.*,
+      NULL AS conversation_task_id,
+      1 AS conversation_message_count,
+      emails.has_attachments AS conversation_has_attachments,
+      NULL AS conversation_completed_at,
+      emails.assigned_at AS conversation_assigned_at,
+      30 AS conversation_priority,
+      '' AS conversation_search_text,
+      0 AS conversation_reopened,
+      assignee.email AS assignee_email,
+      assignee.name AS assignee_name,
+      assignee.initials AS assignee_initials,
+      assignee.department AS assignee_department,
+      departments.name AS email_department,
+      departments.shared_mailbox AS department_mailbox,
+      completed.name AS completed_by_name
+    FROM emails
+    LEFT JOIN users AS assignee ON assignee.id = emails.assignee_id
+    LEFT JOIN users AS completed ON completed.id = emails.completed_by
+    LEFT JOIN departments
+      ON departments.id = emails.department_id
+      AND departments.organization_id = emails.organization_id
+    WHERE emails.organization_id = ? AND emails.source_state <> 'active'
+      ${departmentAccess ? 'AND emails.department_id = ?' : 'AND emails.assignee_id = ?'}
+    ORDER BY emails.received_at DESC, emails.id DESC
+  `).all(
+    user.organization_id,
+    departmentAccess ? user.headed_department_id : user.id,
+  );
+  const existingIds = new Set(rows.map(row => Number(row.id)));
+  return [...rows, ...deletedRows.filter(row => !existingIds.has(Number(row.id)))].map(emailFromRow);
 }
 
 function visibleConversationRow(db, user, conversationId) {
@@ -262,9 +296,13 @@ function pendingTaskSummary(db, user, unreadNotifications) {
       END) AS unassigned_department
     FROM (
       SELECT status, assignee_id, department_id, organization_id FROM conversations
+      WHERE EXISTS (
+        SELECT 1 FROM emails
+        WHERE emails.conversation_id = conversations.id AND emails.source_state = 'active'
+      )
       UNION ALL
       SELECT status, assignee_id, department_id, organization_id
-      FROM emails WHERE conversation_id IS NULL
+      FROM emails WHERE conversation_id IS NULL AND source_state = 'active'
     ) AS workflow_tasks
     WHERE organization_id = ?
   `).get(
@@ -566,9 +604,9 @@ function parseRulePatch(body, current) {
   return { value };
 }
 
-async function runSync(syncRunner) {
-  if (typeof syncRunner === 'function') return syncRunner();
-  return syncRunner.run();
+async function runSync(syncRunner, organizationId) {
+  if (typeof syncRunner === 'function') return syncRunner(organizationId);
+  return syncRunner.run(organizationId);
 }
 
 export function createApp({
@@ -1158,10 +1196,13 @@ export function createApp({
     }
   });
 
-  app.post('/api/sync', (request, response) => {
-    response.status(403).json({
-      error: { code: 'FORBIDDEN', message: 'Mailbox synchronization runs automatically.' },
-    });
+  app.post('/api/sync', requireDepAdmin, async (request, response, next) => {
+    try {
+      const result = await runSync(syncRunner, request.user.organization_id);
+      response.json(result);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post('/api/rules', requireDepAdmin, (request, response, next) => {
@@ -1410,6 +1451,15 @@ export function createApp({
     } catch (error) {
       next(error);
     }
+  });
+
+  app.post('/api/notifications/read-all', (request, response) => {
+    const result = db.prepare(`
+      UPDATE notifications
+      SET read_at = COALESCE(read_at, ?)
+      WHERE user_id = ? AND organization_id = ? AND read_at IS NULL
+    `).run(clock().toISOString(), request.user.id, request.user.organization_id);
+    response.json({ read: true, count: result.changes });
   });
 
   app.post('/api/notifications/:id/read', (request, response) => {

@@ -142,6 +142,11 @@
               <span>Completed</span>
               <span class="nav-badge" data-badge="completed">0</span>
             </button>
+            <button class="nav-item" type="button" data-view="deleted">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-mail"></use></svg>
+              <span>Deleted</span>
+              <span class="nav-badge" data-badge="deleted">0</span>
+            </button>
             <button class="nav-item" type="button" data-view="metrics">
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-metrics"></use></svg>
               <span>Metrics</span>
@@ -516,6 +521,7 @@
                   <h2 id="notifications-title">Notifications</h2>
                   <p id="notifications-caption">0 unread</p>
                 </div>
+                <button class="small-button" id="mark-all-notifications-read" type="button" hidden>Mark all as read</button>
               </div>
               <div class="notification-list" id="notification-list"></div>
             </section>

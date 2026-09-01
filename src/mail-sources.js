@@ -127,6 +127,7 @@ export class GraphMailSource {
     let nextCursor = cursor;
     let receivedDeltaLink = false;
     const messages = [];
+    const removed = [];
 
     while (url) {
       const response = await this.fetchImpl(url, {
@@ -140,11 +141,16 @@ export class GraphMailSource {
 
       const page = await response.json();
       if (!Array.isArray(page.value)) throw new Error('Outlook sync returned an invalid page');
-      messages.push(
-        ...page.value
-          .filter(item => !item['@removed'])
-          .map(item => mapGraphMessage(item, this.mailbox))
-      );
+      for (const item of page.value) {
+        if (item['@removed']) {
+          removed.push({
+            providerId: `outlook:${this.mailbox.toLocaleLowerCase()}:${item.id}`,
+            reason: item['@removed'].reason || 'deleted',
+          });
+        } else {
+          messages.push(mapGraphMessage(item, this.mailbox));
+        }
+      }
       if (page['@odata.deltaLink']) {
         nextCursor = page['@odata.deltaLink'];
         receivedDeltaLink = true;
@@ -155,7 +161,7 @@ export class GraphMailSource {
     if (!receivedDeltaLink) {
       throw new Error('Outlook sync completed without a new delta cursor');
     }
-    return { messages, nextCursor };
+    return { messages, removed, nextCursor };
   }
 }
 

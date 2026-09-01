@@ -102,6 +102,7 @@ function cancelObsolete(db, organizationId, now) {
           AND cycles.completed_at IS NULL AND cycles.superseded_at IS NULL
           AND conversations.status = 'assigned' AND conversations.assignee_id = cycles.assignee_id
           AND organizations.status = 'active'
+          AND EXISTS (SELECT 1 FROM emails WHERE emails.conversation_id = conversations.id AND emails.source_state = 'active')
       )
   `).run(now.toISOString(), organizationId);
 }
@@ -120,6 +121,7 @@ function claimDueDeliveries(db, organizationId, now) {
       WHERE cycles.organization_id = ? AND cycles.completed_at IS NULL AND cycles.superseded_at IS NULL
         AND conversations.status = 'assigned' AND conversations.assignee_id = cycles.assignee_id
         AND organizations.status = 'active'
+        AND EXISTS (SELECT 1 FROM emails WHERE emails.conversation_id = conversations.id AND emails.source_state = 'active')
       ORDER BY cycles.started_at, cycles.id
       LIMIT ?
     `).all(organizationId, MAX_BATCH);
@@ -142,6 +144,11 @@ function claimDueDeliveries(db, organizationId, now) {
       if (!Number.isFinite(dueAt.getTime()) || dueAt > now) continue;
       const existing = db.prepare(`SELECT * FROM escalation_deliveries WHERE assignment_cycle_id = ? AND level = ?`).get(cycle.id, level);
       if (existing?.state === 'sent' || existing?.state === 'cancelled') continue;
+      if (
+        existing?.failure_category === 'recipient_bounce'
+        && String(existing.recipient_email).toLocaleLowerCase() === String(recipient.email).toLocaleLowerCase()
+        && !existing.next_attempt_at
+      ) continue;
       if (existing?.state === 'processing' && new Date(existing.claim_expires_at).getTime() > now.getTime()) continue;
       if (existing?.next_attempt_at && new Date(existing.next_attempt_at).getTime() > now.getTime()) continue;
       const token = randomUUID();
@@ -184,6 +191,7 @@ function deliveryContext(db, id, claimToken) {
     WHERE deliveries.id = ? AND deliveries.claim_token = ? AND deliveries.state = 'processing'
       AND organizations.status = 'active' AND cycles.completed_at IS NULL AND cycles.superseded_at IS NULL
       AND conversations.status = 'assigned' AND conversations.assignee_id = cycles.assignee_id
+      AND EXISTS (SELECT 1 FROM emails WHERE emails.conversation_id = conversations.id AND emails.source_state = 'active')
   `).get(id, claimToken);
 }
 

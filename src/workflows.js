@@ -86,7 +86,7 @@ function recordAssignment(db, {
   const updated = db.prepare(`
     UPDATE emails
     SET status = 'assigned', assignee_id = ?, assigned_at = ?
-    WHERE id = ? AND organization_id = ? AND ${eligibleStatus}
+    WHERE id = ? AND organization_id = ? AND source_state = 'active' AND ${eligibleStatus}
   `).run(assignee.id, assignedAt, email.id, organizationId);
   if (updated.changes !== 1) return false;
 
@@ -215,6 +215,131 @@ function sanitizeError(error) {
   );
 }
 
+const REMOVED_EMAIL_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+export function cleanupRemovedEmails({ db, now = new Date(), retentionMs = REMOVED_EMAIL_RETENTION_MS }) {
+  const cutoff = new Date((now instanceof Date ? now : new Date(now)).getTime() - retentionMs).toISOString();
+  return runTransaction(db, () => db.prepare(`
+    UPDATE emails
+    SET subject = '[Deleted message]', sender_name = 'Deleted message', sender_address = '',
+        preview = '', outlook_url = NULL, mailbox_address = NULL,
+        internet_message_id = NULL
+    WHERE source_state IN ('deleted', 'removed')
+      AND source_removed_at IS NOT NULL AND source_removed_at <= ?
+      AND subject <> '[Deleted message]'
+  `).run(cutoff).changes);
+}
+
+function escalationBounceDetails(message) {
+  const subject = String(message?.subject ?? '').trim();
+  const preview = String(message?.preview ?? '');
+  const match = /^Undeliverable:\s*Escalation Level\s+(\d+):\s*(.+)$/iu.exec(subject);
+  if (!match || !/delivery has failed to these recipients or groups/iu.test(preview)) return null;
+  return {
+    level: Number(match[1]),
+    subject: match[2].trim(),
+    recipient: /recipients or groups:\s*([^\r\n]+)/iu.exec(preview)?.[1]?.trim() || null,
+  };
+}
+
+function reconcileEscalationBounce(db, {
+  email, message, organizationId, departmentId, now,
+}) {
+  const details = escalationBounceDetails(message);
+  if (!details || !Number.isInteger(details.level) || !details.subject) return false;
+
+  const delivery = db.prepare(`
+    SELECT deliveries.id, deliveries.recipient_email, deliveries.state,
+      conversations.subject, conversations.id AS conversation_id
+    FROM escalation_deliveries deliveries
+    JOIN conversations ON conversations.id = deliveries.conversation_id
+    WHERE deliveries.organization_id = ? AND deliveries.department_id = ?
+      AND deliveries.level = ? AND conversations.subject = ?
+      AND deliveries.state IN ('sent', 'failed', 'blocked')
+    ORDER BY deliveries.sent_at DESC, deliveries.id DESC
+    LIMIT 1
+  `).get(organizationId, departmentId, details.level, details.subject);
+  if (!delivery) return true;
+
+  const nowIso = now instanceof Date ? now.toISOString() : String(now);
+  const recipient = details.recipient || delivery.recipient_email;
+  const errorMessage = `Exchange reported that the escalation email to ${recipient} was undeliverable.`;
+  db.prepare(`
+    UPDATE escalation_deliveries
+    SET state = 'failed', failure_category = 'recipient_bounce', last_error = ?,
+        next_attempt_at = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?
+    WHERE id = ? AND state IN ('sent', 'failed', 'blocked')
+  `).run(errorMessage, nowIso, delivery.id);
+
+  if (email?.id != null) {
+    db.prepare(`
+      DELETE FROM notifications
+      WHERE email_id = ? AND organization_id = ? AND kind = 'assignment'
+    `).run(email.id, organizationId);
+    db.prepare(`
+      DELETE FROM alert_deliveries
+      WHERE email_id = ? AND organization_id = ?
+    `).run(email.id, organizationId);
+    db.prepare(`
+      UPDATE assignment_cycles
+      SET superseded_at = ?
+      WHERE conversation_id = ? AND completed_at IS NULL AND superseded_at IS NULL
+    `).run(nowIso, email.conversation_id);
+    db.prepare(`
+      UPDATE emails
+      SET status = 'unassigned', assignee_id = NULL, assigned_at = NULL,
+          completed_by = NULL, completed_at = NULL
+      WHERE id = ? AND organization_id = ? AND status <> 'unassigned'
+    `).run(email.id, organizationId);
+    db.prepare(`
+      UPDATE conversations
+      SET status = 'unassigned', assignee_id = NULL, completed_at = NULL,
+          version = version + 1, updated_at = ?
+      WHERE id = ? AND organization_id = ?
+        AND (status <> 'unassigned' OR assignee_id IS NOT NULL)
+    `).run(nowIso, email.conversation_id, organizationId);
+  }
+
+  const head = db.prepare(`
+    SELECT head_user_id FROM departments WHERE id = ? AND organization_id = ?
+  `).get(departmentId, organizationId)?.head_user_id;
+  if (head && email?.id != null) {
+    const existing = db.prepare(`
+      SELECT id FROM notifications
+      WHERE user_id = ? AND email_id = ? AND kind = 'escalation_failed' AND organization_id = ?
+    `).get(head, email.id, organizationId);
+    if (!existing) db.prepare(`
+      INSERT INTO notifications (user_id, email_id, kind, message, created_at, organization_id, department_id)
+      VALUES (?, ?, 'escalation_failed', ?, ?, ?, ?)
+    `).run(
+      head, email.id, 'Escalation delivery failed. Check the recipient address in the escalation hierarchy.',
+      nowIso, organizationId, departmentId,
+    );
+  }
+  return true;
+}
+
+function reconcileExistingEscalationBounces(db, nowSource) {
+  const messages = db.prepare(`
+    SELECT * FROM emails
+    WHERE subject LIKE 'Undeliverable: Escalation Level %'
+      AND preview LIKE '%Delivery has failed to these recipients or groups%'
+  `).all();
+  if (!messages.length) return;
+  const now = typeof nowSource === 'function' ? nowSource() : nowSource ?? new Date();
+  runTransaction(db, () => {
+    for (const email of messages) {
+      reconcileEscalationBounce(db, {
+        email,
+        message: email,
+        organizationId: email.organization_id,
+        departmentId: email.department_id,
+        now,
+      });
+    }
+  });
+}
+
 export function matchRule(message, rules) {
   const searchable = `${message.subject} ${message.preview}`.toLocaleLowerCase();
   const sender = `${message.senderName} ${message.senderAddress}`.toLocaleLowerCase();
@@ -266,7 +391,7 @@ export async function syncMailbox({ db, source }) {
   }
   const stateKey = scopedStateKey(cursorKey, organizationId);
   const cursor = db.prepare('SELECT value FROM sync_state WHERE key = ? AND organization_id = ?').get(stateKey, organizationId)?.value ?? null;
-  const { messages, nextCursor } = await source.fetchChanges(cursor);
+  const { messages, removed = [], nextCursor } = await source.fetchChanges(cursor);
 
   return runTransaction(db, () => {
     if (source.isCurrentConnection?.() === false) {
@@ -297,13 +422,48 @@ export async function syncMailbox({ db, source }) {
       UPDATE emails
       SET subject = ?, sender_name = ?, sender_address = ?, preview = ?, received_at = ?,
           outlook_url = ?, provider = ?, mailbox_address = ?, department_id = ?,
-          has_attachments = ?
+          has_attachments = ?, source_state = 'active', source_removed_at = NULL,
+          source_removed_reason = NULL
       WHERE provider_id = ? AND organization_id = ?
     `);
     const findEmail = db.prepare('SELECT * FROM emails WHERE provider_id = ? AND organization_id = ?');
+    const markRemoved = db.prepare(`
+      UPDATE emails
+      SET source_state = ?, source_removed_at = ?, source_removed_reason = ?,
+          has_attachments = 0
+      WHERE provider_id = ? AND organization_id = ? AND source_state = 'active'
+    `);
     const now = new Date().toISOString();
     let imported = 0;
     let assigned = 0;
+
+    for (const removal of removed ?? []) {
+      const providerId = String(removal?.providerId ?? '').trim();
+      if (!providerId) continue;
+      const existing = findEmail.get(providerId, organizationId);
+      if (!existing) continue;
+      const reason = String(removal.reason ?? 'deleted').trim().toLocaleLowerCase();
+      const sourceState = reason === 'deleted' ? 'deleted' : 'removed';
+      if (markRemoved.run(sourceState, now, reason, providerId, organizationId).changes !== 1) continue;
+      db.prepare(`
+        DELETE FROM notifications WHERE email_id = ? AND organization_id = ?
+      `).run(existing.id, organizationId);
+      db.prepare(`
+        DELETE FROM alert_deliveries WHERE email_id = ? AND organization_id = ?
+      `).run(existing.id, organizationId);
+      if (existing.conversation_id != null && !db.prepare(`
+        SELECT 1 FROM emails
+        WHERE conversation_id = ? AND organization_id = ? AND source_state = 'active'
+        LIMIT 1
+      `).get(existing.conversation_id, organizationId)) {
+        db.prepare(`
+          UPDATE assignment_cycles
+          SET superseded_at = ?
+          WHERE conversation_id = ? AND organization_id = ?
+            AND completed_at IS NULL AND superseded_at IS NULL
+        `).run(now, existing.conversation_id, organizationId);
+      }
+    }
 
     for (const message of messages) {
       const provider = message.provider || source.provider || 'outlook';
@@ -343,6 +503,13 @@ export async function syncMailbox({ db, source }) {
           organizationId,
         );
         const existing = findEmail.get(message.providerId, organizationId);
+        if (existing && reconcileEscalationBounce(db, {
+          email: existing,
+          message,
+          organizationId,
+          departmentId,
+          now,
+        })) continue;
         if (existing?.conversation_id != null) {
           recomputeConversationAttachmentState(db, existing.conversation_id);
         }
@@ -353,6 +520,13 @@ export async function syncMailbox({ db, source }) {
       let email = findEmail.get(message.providerId, organizationId);
       const attached = attachEmailToConversation(db, email.id);
       email = findEmail.get(message.providerId, organizationId);
+      if (reconcileEscalationBounce(db, {
+        email,
+        message,
+        organizationId,
+        departmentId,
+        now,
+      })) continue;
       if (attached.created) {
         const rule = matchRule(asMailMessage(email, attached.conversation), rules);
         if (rule && assignEmailByRule(db, email, rule, now, organizationId)) assigned += 1;
@@ -422,6 +596,8 @@ export function createSyncRunner({ db, source, sources, clock = () => new Date()
   let inFlight = null;
   let sequence = 0;
   const runtimeByOrganization = new Map();
+
+  reconcileExistingEscalationBounces(db, clock);
 
   if (db.prepare('SELECT 1 FROM graph_sync_runs WHERE completed_at IS NULL LIMIT 1').get()) {
     interruptOpenGraphRuns(db, clock());
@@ -665,7 +841,8 @@ export function applyRuleToUnassigned(
       SELECT emails.*, conversations.has_attachments AS conversation_has_attachments
       FROM emails
       LEFT JOIN conversations ON conversations.id = emails.conversation_id
-      WHERE emails.organization_id = ? AND emails.department_id = ? AND emails.status = 'unassigned'
+      WHERE emails.organization_id = ? AND emails.department_id = ?
+        AND emails.status = 'unassigned' AND emails.source_state = 'active'
       ORDER BY emails.id
     `).all(organizationId, departmentId);
     const now = (nowValue instanceof Date ? nowValue : new Date(nowValue)).toISOString();
@@ -695,10 +872,14 @@ export function assignEmailManually({
   return runTransaction(db, () => {
     const assignedAt = now.toISOString();
     const assigningUserId = actorId ?? adminId;
-    const email = db.prepare(`
+    let email = db.prepare(`
       SELECT * FROM emails
       WHERE id = ? AND organization_id = ? AND department_id = ?
     `).get(emailId, organizationId, departmentId);
+    const conversation = email?.conversation_id == null ? null : db.prepare(`
+      SELECT * FROM conversations
+      WHERE id = ? AND organization_id = ? AND department_id = ?
+    `).get(email.conversation_id, organizationId, departmentId);
     const assignee = db.prepare(`
       SELECT * FROM users
       WHERE id = ? AND organization_id = ? AND department_id = ?
@@ -715,11 +896,26 @@ export function assignEmailManually({
     if (![10, 20, 30, 40].includes(Number(priority))) {
       throw workflowError(400, 'INVALID_INPUT', 'Choose a valid priority.');
     }
-    if (email.status === 'completed') {
+    const assignmentStatus = conversation?.status ?? email.status;
+    const currentAssigneeId = conversation?.assignee_id ?? email.assignee_id;
+    if (assignmentStatus === 'completed') {
       throw workflowError(409, 'CONFLICT', 'Completed emails cannot be reassigned.');
     }
-    if (Number(email.assignee_id) === Number(assigneeId)) {
+    if (Number(currentAssigneeId) === Number(assigneeId)) {
       return { changed: false, email };
+    }
+
+    // The conversation is authoritative for threaded work. Normalize a stale
+    // representative message before recordAssignment applies the reassignment
+    // to the conversation and all of its messages.
+    if (conversation?.status === 'assigned'
+      && (email.status !== 'assigned' || Number(email.assignee_id) !== Number(conversation.assignee_id))) {
+      db.prepare(`
+        UPDATE emails
+        SET status = 'assigned', assignee_id = ?, assigned_at = COALESCE(assigned_at, ?)
+        WHERE id = ? AND organization_id = ?
+      `).run(conversation.assignee_id, assignedAt, email.id, organizationId);
+      email = db.prepare('SELECT * FROM emails WHERE id = ? AND organization_id = ?').get(email.id, organizationId);
     }
 
     const changed = recordAssignment(db, {
@@ -748,7 +944,8 @@ export function completeAssignedEmail({ db, emailId, userId, organizationId = 1,
     const update = db.prepare(`
       UPDATE emails
       SET status = 'completed', completed_by = ?, completed_at = ?
-      WHERE id = ? AND organization_id = ? AND assignee_id = ? AND status = 'assigned'
+      WHERE id = ? AND organization_id = ? AND assignee_id = ?
+        AND status = 'assigned' AND source_state = 'active'
     `).run(userId, completedAt, emailId, organizationId, userId);
 
     if (update.changes === 1) {

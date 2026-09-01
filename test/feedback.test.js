@@ -6,6 +6,7 @@ import {
   createFeedbackQueue,
   feedbackFingerprint,
   pendingTaskNotice,
+  unseenNotifications,
 } from '../public/feedback.js';
 
 function queueHarness(options = {}) {
@@ -67,6 +68,18 @@ test('feedback fingerprints can be explicitly stabilized', () => {
   assert.equal(
     feedbackFingerprint({ type: 'info', title: 'Pending', message: 'One', action: { label: 'Open', view: 'assigned' } }),
     'info|Pending|One|Open|assigned',
+  );
+});
+
+test('unseen notifications returns only IDs not present in the prior refresh', () => {
+  const previous = new Set([11, 12]);
+  assert.deepEqual(
+    unseenNotifications(previous, [
+      { id: 14, message: 'New assignment' },
+      { id: 12, message: 'Already seen' },
+      { id: 13, message: 'New completion' },
+    ]).map(notification => notification.id),
+    [14, 13],
   );
 });
 

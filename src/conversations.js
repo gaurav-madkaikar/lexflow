@@ -40,6 +40,7 @@ export function recomputeConversationAttachmentState(db, conversationId) {
     SET has_attachments = CASE WHEN EXISTS (
       SELECT 1 FROM emails
       WHERE emails.conversation_id = conversations.id
+        AND emails.source_state = 'active'
         AND emails.has_attachments = 1
     ) THEN 1 ELSE 0 END
     WHERE id = ?

@@ -1,6 +1,6 @@
 import { animate, stagger } from '/vendor/animejs.js';
 import { overviewPreview } from './overview-model.js';
-import { createFeedbackQueue, pendingTaskNotice } from './feedback.js';
+import { createFeedbackQueue, pendingTaskNotice, unseenNotifications } from './feedback.js';
 import { createMetricsView } from './metrics-view.js';
 import { conversationClickIntent } from './conversation-interactions.js';
 import { createNotificationAudio } from './notification-audio.js';
@@ -36,6 +36,7 @@ const state = {
   editingOrganizationId: null,
   editingDepartmentId: null,
   lastUnreadCount: null,
+  seenNotificationIds: null,
   emailDialogOpener: null,
   ruleDialogOpener: null,
   editingRuleId: null,
@@ -47,6 +48,7 @@ const state = {
   expandedConversations: new Set(),
   conversationMessages: new Map(),
   pollFailureActive: false,
+  refreshInFlight: null,
   escalationRecipients: null,
 };
 
@@ -124,6 +126,7 @@ const elements = {
   notificationsPanel: document.querySelector('#notifications-panel'),
   notificationsCaption: document.querySelector('#notifications-caption'),
   notificationList: document.querySelector('#notification-list'),
+  markAllNotificationsRead: document.querySelector('#mark-all-notifications-read'),
   platformPanel: document.querySelector('#platform-panel'),
   departmentsPanel: document.querySelector('#departments-panel'),
   departmentManagementForm: document.querySelector('#department-management-form'),
@@ -470,17 +473,27 @@ async function api(path, { method = 'GET', body, signal } = {}) {
 }
 
 async function refresh({ quiet = false } = {}) {
+  if (state.refreshInFlight) return state.refreshInFlight;
+
+  const request = (async () => {
+    try {
+      state.session = await api('/api/bootstrap');
+      normalizeView();
+      render();
+      if (state.view === 'metrics') metricsView.activate(state.session, { poll: true });
+      handleIntegrationReturn();
+      startPolling();
+      state.pollFailureActive = false;
+    } catch (error) {
+      if (!quiet && state.session) reportError(error);
+      throw error;
+    }
+  })();
+  state.refreshInFlight = request;
   try {
-    state.session = await api('/api/bootstrap');
-    normalizeView();
-    render();
-    if (state.view === 'metrics') metricsView.activate(state.session, { poll: true });
-    handleIntegrationReturn();
-    startPolling();
-    state.pollFailureActive = false;
-  } catch (error) {
-    if (!quiet && state.session) reportError(error);
-    throw error;
+    return await request;
+  } finally {
+    if (state.refreshInFlight === request) state.refreshInFlight = null;
   }
 }
 
@@ -521,6 +534,7 @@ function showLogin() {
   ]) element?.removeAttribute('data-signature');
   elements.organizationForm.hidden = true;
   state.lastUnreadCount = null;
+  state.seenNotificationIds = null;
   elements.skipLink.hidden = true;
   elements.appView.hidden = true;
   elements.loginView.hidden = false;
@@ -555,8 +569,8 @@ function normalizeView() {
   const viewsByRole = {
     platform_admin: ['platform', 'metrics'],
     org_admin: ['settings', 'departments', 'metrics'],
-    dep_admin: ['overview', 'inbox', 'assigned', 'completed', 'rules', 'escalations', 'activity', 'notifications', 'metrics'],
-    member: ['assigned', 'completed', 'notifications', 'metrics'],
+    dep_admin: ['overview', 'inbox', 'assigned', 'completed', 'deleted', 'rules', 'escalations', 'activity', 'notifications', 'metrics'],
+    member: ['assigned', 'completed', 'deleted', 'notifications', 'metrics'],
   };
   const allowed = viewsByRole[role] ?? viewsByRole.member;
   if (!allowed.includes(state.view)) state.view = allowed[0];
@@ -573,6 +587,18 @@ function showToast(message, isError = false, options = {}) {
 function reportError(error, fallback = 'Something went wrong. Please try again.', options = {}) {
   const message = error?.userSafe && error.message ? error.message : fallback;
   return showToast(message, true, options);
+}
+
+function findEmailById(emailId) {
+  const id = Number(emailId);
+  return (state.session?.emails ?? []).find(item => item.id === id)
+    ?? [...state.conversationMessages.values()].flat().find(item => item.id === id)
+    ?? null;
+}
+
+function closeEmailDialogForFeedback() {
+  if (elements.emailDialog.open) elements.emailDialog.close();
+  elements.pageTitle.focus({ preventScroll: true });
 }
 
 const metricsView = createMetricsView({
@@ -649,9 +675,10 @@ function emailsForSelectedDate() {
 
 function counts(emails = state.session?.emails ?? []) {
   return {
-    inbox: emails.filter(email => email.status === 'unassigned').length,
-    assigned: emails.filter(email => email.status === 'assigned').length,
-    completed: emails.filter(email => email.status === 'completed').length,
+    inbox: emails.filter(email => email.sourceState === 'active' && email.status === 'unassigned').length,
+    assigned: emails.filter(email => email.sourceState === 'active' && email.status === 'assigned').length,
+    completed: emails.filter(email => email.sourceState === 'active' && email.status === 'completed').length,
+    deleted: emails.filter(email => email.sourceState !== 'active').length,
     rules: (state.session?.rules ?? []).filter(rule => rule.enabled).length,
     notifications: state.session?.unreadCount ?? 0
   };
@@ -661,6 +688,7 @@ function visibleEmailSignature(emails) {
   return emails.map(email => [
     email.id,
     email.status,
+    email.sourceState,
     email.assignee?.id ?? '',
     email.messageCount ?? 1,
     email.reopened ? 1 : 0,
@@ -813,7 +841,9 @@ function emailMatchesSearch(email) {
 function visibleEmails() {
   const status = ['overview', 'inbox'].includes(state.view) ? 'unassigned' : state.view;
   return (state.session.emails ?? [])
-    .filter(email => email.status === status)
+    .filter(email => state.view === 'deleted'
+      ? email.sourceState !== 'active'
+      : email.sourceState === 'active' && email.status === status)
     .filter(emailMatchesDate)
     .filter(emailMatchesDepartment)
     .filter(emailMatchesSearch)
@@ -839,6 +869,9 @@ function renderEmailRow(email, { grouped = false, compact = false } = {}) {
   if (email.department) tags.append(node('span', 'tag department', email.department));
   const statusLabel = email.status === 'unassigned' ? 'Unassigned' : email.status === 'completed' ? 'Completed' : 'Assigned';
   tags.append(node('span', `tag ${email.status}`, statusLabel));
+  if (email.sourceState !== 'active') {
+    tags.append(node('span', 'tag source-removed', email.sourceState === 'deleted' ? 'Deleted' : 'Removed from Inbox'));
+  }
   if (Number(email.messageCount) > 1) {
     tags.append(node('span', 'tag thread-count', `${email.messageCount} messages`));
   }
@@ -863,14 +896,27 @@ function renderConversationItem(email, options = {}) {
   if (!email.conversationId || Number(email.messageCount) <= 1) return row;
   row.dataset.conversationParent = String(email.conversationId);
   const expanded = state.expandedConversations.has(email.conversationId);
-  const wrapper = node('section', `conversation-item${expanded ? ' is-expanded' : ''}`);
+  const currentUser = state.session?.user;
+  const canComplete = ['member', 'dep_admin'].includes(currentUser?.role)
+    && email.status === 'assigned'
+    && Number(email.assignee?.id) === Number(currentUser?.id);
+  const wrapper = node('section', `conversation-item${expanded ? ' is-expanded' : ''}${canComplete ? ' has-thread-complete' : ''}`);
   const heading = node('div', 'conversation-heading');
   const toggle = node('button', 'conversation-toggle', expanded ? 'Collapse' : 'Expand');
   toggle.type = 'button';
   toggle.dataset.conversationToggle = String(email.conversationId);
   toggle.setAttribute('aria-expanded', String(expanded));
   toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${email.subject} thread, ${email.messageCount} messages`);
-  heading.append(row, toggle);
+  const actions = node('div', 'conversation-heading-actions');
+  if (canComplete) {
+    const complete = node('button', 'conversation-complete', 'Complete thread');
+    complete.type = 'button';
+    complete.dataset.completeThread = String(email.id);
+    complete.setAttribute('aria-label', `Complete ${email.subject || 'email'} thread`);
+    actions.append(complete);
+  }
+  actions.append(toggle);
+  heading.append(row, actions);
   wrapper.append(heading);
   if (expanded) {
     const messages = state.conversationMessages.get(email.conversationId);
@@ -948,7 +994,8 @@ function renderEmails() {
         ? `${countLabel(employeeGroups.length, 'employee')} with open assignments`
         : 'Open assignments ready for your review'
     ],
-    completed: ['Completed work', 'Closed assignment history']
+    completed: ['Completed work', 'Closed assignment history'],
+    deleted: ['Deleted messages', 'Removed from Outlook and retained for 24 hours'],
   };
   const [title, caption] = labels[state.view] ?? labels.assigned;
   setText(elements.queueTitle, title);
@@ -1122,9 +1169,32 @@ function renderNotification(item) {
   return wrapper;
 }
 
+function notifyNewNotifications(notifications) {
+  const currentIds = new Set(notifications.map(notification => Number(notification.id)));
+  if (state.seenNotificationIds === null) {
+    state.seenNotificationIds = currentIds;
+    return;
+  }
+
+  const newNotifications = unseenNotifications(state.seenNotificationIds, notifications)
+    .filter(notification => !notification.readAt)
+    .reverse();
+  state.seenNotificationIds = currentIds;
+  for (const notification of newNotifications) {
+    feedback.show({
+      type: 'info',
+      title: 'New notification',
+      message: notification.message,
+      action: { label: 'View notifications', view: 'notifications' },
+      fingerprint: `notification:${notification.id}`,
+    });
+  }
+}
+
 function renderNotifications() {
   const notifications = state.session.notifications ?? [];
   setText(elements.notificationsCaption, `${state.session.unreadCount ?? 0} unread`);
+  elements.markAllNotificationsRead.hidden = !notifications.some(item => !item.readAt);
   elements.notificationList.replaceChildren(...(notifications.length
     ? notifications.map(renderNotification)
     : [emptyState('You are all caught up', 'Assignments, completions, and overdue work will appear here.')]));
@@ -1578,7 +1648,7 @@ function renderPanels() {
   const isMetrics = state.view === 'metrics';
   const isOverview = isDepAdmin && state.view === 'overview';
   const isQueue = ['dep_admin', 'member'].includes(state.session.user.role)
-    && ['inbox', 'assigned', 'completed'].includes(state.view);
+    && ['inbox', 'assigned', 'completed', 'deleted'].includes(state.view);
   const isFocus = !isMetrics && !isOverview && !isQueue;
   elements.dashboardLayout.classList.toggle('overview-view', isOverview);
   elements.dashboardLayout.classList.toggle('focus-view', isFocus);
@@ -1606,6 +1676,7 @@ function renderHeader() {
     inbox: state.session.department?.name ? `${state.session.department.name} intake` : 'Department intake',
     assigned: state.session.user.role === 'dep_admin' ? 'Assigned work' : 'My work',
     completed: 'Completed',
+    deleted: 'Deleted messages',
     rules: 'Automation rules',
     escalations: 'Escalations',
     activity: 'Activity',
@@ -1620,7 +1691,7 @@ function renderHeader() {
   const connected = mailbox.connectedCount > 0;
   setText(elements.modeChip, mailbox.label);
   elements.modeChip.classList.toggle('connected', connected);
-  elements.searchInput.hidden = !['inbox', 'assigned', 'completed'].includes(state.view);
+  elements.searchInput.hidden = !['inbox', 'assigned', 'completed', 'deleted'].includes(state.view);
   elements.searchInput.parentElement.hidden = elements.searchInput.hidden;
 }
 
@@ -1684,11 +1755,12 @@ function render() {
   elements.depAdminNavigation.hidden = !isDepAdmin;
   elements.memberNavigation.hidden = state.session.user.role !== 'member';
   elements.platformNavigation.hidden = !isPlatform;
-  elements.syncButton.hidden = true;
+  elements.syncButton.hidden = !isDepAdmin;
   elements.notificationButton.hidden = !['dep_admin', 'member'].includes(state.session.user.role);
   elements.sidebarDepartment.closest('.department-picker').hidden = true;
   if (isOrgAdmin && state.view === 'departments') renderDepartmentManagement();
   const unreadCount = state.session.unreadCount ?? 0;
+  notifyNewNotifications(state.session.notifications ?? []);
   setText(elements.notificationCount, unreadCount || '');
   elements.notificationButton.setAttribute('aria-label', `View notifications, ${unreadCount} unread`);
   if (state.lastUnreadCount !== null && unreadCount > state.lastUnreadCount) {
@@ -1831,6 +1903,10 @@ function emailLinkRequestIsStale(requestId, email) {
 async function prepareEmailLink(email, requestId) {
   elements.emailLinkError.hidden = true;
   elements.emailLinkError.textContent = '';
+  if (email.sourceState !== 'active') {
+    setEmailLinkUnavailable();
+    return;
+  }
   const provider = emailProvider(email);
   if (provider !== 'outlook') {
     const directWebUrl = safeWebUrl(email.webUrl || email.outlookUrl);
@@ -1863,13 +1939,14 @@ async function prepareEmailLink(email, requestId) {
 }
 
 function openEmail(emailId, opener = document.activeElement) {
-  const email = (state.session.emails ?? []).find(item => item.id === Number(emailId))
-    ?? [...state.conversationMessages.values()].flat().find(item => item.id === Number(emailId));
+  const email = findEmailById(emailId);
   if (!email) return;
   state.emailDialogOpener = opener instanceof HTMLElement ? opener : null;
   state.selectedEmailId = email.id;
   setText(elements.emailDialogTitle, email.subject, '(No subject)');
-  setText(elements.emailDialogStatus, email.status === 'completed' ? 'Completed email' : email.status === 'unassigned' ? 'Unassigned email' : 'Assigned email');
+  const workflowStatus = email.status === 'completed' ? 'Completed email' : email.status === 'unassigned' ? 'Unassigned email' : 'Assigned email';
+  const sourceStatus = email.sourceState === 'deleted' ? ' · Deleted' : email.sourceState === 'removed' ? ' · Removed from Inbox' : '';
+  setText(elements.emailDialogStatus, `${workflowStatus}${sourceStatus}`);
   const sender = [email.sender?.name, email.sender?.address].filter(Boolean).join(' · ');
   setText(elements.emailDetailSender, sender, 'Unknown sender');
   setText(elements.emailDetailReceived, formatDate(email.receivedAt));
@@ -1882,13 +1959,16 @@ function openEmail(emailId, opener = document.activeElement) {
   if (completed) {
     setText(elements.emailCompletionNote, `Completed by ${email.completedBy?.name || 'a team member'} on ${formatDate(email.completedAt)}.`);
   }
-  elements.completeButton.hidden = !['member', 'dep_admin'].includes(state.session.user.role)
+  elements.completeButton.hidden = email.sourceState !== 'active'
+    || !['member', 'dep_admin'].includes(state.session.user.role)
     || email.status !== 'assigned'
-    || Number(email.assignee?.id) !== Number(state.session.user.id);
+    || Number(email.assignee?.id) !== Number(state.session.user.id)
+    || (Number(email.messageCount) > 1
+      || (email.conversationId && (state.conversationMessages.get(email.conversationId)?.length ?? 0) > 1));
 
   clearFieldErrors(elements.emailAssignmentForm);
   elements.assignmentError.hidden = true;
-  const canAssign = state.session.user.role === 'dep_admin' && !completed;
+  const canAssign = state.session.user.role === 'dep_admin' && !completed && email.sourceState === 'active';
   elements.emailAssignmentForm.hidden = !canAssign;
   elements.assignButton.hidden = !canAssign;
   if (canAssign) {
@@ -2360,9 +2440,33 @@ async function toggleConversation(conversationId) {
   renderEmails();
 }
 
+async function completeConversation(emailId, button) {
+  const email = (state.session?.emails ?? []).find(item => item.id === Number(emailId));
+  if (!email) return;
+  if (button) setButtonBusy(button, true, 'Completing…');
+  try {
+    if (email.conversationId) {
+      state.conversationMessages.delete(email.conversationId);
+      state.expandedConversations.delete(email.conversationId);
+    }
+    await mutate(`/api/emails/${email.id}/complete`);
+    notificationAudio.playCompletion();
+    elements.pageTitle.focus({ preventScroll: true });
+    showToast('Thread marked complete.');
+  } catch (error) {
+    reportError(error);
+  } finally {
+    if (button) setButtonBusy(button, false, 'Completing…');
+  }
+}
+
 elements.emailList.addEventListener('click', event => {
   const intent = conversationClickIntent(event.target);
   if (intent?.type === 'toggle') void toggleConversation(intent.conversationId);
+  else if (intent?.type === 'complete-thread') {
+    event.preventDefault();
+    void completeConversation(intent.emailId, event.target.closest('[data-complete-thread]'));
+  }
   else if (intent?.type === 'open') openEmail(intent.emailId);
 });
 
@@ -2740,15 +2844,25 @@ elements.emailAssignmentForm.addEventListener('submit', async event => {
   elements.assignmentError.hidden = true;
   if (!elements.emailAssignmentForm.reportValidity()) return;
 
-  const email = (state.session.emails ?? []).find(item => item.id === state.selectedEmailId);
-  if (!email || email.status === 'completed') {
-    const error = new Error('Completed email cannot be reassigned.');
-    showFormError(elements.emailAssignmentForm, elements.assignmentError, error);
+  const email = findEmailById(state.selectedEmailId);
+  if (!email) {
+    closeEmailDialogForFeedback();
+    reportError(new Error('Email not found.'));
     return;
   }
 
   const assigneeId = Number(elements.emailAssigneeSelect.value);
   const priority = Number(elements.emailPrioritySelect.value);
+  if (email.status !== 'completed' && Number(email.assignee?.id) === assigneeId) {
+    closeEmailDialogForFeedback();
+    showToast('Email cannot be reassigned to the same assigned user', true);
+    return;
+  }
+  if (email.status === 'completed') {
+    closeEmailDialogForFeedback();
+    showToast('Completed email cannot be reassigned.', true);
+    return;
+  }
   const selectedMember = (state.session.team ?? []).find(member => member.id === assigneeId);
   const wasAssigned = email.status === 'assigned';
   setButtonBusy(elements.assignButton, true, wasAssigned ? 'Reassigning…' : 'Assigning…');
@@ -2758,15 +2872,18 @@ elements.emailAssignmentForm.addEventListener('submit', async event => {
       state.expandedConversations.delete(email.conversationId);
     }
     const result = await mutate(`/api/emails/${email.id}/assign`, 'POST', { assigneeId, priority });
+    if (!result.changed) {
+      closeEmailDialogForFeedback();
+      showToast('Email cannot be reassigned to the same assigned user', true);
+      return;
+    }
     elements.emailDialog.close();
     state.selectedEmailId = null;
     elements.pageTitle.focus({ preventScroll: true });
-    showToast(result.changed
-      ? `${wasAssigned ? 'Reassigned' : 'Assigned'} to ${selectedMember?.name || 'the selected team member'}.`
-      : `Already assigned to ${selectedMember?.name || 'the selected team member'}.`);
+    showToast(`${wasAssigned ? 'Reassigned' : 'Assigned'} to ${selectedMember?.name || 'the selected team member'}.`);
   } catch (error) {
-    if (!state.session) return;
-    showFormError(elements.emailAssignmentForm, elements.assignmentError, error);
+    closeEmailDialogForFeedback();
+    reportError(error);
   } finally {
     setButtonBusy(elements.assignButton, false, wasAssigned ? 'Reassigning…' : 'Assigning…');
   }
@@ -2776,7 +2893,7 @@ elements.completeButton.addEventListener('click', async () => {
   if (!state.selectedEmailId) return;
   setButtonBusy(elements.completeButton, true, 'Completing…');
   try {
-    const selected = (state.session.emails ?? []).find(item => item.id === state.selectedEmailId);
+    const selected = findEmailById(state.selectedEmailId);
     if (selected?.conversationId) {
       state.conversationMessages.delete(selected.conversationId);
       state.expandedConversations.delete(selected.conversationId);
@@ -2809,6 +2926,20 @@ elements.notificationList.addEventListener('click', async event => {
   } catch (error) {
     reportError(error);
     setButtonBusy(read, false, '…');
+  }
+});
+
+elements.markAllNotificationsRead.addEventListener('click', async () => {
+  if (!state.session || !state.session.notifications?.some(item => !item.readAt)) return;
+  setButtonBusy(elements.markAllNotificationsRead, true, 'Marking…');
+  try {
+    const result = await mutate('/api/notifications/read-all');
+    notificationAudio.playRead();
+    showToast(`${result.count ?? 0} notification${result.count === 1 ? '' : 's'} marked as read.`);
+  } catch (error) {
+    reportError(error);
+  } finally {
+    setButtonBusy(elements.markAllNotificationsRead, false, 'Mark all as read');
   }
 });
 

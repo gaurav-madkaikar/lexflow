@@ -55,7 +55,10 @@ CREATE TABLE IF NOT EXISTS emails (
   created_at TEXT NOT NULL,
   organization_id INTEGER NOT NULL DEFAULT 1,
   department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL
-  ,has_attachments INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1))
+  ,has_attachments INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1)),
+  source_state TEXT NOT NULL DEFAULT 'active' CHECK (source_state IN ('active', 'deleted', 'removed')),
+  source_removed_at TEXT,
+  source_removed_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY,
@@ -654,6 +657,9 @@ export function migrate(db) {
     addColumn(db, 'emails', 'internet_message_id', 'TEXT');
     addColumn(db, 'emails', 'conversation_id', 'INTEGER REFERENCES conversations(id) ON DELETE SET NULL');
     addColumn(db, 'emails', 'has_attachments', 'INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1))');
+    addColumn(db, 'emails', 'source_state', "TEXT NOT NULL DEFAULT 'active' CHECK (source_state IN ('active', 'deleted', 'removed'))");
+    addColumn(db, 'emails', 'source_removed_at', 'TEXT');
+    addColumn(db, 'emails', 'source_removed_reason', 'TEXT');
     addColumn(db, 'activity', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE SET NULL');
     migrateLegacyConversations(db, createdAt);
     addColumn(db, 'conversations', 'has_attachments', 'INTEGER NOT NULL DEFAULT 0 CHECK (has_attachments IN (0, 1))');
@@ -795,6 +801,8 @@ export function migrate(db) {
       WHERE head_user_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS emails_organization_department_status
       ON emails (organization_id, department_id, status);
+      CREATE INDEX IF NOT EXISTS emails_source_state_retention
+      ON emails (organization_id, source_state, source_removed_at);
       CREATE UNIQUE INDEX IF NOT EXISTS conversations_native_identity_unique
       ON conversations (organization_id, department_id, provider, normalized_mailbox, native_conversation_id)
       WHERE native_conversation_id IS NOT NULL;

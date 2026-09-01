@@ -1490,10 +1490,19 @@ select:not(:disabled) { cursor: pointer; }
 
 .conversation-heading .email-row { padding-right: 92px; }
 
-.conversation-toggle {
+.conversation-item.has-thread-complete .conversation-heading .email-row { padding-right: 190px; }
+
+.conversation-heading-actions {
   position: absolute;
   top: 50%;
   right: 14px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  transform: translateY(-50%);
+}
+
+.conversation-toggle {
   min-width: 64px;
   padding: 7px 9px;
   color: var(--color-muted);
@@ -1502,7 +1511,17 @@ select:not(:disabled) { cursor: pointer; }
   border-radius: 999px;
   font-size: 11px;
   font-weight: 750;
-  transform: translateY(-50%);
+}
+
+.conversation-complete {
+  padding: 7px 9px;
+  color: var(--color-accent-strong);
+  background: var(--color-card);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 42%, var(--color-line));
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
 }
 
 .conversation-messages {
@@ -1676,6 +1695,12 @@ select:not(:disabled) { cursor: pointer; }
   color: var(--color-success);
   background: var(--color-success-soft);
   border-color: #baddc7;
+}
+
+.tag.source-removed {
+  color: #7c2d12;
+  background: #ffedd5;
+  border-color: #fed7aa;
 }
 
 .email-person {
@@ -2658,6 +2683,20 @@ select:not(:disabled) { cursor: pointer; }
   .email-row {
     grid-template-columns: 8px minmax(0, 1fr);
     padding: 16px;
+  }
+
+  .conversation-item.has-thread-complete .conversation-heading {
+    padding-top: 42px;
+  }
+
+  .conversation-item.has-thread-complete .conversation-heading .email-row {
+    padding-right: 16px;
+  }
+
+  .conversation-item.has-thread-complete .conversation-heading-actions {
+    top: 10px;
+    right: 10px;
+    transform: none;
   }
 
   .email-person {

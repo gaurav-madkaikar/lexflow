@@ -30,6 +30,50 @@ test('global feedback replaces inline Graph outcomes and Members hide mailbox st
   assert.match(app, /setText\(elements\.sidebarSync, user\.role === 'dep_admin'/);
 });
 
+test('new notification messages use the global popup queue after the initial load', () => {
+  assert.match(app, /seenNotificationIds/);
+  assert.match(app, /notifyNewNotifications\(state\.session\.notifications \?\? \[\]\)/);
+  assert.match(app, /title: 'New notification'/);
+  assert.match(app, /message: notification\.message/);
+  assert.match(app, /fingerprint: `notification:\$\{notification\.id\}`/);
+  assert.match(app, /action: \{ label: 'View notifications', view: 'notifications' \}/);
+});
+
+test('notifications expose a current-user bulk read action', () => {
+  assert.match(html, /id="mark-all-notifications-read"[^>]*hidden/);
+  assert.match(app, /markAllNotificationsRead\.hidden = !notifications\.some\(item => !item\.readAt\)/);
+  assert.match(app, /mutate\('\/api\/notifications\/read-all'\)/);
+  assert.match(app, /notificationAudio\.playRead\(\)/);
+  assert.match(app, /marked as read/);
+});
+
+test('assigned conversation threads expose one completion action while message dialogs keep single-email completion', () => {
+  assert.match(app, /complete\.dataset\.completeThread = String\(email\.id\)/);
+  assert.match(app, /node\('button', 'conversation-complete', 'Complete thread'\)/);
+  assert.match(app, /showToast\('Thread marked complete\.'\)/);
+  assert.match(app, /email\.messageCount\) > 1/);
+  assert.match(styles, /\.conversation-heading-actions\s*\{/);
+  assert.match(styles, /\.conversation-complete\s*\{/);
+});
+
+test('reassignment uses global notifications for same-user and completed-item errors', () => {
+  assert.match(app, /function findEmailById\(emailId\)/);
+  assert.match(app, /state\.session\?\.emails \?\? \[\][\s\S]*conversationMessages\.values\(\)/);
+  assert.match(app, /function closeEmailDialogForFeedback\(\)/);
+  assert.match(app, /closeEmailDialogForFeedback\(\);[\s\S]*showToast\('Email cannot be reassigned to the same assigned user', true\)/);
+  assert.match(app, /Email cannot be reassigned to the same assigned user/);
+  assert.match(app, /showToast\('Completed email cannot be reassigned\.', true\)/);
+  assert.match(app, /if \(!result\.changed\)[\s\S]*Email cannot be reassigned to the same assigned user/);
+  assert.doesNotMatch(app, /showFormError\(elements\.emailAssignmentForm, elements\.assignmentError, error\)/);
+});
+
+test('background refreshes do not overlap and retain automatic retry feedback', () => {
+  assert.match(app, /refreshInFlight: null/);
+  assert.match(app, /if \(state\.refreshInFlight\) return state\.refreshInFlight/);
+  assert.match(app, /state\.refreshInFlight === request/);
+  assert.match(app, /LexFlow could not refresh\. It will retry automatically\./);
+});
+
 test('account menu exposes theme and sound controls with success-only hooks', () => {
   assert.match(html, /id="account-menu-button"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"/);
   assert.match(html, /id="account-menu"[^>]*role="menu"[^>]*hidden/);
@@ -134,10 +178,22 @@ test('DepAdmin overview provides bounded inbox and rule previews', () => {
   assert.match(html, /id="rules-overview-footer"/);
   assert.match(html, /data-overview-view="inbox"/);
   assert.match(html, /data-overview-view="rules"/);
-  assert.match(app, /dep_admin: \['overview', 'inbox', 'assigned', 'completed', 'rules', 'escalations', 'activity', 'notifications', 'metrics'\]/);
+  assert.match(app, /dep_admin: \['overview', 'inbox', 'assigned', 'completed', 'deleted', 'rules', 'escalations', 'activity', 'notifications', 'metrics'\]/);
   assert.match(app, /document\.querySelectorAll\('\[data-overview-view\]'\)/);
   assert.doesNotMatch(app, /(?:platform_admin|org_admin|member): \[[^\]]*'overview'/);
   assert.equal(OVERVIEW_PREVIEW_LIMIT, 5);
+});
+
+test('removed Outlook messages have a retained Deleted view and status badge', () => {
+  assert.match(html, /data-view="deleted"/);
+  assert.match(app, /sourceState !== 'active'/);
+  assert.match(app, /Removed from Inbox/);
+  assert.match(app, /Deleted messages/);
+});
+
+test('DepAdmin receives the manual sync control', () => {
+  assert.match(app, /elements\.syncButton\.hidden = !isDepAdmin/);
+  assert.match(app, /mutate\('\/api\/sync'\)/);
 });
 
 test('DepAdmins can configure an accessible escalation hierarchy', () => {

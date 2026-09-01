@@ -6,7 +6,7 @@ import { createApp } from '../src/app.js';
 import { createSession, sessionCookie } from '../src/auth.js';
 import { createDatabase, seedDemoData } from '../src/db.js';
 import { createGmailIntegration } from '../src/gmail.js';
-import { createSyncRunner, syncMailbox } from '../src/workflows.js';
+import { cleanupRemovedEmails, createSyncRunner, syncMailbox } from '../src/workflows.js';
 
 const ndaMessage = {
   providerId: 'mock-nda-1',
@@ -214,6 +214,40 @@ test('re-importing is idempotent and mail-source cursors stay isolated', async (
   assert.equal(one(db, 'SELECT count(*) AS count FROM notifications').count, 1);
 });
 
+test('Outlook removals are retained as tombstones and scrubbed after 24 hours', async (context) => {
+  const db = createDatabase(':memory:');
+  context.after(() => db.close());
+  seedDemoData(db);
+  const firstSource = sourceFor(db, 'Legal', [ndaMessage], 'mail_cursor:removal-test');
+  await syncMailbox({ db, source: firstSource });
+  const secondSource = {
+    ...firstSource,
+    async fetchChanges() {
+      return {
+        messages: [],
+        removed: [{ providerId: ndaMessage.providerId, reason: 'deleted' }],
+        nextCursor: 'removal-cursor-2',
+      };
+    },
+  };
+
+  const result = await syncMailbox({ db, source: secondSource });
+  const removed = one(db, 'SELECT * FROM emails WHERE provider_id = ?', ndaMessage.providerId);
+  assert.deepEqual(result, { imported: 0, assigned: 0 });
+  assert.equal(removed.source_state, 'deleted');
+  assert.equal(removed.source_removed_reason, 'deleted');
+  assert.ok(removed.source_removed_at);
+  assert.equal(cleanupRemovedEmails({
+    db,
+    now: new Date(new Date(removed.source_removed_at).getTime() + 24 * 60 * 60 * 1000 + 1),
+  }), 1);
+  const scrubbed = one(db, 'SELECT * FROM emails WHERE id = ?', removed.id);
+  assert.equal(scrubbed.subject, '[Deleted message]');
+  assert.equal(scrubbed.preview, '');
+  assert.equal(scrubbed.outlook_url, null);
+  assert.equal(scrubbed.source_state, 'deleted');
+});
+
 test('a member cannot read or complete another member email', async (context) => {
   const harness = await createApiHarness(context);
   const mayaCookie = await harness.login('noah@lexflow.local', 'welcome123');
@@ -247,6 +281,17 @@ test('a member cannot mutate rules or trigger sync', async (context) => {
   assert.equal(rule.status, 403);
   assert.equal(update.status, 403);
   assert.equal(sync.status, 403);
+});
+
+test('a DepAdmin can trigger an organization-scoped sync', async (context) => {
+  const harness = await createApiHarness(context);
+  const adminCookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const sync = await harness.post('/api/sync', {}, adminCookie);
+
+  assert.equal(sync.status, 200);
+  assert.equal(sync.body.succeeded, 2);
+  assert.equal(sync.body.failed, 0);
+  assert.ok(sync.body.sources.every(source => source.provider === 'mailbox'));
 });
 
 test('DepAdmin partially updates a rule and applies its final criteria immediately', async (context) => {
@@ -554,6 +599,42 @@ test('DepAdmin assigns and reassigns open email while members and OrgAdmin canno
   assert.equal(completedConflict.status, 409);
 });
 
+test('DepAdmin can reassign an active conversation when its selected message is stale completed', async (context) => {
+  const harness = await createApiHarness(context, { includeUnassigned: true });
+  const depAdminCookie = await harness.login('maya@lexflow.local', 'welcome123');
+  const mayaId = harness.userId('maya@lexflow.local');
+  const noahId = harness.userId('noah@lexflow.local');
+  const email = one(harness.db, "SELECT * FROM emails WHERE status = 'unassigned'");
+
+  assert.equal((await harness.post(
+    `/api/emails/${email.id}/assign`,
+    { assigneeId: noahId },
+    depAdminCookie,
+  )).status, 200);
+
+  harness.db.prepare(`
+    UPDATE emails
+    SET status = 'completed', completed_at = '2026-08-14T09:00:00.000Z'
+    WHERE id = ?
+  `).run(email.id);
+
+  const reassigned = await harness.post(
+    `/api/emails/${email.id}/assign`,
+    { assigneeId: mayaId },
+    depAdminCookie,
+  );
+  assert.equal(reassigned.status, 200);
+  assert.equal(reassigned.body.changed, true);
+  assert.deepEqual(
+    harness.db.prepare(`
+      SELECT DISTINCT status, assignee_id
+      FROM emails
+      WHERE conversation_id = ?
+    `).all(email.conversation_id).map(row => ({ ...row })),
+    [{ status: 'assigned', assignee_id: mayaId }],
+  );
+});
+
 test('only OrgAdmins manage departments, team placement, heads, and workspace limits', async (context) => {
   const harness = await createApiHarness(context);
   const adminCookie = await harness.login('admin@lexflow.local', 'admin123');
@@ -778,6 +859,32 @@ test('bootstrap reports role-scoped pending task counts only to Members and DepA
     unassignedDepartment: 0,
     unreadNotifications: 1,
   });
+});
+
+test('a user can mark all of their organization notifications as read', async (context) => {
+  const harness = await createApiHarness(context);
+  const mayaCookie = await harness.login('maya@lexflow.local');
+  const noahId = harness.userId('noah@lexflow.local');
+  const mayaId = harness.userId('maya@lexflow.local');
+  const email = harness.emailAssignedTo('maya@lexflow.local');
+  const now = '2026-08-30T12:00:00.000Z';
+
+  harness.db.prepare('DELETE FROM notifications').run();
+  harness.db.prepare(`
+    INSERT INTO notifications (user_id, email_id, kind, message, created_at, organization_id)
+    VALUES (?, ?, 'assignment', 'First update.', ?, 1),
+      (?, ?, 'completion', 'Second update.', ?, 1),
+      (?, ?, 'assignment', 'Another user update.', ?, 1)
+  `).run(mayaId, email.id, now, mayaId, email.id, now, noahId, email.id, now);
+
+  const result = await harness.post('/api/notifications/read-all', {}, mayaCookie);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { read: true, count: 2 });
+  assert.equal(harness.db.prepare('SELECT count(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NOT NULL').get(mayaId).count, 2);
+  assert.equal(harness.db.prepare('SELECT count(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NOT NULL').get(noahId).count, 0);
+
+  const repeated = await harness.post('/api/notifications/read-all', {}, mayaCookie);
+  assert.deepEqual(repeated.body, { read: true, count: 0 });
 });
 
 test('email open links are limited to the current DepAdmin department or Member assignment', async (context) => {

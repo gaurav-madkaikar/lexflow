@@ -533,6 +533,10 @@ test('Outlook delta sync keeps pagination, removal, and provider mapping intact'
     'outlook:shared@example.test:graph-1',
     'outlook:shared@example.test:graph-2',
   ]);
+  assert.deepEqual(result.removed, [{
+    providerId: 'outlook:shared@example.test:removed',
+    reason: 'deleted',
+  }]);
   assert.deepEqual(result.messages[0], {
     providerId: 'outlook:shared@example.test:graph-1',
     conversationId: 'thread-1',

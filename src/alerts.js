@@ -22,12 +22,12 @@ export function evaluateOverdueAlerts({ db, now = new Date(), organizationId = 1
     const nowMs = now.getTime();
     const unassigned = db.prepare(`
       SELECT * FROM emails
-      WHERE organization_id = ? AND status = 'unassigned'
+      WHERE organization_id = ? AND status = 'unassigned' AND source_state = 'active'
         AND datetime(received_at, '+' || ? || ' hours') <= datetime(?)
     `).all(organizationId, settings.timeUnassignedHours, notifiedAt);
     const assigned = db.prepare(`
       SELECT * FROM emails
-      WHERE organization_id = ? AND status = 'assigned'
+      WHERE organization_id = ? AND status = 'assigned' AND source_state = 'active'
         AND assigned_at IS NOT NULL
         AND datetime(assigned_at, '+' || ? || ' hours') <= datetime(?)
     `).all(organizationId, settings.timeAssignedUnmarkedHours, notifiedAt);

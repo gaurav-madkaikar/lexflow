@@ -19,6 +19,11 @@ export function feedbackFingerprint(notification = {}) {
   ].map(value => String(value)).join('|');
 }
 
+export function unseenNotifications(previousIds, notifications = []) {
+  const knownIds = new Set([...(previousIds ?? [])].map(id => Number(id)));
+  return notifications.filter(notification => !knownIds.has(Number(notification.id)));
+}
+
 export function createFeedbackQueue({
   schedule = setTimeout,
   cancel = clearTimeout,

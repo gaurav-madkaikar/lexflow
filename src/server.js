@@ -8,7 +8,7 @@ import { loadConfig } from './config.js';
 import { assertNoLocalAccounts, createDatabase } from './db.js';
 import { createGmailIntegration } from './gmail.js';
 import { createOutlookIntegration } from './outlook.js';
-import { createSyncRunner } from './workflows.js';
+import { cleanupRemovedEmails, createSyncRunner } from './workflows.js';
 
 if (existsSync('.env')) loadEnvFile('.env');
 
@@ -98,6 +98,20 @@ const escalationTimer = setInterval(() => {
 }, 60_000);
 escalationTimer.unref();
 
+function reportCleanupError(error) {
+  console.error(`Deleted email cleanup failed: ${error.message}`);
+}
+
+cleanupRemovedEmails({ db });
+const deletedEmailCleanupTimer = setInterval(() => {
+  try {
+    cleanupRemovedEmails({ db });
+  } catch (error) {
+    reportCleanupError(error);
+  }
+}, 60_000);
+deletedEmailCleanupTimer.unref();
+
 let stopping = false;
 function stop() {
   if (stopping) return;
@@ -105,6 +119,7 @@ function stop() {
   if (syncTimer) clearInterval(syncTimer);
   clearInterval(alertTimer);
   clearInterval(escalationTimer);
+  clearInterval(deletedEmailCleanupTimer);
   server.close(() => {
     db.close();
   });
