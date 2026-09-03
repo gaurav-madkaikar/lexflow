@@ -28,6 +28,8 @@ http://localhost:3000/api/integrations/outlook/callback
 
 ## Run locally
 
+The repository includes a `data/lexflow-local-workflow.db` snapshot for reproducing the current local workflow on another machine. Set `DATABASE_PATH=data/lexflow-local-workflow.db` in the local `.env` (the example file already uses this path), then provide that machine's Entra application configuration. The snapshot contains workflow and mailbox-derived data; do not use it for production or share it outside the intended repository access.
+
 ```bash
 npm install
 cp .env.example .env
