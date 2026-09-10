@@ -73,18 +73,28 @@ test('tenant identities activate pending members and reject object-id mismatches
   );
 });
 
-test('last active OrgAdmin cannot be demoted or disabled', (context) => {
+test('OrgAdmins cannot be converted into members and the last active OrgAdmin cannot be disabled', (context) => {
   const db = createDatabase(':memory:');
   context.after(() => db.close());
   const org = organization(db);
   const admin = db.prepare('SELECT id FROM users WHERE organization_id = ?').get(org.id);
   assert.throws(
     () => updateMember({ db, organizationId: org.id, memberId: admin.id, input: { role: 'member' } }),
-    error => error.code === 'LAST_ADMIN',
+    error => error.code === 'ORG_ADMIN_ROLE_LOCKED' && error.field === 'role',
   );
   assert.throws(
     () => updateMember({ db, organizationId: org.id, memberId: admin.id, input: { status: 'disabled' } }),
     error => error.code === 'LAST_ADMIN',
+  );
+
+  const secondAdmin = createMember({
+    db,
+    organizationId: org.id,
+    input: { email: 'second-admin@acme.test', role: 'org_admin' },
+  });
+  assert.throws(
+    () => updateMember({ db, organizationId: org.id, memberId: secondAdmin.id, input: { role: 'member' } }),
+    error => error.code === 'ORG_ADMIN_ROLE_LOCKED',
   );
 });
 

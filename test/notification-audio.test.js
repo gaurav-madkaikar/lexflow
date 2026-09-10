@@ -68,20 +68,25 @@ test('sounds default enabled, persist mute, and do not play before arming', asyn
 
   await audio.arm();
   assert.equal(audio.playNotification(), true);
-  assert.equal(harness.context.oscillators.length, 2);
+  assert.equal(harness.context.oscillators.length, 3);
+  assert.deepEqual(harness.context.oscillators.map(item => item.type), ['sine', 'sine', 'triangle']);
 
   audio.setEnabled(false);
   assert.equal(harness.storageValues.get(SOUND_STORAGE_KEY), 'muted');
   assert.equal(audio.playCompletion(), false);
 });
 
-test('completion and read chimes use three and two tones after arming', async () => {
+test('completion and read chimes use distinct resolved and acknowledgement tones after arming', async () => {
   const harness = audioHarness();
   const audio = createNotificationAudio(harness.options);
   await audio.arm();
   audio.playCompletion();
   audio.playRead();
-  assert.equal(harness.context.oscillators.length, 5);
+  assert.equal(harness.context.oscillators.length, 7);
+  assert.deepEqual(
+    harness.context.oscillators.map(item => item.type),
+    ['triangle', 'sine', 'sine', 'sine', 'triangle', 'sine', 'sine'],
+  );
 });
 
 test('unsupported Web Audio and storage failures are silent no-ops', async () => {

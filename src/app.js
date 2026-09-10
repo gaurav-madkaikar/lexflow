@@ -265,13 +265,24 @@ function outlookImmutableId(email) {
 
 function listNotifications(db, userId, organizationId) {
   return db.prepare(`
-    SELECT id, email_id, kind, message, read_at, created_at
+    SELECT notifications.id, notifications.email_id, notifications.kind,
+      notifications.message, notifications.read_at, notifications.created_at,
+      emails.conversation_id,
+      COALESCE(conversations.latest_email_id, emails.id) AS target_email_id,
+      COALESCE(latest.subject, emails.subject) AS target_subject
     FROM notifications
-    WHERE user_id = ? AND organization_id = ?
-    ORDER BY created_at DESC, id DESC
+    JOIN emails ON emails.id = notifications.email_id
+    LEFT JOIN conversations ON conversations.id = emails.conversation_id
+      AND conversations.organization_id = notifications.organization_id
+    LEFT JOIN emails AS latest ON latest.id = conversations.latest_email_id
+    WHERE notifications.user_id = ? AND notifications.organization_id = ?
+    ORDER BY notifications.created_at DESC, notifications.id DESC
   `).all(userId, organizationId).map(row => ({
     id: Number(row.id),
     emailId: Number(row.email_id),
+    targetEmailId: Number(row.target_email_id),
+    conversationId: row.conversation_id == null ? null : Number(row.conversation_id),
+    targetSubject: row.target_subject,
     kind: row.kind,
     message: row.message,
     readAt: row.read_at,
@@ -313,7 +324,22 @@ function pendingTaskSummary(db, user, unreadNotifications) {
     departmentId,
     user.organization_id,
   );
+  const newAssignments = db.prepare(`
+    SELECT COUNT(DISTINCT CASE
+      WHEN emails.conversation_id IS NULL THEN 'email:' || notifications.email_id
+      ELSE 'conversation:' || emails.conversation_id
+    END) AS count
+    FROM notifications
+    JOIN emails ON emails.id = notifications.email_id
+    LEFT JOIN conversations ON conversations.id = emails.conversation_id
+      AND conversations.organization_id = notifications.organization_id
+    WHERE notifications.user_id = ? AND notifications.organization_id = ?
+      AND notifications.kind = 'assignment' AND notifications.read_at IS NULL
+      AND COALESCE(conversations.status, emails.status) = 'assigned'
+      AND COALESCE(conversations.assignee_id, emails.assignee_id) = ?
+  `).get(user.id, user.organization_id, user.id);
   return {
+    newAssigned: Number(newAssignments.count) || 0,
     assignedToMe: Number(counts.assigned_to_me) || 0,
     unassignedDepartment: Number(counts.unassigned_department) || 0,
     unreadNotifications: Number(unreadNotifications) || 0,
@@ -612,6 +638,7 @@ async function runSync(syncRunner, organizationId) {
 export function createApp({
   db,
   syncRunner,
+  escalationRunner = null,
   mode = 'demo',
   integrations = {},
   entraAuth = null,
@@ -701,6 +728,7 @@ export function createApp({
     } else if (request.user.effectiveRole === 'dep_admin') {
       const departmentId = request.user.headed_department_id;
       const notifications = listNotifications(db, request.user.id, request.user.organization_id);
+      payload.responseTiming = getWorkspaceSettings(db, request.user.organization_id);
       payload.department = listDepartments(db, request.user.organization_id)
         .find(item => item.id === Number(departmentId)) ?? null;
       payload.emails = listEmails(db, request.user);
@@ -708,6 +736,7 @@ export function createApp({
       payload.escalations = {
         intervalHours: getWorkspaceSettings(db, request.user.organization_id).escalationIntervalHours,
         recipients: listEscalationRecipients(db, request.user.organization_id, departmentId),
+        deliveries: listEscalationDeliveries(db, request.user.organization_id, departmentId),
       };
       payload.activity = listActivity(db, request.user.organization_id, departmentId);
       payload.notifications = notifications;
@@ -724,6 +753,7 @@ export function createApp({
       }));
     } else if (request.user.effectiveRole === 'member') {
       const notifications = listNotifications(db, request.user.id, request.user.organization_id);
+      payload.responseTiming = getWorkspaceSettings(db, request.user.organization_id);
       payload.emails = listEmails(db, request.user);
       payload.notifications = notifications;
       payload.unreadCount = notifications.filter(item => !item.readAt).length;
@@ -1184,13 +1214,19 @@ export function createApp({
       }
       const organizationId = Number(request.user.organization_id);
       const departmentId = Number(request.user.headed_department_id);
-      response.json({
+      const payload = {
         intervalHours: getWorkspaceSettings(db, organizationId).escalationIntervalHours,
         recipients: replaceEscalationRecipients({
           db, organizationId, departmentId, recipients, now: clock(),
         }),
         deliveries: listEscalationDeliveries(db, organizationId, departmentId),
-      });
+      };
+      response.json(payload);
+      if (typeof escalationRunner?.run === 'function') {
+        void escalationRunner.run().catch(error => {
+          console.error(`Escalation sweep failed after hierarchy update: ${error.message}`);
+        });
+      }
     } catch (error) {
       next(error);
     }
@@ -1459,6 +1495,29 @@ export function createApp({
       SET read_at = COALESCE(read_at, ?)
       WHERE user_id = ? AND organization_id = ? AND read_at IS NULL
     `).run(clock().toISOString(), request.user.id, request.user.organization_id);
+    response.json({ read: true, count: result.changes });
+  });
+
+  app.post('/api/notifications/email/:id/read', (request, response) => {
+    const emailId = resourceId(request.params.id);
+    const email = emailId ? visibleEmailRow(db, request.user, emailId) : null;
+    if (!email) return notFound(response, 'Email not found.');
+    const readAt = clock().toISOString();
+    const result = email.conversation_id
+      ? db.prepare(`
+          UPDATE notifications
+          SET read_at = COALESCE(read_at, ?)
+          WHERE user_id = ? AND organization_id = ? AND read_at IS NULL
+            AND email_id IN (
+              SELECT id FROM emails WHERE conversation_id = ? AND organization_id = ?
+            )
+        `).run(readAt, request.user.id, request.user.organization_id,
+          email.conversation_id, request.user.organization_id)
+      : db.prepare(`
+          UPDATE notifications
+          SET read_at = COALESCE(read_at, ?)
+          WHERE user_id = ? AND organization_id = ? AND email_id = ? AND read_at IS NULL
+        `).run(readAt, request.user.id, request.user.organization_id, email.id);
     response.json({ read: true, count: result.changes });
   });
 

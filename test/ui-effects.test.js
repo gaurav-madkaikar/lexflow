@@ -46,6 +46,14 @@ test('reset allows the login sequence to run on a later signed-out session', () 
   assert.equal(harness.animations.length, 2);
 });
 
+test('task summary animates its dialog and metric cards', () => {
+  const harness = effectsHarness();
+  const effects = createUiEffects(harness.options);
+  assert.equal(effects.taskSummary({}, [{}, {}]), true);
+  assert.equal(harness.animations.length, 2);
+  assert.equal(harness.animations[1].options.delay, 'stagger:90');
+});
+
 test('pointer spotlight ignores touch and updates fine pointer coordinates', () => {
   const harness = effectsHarness();
   const effects = createUiEffects(harness.options);

@@ -1,7 +1,38 @@
 import { departmentHeadRecipient } from './department-access.js';
 import { getWorkspaceSettings } from './workspace.js';
+import { DateTime } from 'luxon';
 
 const REPEAT_MS = 60 * 60 * 1000;
+const IST_ZONE = 'Asia/Kolkata';
+const WORKDAY_START_HOUR = 9;
+const WORKDAY_END_HOUR = 19;
+
+export function isIstWorkingTime(value) {
+  const local = DateTime.fromJSDate(value instanceof Date ? value : new Date(value), { zone: 'utc' })
+    .setZone(IST_ZONE);
+  return local.isValid && local.hour >= WORKDAY_START_HOUR && local.hour < WORKDAY_END_HOUR;
+}
+
+export function istWorkingMillisecondsBetween(startValue, endValue) {
+  const start = DateTime.fromJSDate(startValue instanceof Date ? startValue : new Date(startValue), { zone: 'utc' })
+    .setZone(IST_ZONE);
+  const end = DateTime.fromJSDate(endValue instanceof Date ? endValue : new Date(endValue), { zone: 'utc' })
+    .setZone(IST_ZONE);
+  if (!start.isValid || !end.isValid || end <= start) return 0;
+
+  let total = 0;
+  let day = start.startOf('day');
+  const lastDay = end.startOf('day');
+  while (day <= lastDay) {
+    const opens = day.plus({ hours: WORKDAY_START_HOUR });
+    const closes = day.plus({ hours: WORKDAY_END_HOUR });
+    const overlapStart = Math.max(start.toMillis(), opens.toMillis());
+    const overlapEnd = Math.min(end.toMillis(), closes.toMillis());
+    if (overlapEnd > overlapStart) total += overlapEnd - overlapStart;
+    day = day.plus({ days: 1 });
+  }
+  return total;
+}
 
 function runTransaction(db, operation) {
   db.exec('BEGIN IMMEDIATE');
@@ -20,11 +51,14 @@ export function evaluateOverdueAlerts({ db, now = new Date(), organizationId = 1
     const settings = getWorkspaceSettings(db, organizationId);
     const notifiedAt = now.toISOString();
     const nowMs = now.getTime();
-    const unassigned = db.prepare(`
+    const unassigned = isIstWorkingTime(now) ? db.prepare(`
       SELECT * FROM emails
       WHERE organization_id = ? AND status = 'unassigned' AND source_state = 'active'
-        AND datetime(received_at, '+' || ? || ' hours') <= datetime(?)
-    `).all(organizationId, settings.timeUnassignedHours, notifiedAt);
+        AND received_at IS NOT NULL AND datetime(received_at) <= datetime(?)
+    `).all(organizationId, notifiedAt).filter(email => (
+      istWorkingMillisecondsBetween(email.received_at, now)
+        >= settings.timeUnassignedHours * REPEAT_MS
+    )) : [];
     const assigned = db.prepare(`
       SELECT * FROM emails
       WHERE organization_id = ? AND status = 'assigned' AND source_state = 'active'
@@ -47,11 +81,14 @@ export function evaluateOverdueAlerts({ db, now = new Date(), organizationId = 1
     `);
     let created = 0;
 
-    function deliver(email, userId, kind, message) {
+    function deliver(email, userId, kind, message, { workingHoursOnly = false } = {}) {
       const prior = lastDelivery.get(organizationId, email.id, userId, kind);
       if (prior) {
         const priorMs = new Date(prior.last_notified_at).getTime();
-        if (Number.isFinite(priorMs) && nowMs - priorMs < REPEAT_MS) return;
+        const elapsed = workingHoursOnly
+          ? istWorkingMillisecondsBetween(prior.last_notified_at, now)
+          : nowMs - priorMs;
+        if (Number.isFinite(priorMs) && elapsed < REPEAT_MS) return;
       }
       insertNotification.run(userId, email.id, kind, message, notifiedAt, organizationId);
       saveDelivery.run(email.id, userId, kind, notifiedAt, organizationId);
@@ -59,12 +96,12 @@ export function evaluateOverdueAlerts({ db, now = new Date(), organizationId = 1
     }
 
     for (const email of unassigned) {
-      const message = `Unassigned for over ${settings.timeUnassignedHours} hour(s): ${email.subject}`;
+      const message = `Unassigned for over ${settings.timeUnassignedHours} working hour(s): ${email.subject}`;
       const head = departmentHeadRecipient(db, {
         organizationId,
         departmentId: email.department_id,
       });
-      if (head) deliver(email, Number(head.id), 'unassigned_overdue', message);
+      if (head) deliver(email, Number(head.id), 'unassigned_overdue', message, { workingHoursOnly: true });
     }
 
     for (const email of assigned) {

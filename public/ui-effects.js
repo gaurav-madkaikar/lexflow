@@ -52,6 +52,28 @@ export function createUiEffects({ animate, stagger, reducedMotion, requestFrame 
     emailList: (targets, signature) => reveal(targets, 'email-list', signature, { stagger: 35 }),
     emailDetail: targets => reveal(targets, 'email-detail', undefined, { stagger: 45 }),
     metrics: (targets, signature) => reveal(targets, 'metrics', signature, { stagger: 50 }),
+    taskSummary(dialog, metrics) {
+      const shell = canRun([dialog], 'task-summary');
+      const cards = canRun(metrics, 'task-summary-cards');
+      if (!shell) return false;
+      requestFrame(() => {
+        runAnimation(shell, {
+          opacity: { from: 0 },
+          scale: { from: 0.96 },
+          translateY: { from: 14 },
+          duration: 420,
+          ease: 'out(4)',
+        });
+        if (cards) runAnimation(cards, {
+          opacity: { from: 0 },
+          translateY: { from: 12 },
+          delay: stagger(90),
+          duration: 480,
+          ease: 'out(4)',
+        });
+      });
+      return true;
+    },
     accountMenu(target) {
       const items = canRun([target], 'account-menu');
       if (!items) return false;

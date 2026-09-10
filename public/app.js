@@ -1,6 +1,6 @@
 import { animate, stagger } from '/vendor/animejs.js';
 import { overviewPreview } from './overview-model.js';
-import { createFeedbackQueue, pendingTaskNotice, unseenNotifications } from './feedback.js';
+import { createFeedbackQueue, unseenNotifications } from './feedback.js';
 import { createMetricsView } from './metrics-view.js';
 import { conversationClickIntent } from './conversation-interactions.js';
 import { createNotificationAudio } from './notification-audio.js';
@@ -27,6 +27,7 @@ const state = {
   department: 'All',
   query: '',
   dateFilter: '',
+  dateEnd: '',
   selectedEmailId: null,
   emailLinkRequestId: 0,
   sidebarOpen: false,
@@ -50,6 +51,8 @@ const state = {
   pollFailureActive: false,
   refreshInFlight: null,
   escalationRecipients: null,
+  notificationReturnView: null,
+  notificationReadInFlight: new Set(),
 };
 
 const elements = {
@@ -160,6 +163,7 @@ const elements = {
   heroAction: document.querySelector('#hero-action'),
   heroActionLabel: document.querySelector('#hero-action-label'),
   heroDateFilter: document.querySelector('#hero-date-filter'),
+  heroDateEnd: document.querySelector('#hero-date-end'),
   heroDateClear: document.querySelector('#hero-date-clear'),
   heroDateFilterStatus: document.querySelector('#hero-date-filter-status'),
   ruleDialog: document.querySelector('#rule-dialog'),
@@ -187,6 +191,12 @@ const elements = {
   assignButton: document.querySelector('#assign-button'),
   outlookLink: document.querySelector('#outlook-link'),
   completeButton: document.querySelector('#complete-button'),
+  loginTaskDialog: document.querySelector('#login-task-dialog'),
+  loginTaskCopy: document.querySelector('#login-task-copy'),
+  loginTaskNewCount: document.querySelector('#login-task-new-count'),
+  loginTaskPendingCount: document.querySelector('#login-task-pending-count'),
+  loginTaskPendingLabel: document.querySelector('#login-task-pending-label'),
+  loginTaskOpen: document.querySelector('#login-task-open'),
   toastRegion: document.querySelector('#toast-region')
 };
 
@@ -511,8 +521,10 @@ function showLogin() {
   state.emailLinkRequestId += 1;
   if (elements.emailDialog.open) elements.emailDialog.close();
   if (elements.ruleDialog.open) elements.ruleDialog.close();
+  if (elements.loginTaskDialog.open) elements.loginTaskDialog.close();
   state.selectedEmailId = null;
   state.dateFilter = '';
+  state.dateEnd = '';
   state.emailDialogOpener = null;
   state.ruleDialogOpener = null;
   state.editingRuleId = null;
@@ -525,6 +537,7 @@ function showLogin() {
   state.lastGraphOutcomeSequence = null;
   state.expandedTeamGroups = new Set();
   state.pollFailureActive = false;
+  state.notificationReturnView = null;
   metricsView.deactivate();
   for (const element of [
     elements.departmentManagementList,
@@ -562,6 +575,43 @@ function showApp() {
   elements.appView.hidden = false;
   elements.skipLink.hidden = false;
   theme.syncControls();
+}
+
+function showLoginTaskSummary() {
+  const role = state.session?.user.role;
+  if (!['member', 'dep_admin'].includes(role) || elements.loginTaskDialog.open) return;
+
+  const pendingTasks = state.session.pendingTasks ?? {};
+  const newAssigned = Number(pendingTasks.newAssigned) || 0;
+  const assignedToMe = Number(pendingTasks.assignedToMe) || 0;
+  const unassignedDepartment = role === 'dep_admin'
+    ? Number(pendingTasks.unassignedDepartment) || 0
+    : 0;
+  const pending = assignedToMe + unassignedDepartment;
+  const targetView = assignedToMe > 0 ? 'assigned' : (unassignedDepartment > 0 ? 'inbox' : 'assigned');
+
+  setText(elements.loginTaskNewCount, newAssigned);
+  setText(elements.loginTaskPendingCount, pending);
+  setText(
+    elements.loginTaskCopy,
+    pending > 0
+      ? `You have ${countLabel(pending, 'open task')} waiting for review.`
+      : 'You are all caught up. There are no open tasks waiting.',
+  );
+  setText(
+    elements.loginTaskPendingLabel,
+    role === 'dep_admin'
+      ? `${countLabel(assignedToMe, 'assigned to you')} · ${countLabel(unassignedDepartment, 'awaiting assignment')}`
+      : 'Assigned work waiting for your action',
+  );
+  elements.loginTaskOpen.dataset.view = targetView;
+  elements.loginTaskOpen.hidden = pending === 0;
+
+  elements.loginTaskDialog.showModal();
+  uiEffects.taskSummary(
+    elements.loginTaskDialog,
+    elements.loginTaskDialog.querySelectorAll('[data-task-summary-reveal]'),
+  );
 }
 
 function normalizeView() {
@@ -655,18 +705,23 @@ function renderOverviewFooter({ footer, summary, action, preview }) {
   setText(action, preview.actionLabel);
 }
 
-function metric(label, value, note) {
-  const card = node('article', 'metric');
+function metric(label, value, note, view) {
+  const card = node('button', 'metric metric-link');
+  card.type = 'button';
+  card.dataset.metricView = view;
+  card.setAttribute('aria-label', `${label}: ${value}. Open ${label.toLocaleLowerCase()}.`);
   card.append(
     node('span', 'metric-label', label),
     node('strong', 'metric-value', value),
-    node('span', 'metric-note', note)
+    node('span', 'metric-note', note),
+    node('span', 'metric-arrow', '↗'),
   );
   return card;
 }
 
 function emailMatchesDate(email) {
-  return !state.dateFilter || localDateKey(email.receivedAt, sessionTimezone()) === state.dateFilter;
+  const date = localDateKey(email.receivedAt, sessionTimezone());
+  return (!state.dateFilter || date >= state.dateFilter) && (!state.dateEnd || date <= state.dateEnd);
 }
 
 function emailsForSelectedDate() {
@@ -702,19 +757,19 @@ function visibleMetricSignature(items) {
 function renderMetrics() {
   const totals = counts(emailsForSelectedDate());
   const isAdmin = state.session.user.role === 'dep_admin';
-  const periodNote = state.dateFilter ? `Received ${selectedDateLabel(state.dateFilter, 'short')}` : null;
+  const periodNote = state.dateFilter || state.dateEnd ? `Received ${state.dateFilter || 'any time'} → ${state.dateEnd || 'onward'}` : null;
   const items = isAdmin
     ? [
-        ['Unassigned', totals.inbox, periodNote || 'Awaiting an automation match'],
-        ['Open assigned', totals.assigned, periodNote || 'Across the team'],
-        ['Completed', totals.completed, periodNote || 'Recorded workflow items'],
-        ['Active rules', totals.rules, 'Ordered by priority'],
-        ['Unread', totals.notifications, 'Work alerts and updates']
+        ['Unassigned', totals.inbox, periodNote || 'Awaiting an automation match', 'inbox'],
+        ['Open assigned', totals.assigned, periodNote || 'Across the team', 'assigned'],
+        ['Completed', totals.completed, periodNote || 'Recorded workflow items', 'completed'],
+        ['Active rules', totals.rules, 'Ordered by priority', 'rules'],
+        ['Unread', totals.notifications, 'Work alerts and updates', 'notifications']
       ]
     : [
-        ['Open assigned', totals.assigned, periodNote || 'Ready for your review'],
-        ['Completed', totals.completed, periodNote || 'Work you have finished'],
-        ['Unread', totals.notifications, 'Work alerts and updates']
+        ['Open assigned', totals.assigned, periodNote || 'Ready for your review', 'assigned'],
+        ['Completed', totals.completed, periodNote || 'Work you have finished', 'completed'],
+        ['Unread', totals.notifications, 'Work alerts and updates', 'notifications']
       ];
   elements.metrics.style.setProperty('--metric-count', String(items.length));
   elements.metrics.replaceChildren(...items.map(item => metric(...item)));
@@ -749,20 +804,16 @@ function renderHero() {
     : `${state.dateFilter ? 'On this date, ' : ''}${countLabel(totals.assigned, 'assignment')} ${memberAssignedVerb} open${state.dateFilter ? '.' : `, with ${countLabel(totals.notifications, 'unread update')} waiting.`}`);
 
   elements.heroDateFilter.value = state.dateFilter;
-  elements.heroDateFilter.closest('.hero-calendar').classList.toggle('active', Boolean(state.dateFilter));
-  elements.heroDateClear.hidden = !state.dateFilter;
-  const filterLabel = state.dateFilter ? selectedDateLabel(state.dateFilter) : '';
-  elements.heroDateFilter.setAttribute('aria-label', state.dateFilter
-    ? `Filter emails by received date, currently ${filterLabel}`
-    : 'Filter emails by received date');
-  elements.heroDateFilter.closest('.hero-calendar').title = state.dateFilter
-    ? `Showing emails received ${filterLabel}`
-    : 'Filter emails by received date';
-  elements.heroDateClear.setAttribute('aria-label', state.dateFilter
-    ? `Clear date filter for ${filterLabel}`
-    : 'Clear date filter');
-  setText(elements.heroDateFilterStatus, state.dateFilter
-    ? `Showing emails received on ${filterLabel}.`
+  elements.heroDateEnd.value = state.dateEnd;
+  setText(document.querySelector('#date-range-label'), state.dateFilter || state.dateEnd
+    ? `${state.dateFilter ? selectedDateLabel(state.dateFilter, 'short') : 'Any time'} – ${state.dateEnd ? selectedDateLabel(state.dateEnd, 'short') : 'Onward'}` : 'All dates');
+  elements.heroDateClear.hidden = !state.dateFilter && !state.dateEnd;
+  const filterLabel = state.dateFilter || state.dateEnd
+    ? `${state.dateFilter ? selectedDateLabel(state.dateFilter) : 'any time'} to ${state.dateEnd ? selectedDateLabel(state.dateEnd) : 'onward'}`
+    : '';
+  elements.heroDateClear.setAttribute('aria-label', filterLabel ? `Clear date filter for ${filterLabel}` : 'Clear date filter');
+  setText(elements.heroDateFilterStatus, filterLabel
+    ? `Showing emails received from ${filterLabel}.`
     : 'Showing emails from all received dates.');
 
   const actionView = isAdmin
@@ -850,8 +901,22 @@ function visibleEmails() {
     .sort((left, right) => new Date(right.receivedAt) - new Date(left.receivedAt));
 }
 
+function emailSlaState(email, now = Date.now()) {
+  if (email.status === 'completed' || email.sourceState !== 'active') return null;
+  const timing = state.session?.responseTiming;
+  const hours = email.status === 'unassigned'
+    ? Number(timing?.timeUnassignedHours)
+    : Number(timing?.timeAssignedUnmarkedHours);
+  const startedAt = email.status === 'unassigned' ? email.receivedAt : email.assignedAt;
+  const startedMs = new Date(startedAt).getTime();
+  if (!Number.isFinite(hours) || hours <= 0 || !Number.isFinite(startedMs)) return null;
+  const dueAt = new Date(startedMs + hours * 60 * 60 * 1000);
+  return { breached: now >= dueAt.getTime(), dueAt, hours };
+}
+
 function renderEmailRow(email, { grouped = false, compact = false } = {}) {
-  const row = node('button', `email-row ${email.status}${grouped ? ' grouped' : ''}${compact ? ' compact' : ''}`);
+  const sla = emailSlaState(email);
+  const row = node('button', `email-row ${email.status}${sla?.breached ? ' sla-breached' : ''}${grouped ? ' grouped' : ''}${compact ? ' compact' : ''}`);
   row.type = 'button';
   row.dataset.emailId = String(email.id);
 
@@ -869,6 +934,12 @@ function renderEmailRow(email, { grouped = false, compact = false } = {}) {
   if (email.department) tags.append(node('span', 'tag department', email.department));
   const statusLabel = email.status === 'unassigned' ? 'Unassigned' : email.status === 'completed' ? 'Completed' : 'Assigned';
   tags.append(node('span', `tag ${email.status}`, statusLabel));
+  if (sla?.breached) {
+    const breach = node('span', 'tag sla-breached', 'SLA breached');
+    breach.title = `SLA was due ${formatDate(sla.dueAt.toISOString())}`;
+    tags.append(breach);
+    row.setAttribute('aria-label', `${email.subject || 'Email'}, SLA breached`);
+  }
   if (email.sourceState !== 'active') {
     tags.append(node('span', 'tag source-removed', email.sourceState === 'deleted' ? 'Deleted' : 'Removed from Inbox'));
   }
@@ -927,6 +998,11 @@ function renderConversationItem(email, options = {}) {
       list.append(node('p', 'conversation-loading', 'Loading thread…'));
     }
     wrapper.append(list);
+    if (!reducedMotion.matches) {
+      window.requestAnimationFrame(() => {
+        if (list.isConnected) animate(list, { opacity: [0, 1], translateY: [-6, 0], duration: 220, ease: 'outQuad' });
+      });
+    }
   }
   return wrapper;
 }
@@ -999,15 +1075,16 @@ function renderEmails() {
   };
   const [title, caption] = labels[state.view] ?? labels.assigned;
   setText(elements.queueTitle, title);
-  const dateCaption = state.dateFilter ? ` · Received ${selectedDateLabel(state.dateFilter, 'short')}` : '';
+  const dateCaption = state.dateFilter || state.dateEnd ? ` · Received ${state.dateFilter || 'any time'} → ${state.dateEnd || 'today and later'}` : '';
+  setText(elements.heroDateFilterStatus, dateCaption || 'Showing emails from all received dates.');
   setText(elements.queueCaption, `${caption}${dateCaption}`);
   setText(elements.emailCount, groupedAssigned
     ? `${countLabel(employeeGroups.length, 'employee')} · ${countLabel(emails.length, 'email')}`
     : countLabel(allEmails.length, 'email'));
   elements.emailList.classList.toggle('employee-group-list', groupedAssigned && emails.length > 0);
-  const hasFilters = Boolean(state.query || state.dateFilter || state.department !== 'All');
-  const emptyMessage = state.dateFilter
-    ? `No emails received on ${selectedDateLabel(state.dateFilter)} match the current filters.`
+  const hasFilters = Boolean(state.query || state.dateFilter || state.dateEnd || state.department !== 'All');
+  const emptyMessage = state.dateFilter || state.dateEnd
+    ? 'No emails match this date range and the current filters.'
     : hasFilters ? 'No emails match your search and filters.' : 'This queue is clear.';
   elements.emailList.replaceChildren(...(emails.length
     ? groupedAssigned
@@ -1108,11 +1185,22 @@ function renderEscalations() {
     row.append(order, input, actions); return row;
   }) : [emptyState('No escalation recipients', 'Add a recipient to enable department escalations.')]));
   const deliveries = data.deliveries ?? [];
+  const deliveryLabels = {
+    pending: 'Scheduled',
+    processing: 'Sending',
+    sent: 'Sent',
+    failed: 'Delivery failed',
+    blocked: 'Needs attention',
+    cancelled: 'Closed',
+  };
   elements.escalationHistory.replaceChildren(...(deliveries.length ? deliveries.map(delivery => {
-    const item = node('article', 'activity-item');
-    item.append(node('strong', '', `Order ${delivery.level} · ${delivery.state}`),
+    const item = node('article', `activity-item escalation-delivery ${delivery.state}`);
+    item.append(node('strong', '', `Order ${delivery.level} · ${deliveryLabels[delivery.state] ?? delivery.state}`),
       node('p', '', `${delivery.subject} → ${delivery.recipient}`),
       node('small', '', formatDate(delivery.sentAt ?? delivery.createdAt, false)));
+    if (delivery.state === 'cancelled') {
+      item.append(node('p', 'escalation-delivery-closed', 'Closed because the assignment was completed or changed. No retry is required.'));
+    } else if (delivery.error) item.append(node('p', 'escalation-delivery-error', delivery.error));
     return item;
   }) : [emptyState('No escalation activity', 'Sent and failed escalation attempts will appear here.')]));
 }
@@ -1150,23 +1238,104 @@ function renderNotification(item) {
     node('strong', '', titles[item.kind] || 'Workflow update'),
     node('time', '', formatDate(item.createdAt, false))
   );
-  wrapper.append(top, node('p', '', item.message));
-  const actions = node('div', 'notification-actions');
-  const email = (state.session.emails ?? []).find(candidate => candidate.id === item.emailId);
-  if (email) {
-    const open = node('button', 'open-notification', 'Open email');
+  const email = (state.session.emails ?? []).find(candidate => (
+    candidate.id === item.targetEmailId
+      || candidate.id === item.emailId
+      || (item.conversationId && candidate.conversationId === item.conversationId)
+  ));
+  if (item.targetEmailId || item.emailId) {
+    const open = node('button', 'open-notification');
     open.type = 'button';
-    open.dataset.emailId = String(item.emailId);
-    actions.append(open);
+    open.dataset.emailId = String(item.targetEmailId || item.emailId);
+    if (item.conversationId) open.dataset.conversationId = String(item.conversationId);
+    open.setAttribute('aria-label', `Open ${email?.subject || item.targetSubject || 'email'} thread`);
+    open.append(top, node('p', '', item.message), node('span', 'notification-open-label', 'Open thread'));
+    wrapper.append(open);
+  } else {
+    wrapper.append(top, node('p', '', item.message));
   }
-  if (!item.readAt) {
-    const read = node('button', 'read-notification', 'Mark read');
-    read.type = 'button';
-    read.dataset.notificationId = String(item.id);
-    actions.append(read);
-  }
-  if (actions.childElementCount) wrapper.append(actions);
   return wrapper;
+}
+
+function notificationMatchesEmail(item, email) {
+  return (item.conversationId && email.conversationId
+      && Number(item.conversationId) === Number(email.conversationId))
+    || Number(item.targetEmailId) === Number(email.id)
+    || Number(item.emailId) === Number(email.id);
+}
+
+async function markNotificationsForEmail(email) {
+  const key = email.conversationId ? `conversation:${email.conversationId}` : `email:${email.id}`;
+  const unread = (state.session?.notifications ?? [])
+    .filter(item => !item.readAt && notificationMatchesEmail(item, email));
+  if (!unread.length || state.notificationReadInFlight.has(key)) return;
+  state.notificationReadInFlight.add(key);
+  try {
+    const result = await api(`/api/notifications/email/${email.id}/read`, { method: 'POST' });
+    if (!result.count) return;
+    const readAt = new Date().toISOString();
+    for (const item of state.session.notifications ?? []) {
+      if (!item.readAt && notificationMatchesEmail(item, email)) item.readAt = readAt;
+    }
+    state.session.unreadCount = (state.session.notifications ?? []).filter(item => !item.readAt).length;
+    setText(elements.notificationCount, state.session.unreadCount || '');
+    elements.notificationButton.setAttribute('aria-label', `View notifications, ${state.session.unreadCount} unread`);
+    renderNotifications();
+    notificationAudio.playRead();
+  } catch (error) {
+    reportError(error, 'This thread’s notifications could not be marked as read.');
+  } finally {
+    state.notificationReadInFlight.delete(key);
+  }
+}
+
+async function openNotificationThread(emailId, conversationId) {
+  const email = findEmailById(emailId)
+    ?? (state.session.emails ?? []).find(candidate => (
+      conversationId && Number(candidate.conversationId) === Number(conversationId)
+    ));
+  if (!email) {
+    showToast('This email is no longer available in your workspace.', true);
+    return;
+  }
+  void markNotificationsForEmail(email);
+
+  state.query = '';
+  elements.searchInput.value = '';
+  state.dateFilter = '';
+  state.dateEnd = '';
+  state.department = 'All';
+  const targetView = email.sourceState !== 'active'
+    ? 'deleted'
+    : email.status === 'unassigned' ? 'inbox' : email.status;
+  selectView(targetView);
+
+  if (!email.conversationId || Number(email.messageCount) <= 1) {
+    openEmail(email.id);
+    return;
+  }
+
+  state.expandedConversations.add(email.conversationId);
+  if (!state.conversationMessages.has(email.conversationId)) {
+    try {
+      const payload = await api(`/api/conversations/${email.conversationId}/messages`);
+      state.conversationMessages.set(email.conversationId, payload.messages ?? []);
+    } catch (error) {
+      state.expandedConversations.delete(email.conversationId);
+      reportError(error, 'This conversation could not be opened.');
+      openEmail(email.id);
+      return;
+    }
+  }
+
+  renderEmails();
+  window.requestAnimationFrame(() => {
+    const row = [...elements.emailList.querySelectorAll('[data-conversation-parent]')]
+      .find(candidate => Number(candidate.dataset.conversationParent) === Number(email.conversationId));
+    if (!row) return;
+    row.scrollIntoView({ behavior: reducedMotion.matches ? 'auto' : 'smooth', block: 'center' });
+    row.focus({ preventScroll: true });
+  });
 }
 
 function notifyNewNotifications(notifications) {
@@ -1612,6 +1781,10 @@ function renderDepartmentMember(member, departments, { unassigned = false } = {}
   role.append(memberRole, adminRole);
   role.value = member.role === 'org_admin' ? 'org_admin' : 'member';
   role.dataset.previousValue = role.value;
+  if (member.role === 'org_admin') {
+    role.disabled = true;
+    role.title = 'Organization administrators cannot be converted into members.';
+  }
   const status = node('select');
   status.dataset.memberAction = 'status'; status.dataset.memberId = String(member.id);
   status.dataset.focusKey = `member-status:${member.id}`;
@@ -1691,7 +1864,7 @@ function renderHeader() {
   const connected = mailbox.connectedCount > 0;
   setText(elements.modeChip, mailbox.label);
   elements.modeChip.classList.toggle('connected', connected);
-  elements.searchInput.hidden = !['inbox', 'assigned', 'completed', 'deleted'].includes(state.view);
+  elements.searchInput.hidden = !['overview', 'inbox', 'assigned', 'completed', 'deleted'].includes(state.view);
   elements.searchInput.parentElement.hidden = elements.searchInput.hidden;
 }
 
@@ -1762,7 +1935,12 @@ function render() {
   const unreadCount = state.session.unreadCount ?? 0;
   notifyNewNotifications(state.session.notifications ?? []);
   setText(elements.notificationCount, unreadCount || '');
-  elements.notificationButton.setAttribute('aria-label', `View notifications, ${unreadCount} unread`);
+  const notificationsOpen = state.view === 'notifications';
+  elements.notificationButton.setAttribute('aria-pressed', String(notificationsOpen));
+  elements.notificationButton.setAttribute(
+    'aria-label',
+    notificationsOpen ? 'Close notifications' : `View notifications, ${unreadCount} unread`,
+  );
   if (state.lastUnreadCount !== null && unreadCount > state.lastUnreadCount) {
     setText(elements.notificationAnnouncement, `${countLabel(unreadCount, 'unread notification')} available.`);
     notificationAudio.playNotification();
@@ -1791,11 +1969,7 @@ function render() {
   else metricsView.deactivate();
   if (!state.entryNoticeShown) {
     state.entryNoticeShown = true;
-    const notice = pendingTaskNotice({
-      role: state.session.user.role,
-      pendingTasks: state.session.pendingTasks,
-    });
-    if (notice) feedback.show(notice);
+    showLoginTaskSummary();
   }
 }
 
@@ -1827,6 +2001,11 @@ function handleIntegrationReturn() {
 }
 
 function selectView(view, { history = true } = {}) {
+  if (view === 'notifications' && state.view !== 'notifications') {
+    state.notificationReturnView = state.view;
+  } else if (view !== 'notifications') {
+    state.notificationReturnView = view;
+  }
   state.view = view;
   if (view === 'inbox') state.department = 'All';
   normalizeView();
@@ -1941,6 +2120,7 @@ async function prepareEmailLink(email, requestId) {
 function openEmail(emailId, opener = document.activeElement) {
   const email = findEmailById(emailId);
   if (!email) return;
+  void markNotificationsForEmail(email);
   state.emailDialogOpener = opener instanceof HTMLElement ? opener : null;
   state.selectedEmailId = email.id;
   setText(elements.emailDialogTitle, email.subject, '(No subject)');
@@ -2402,6 +2582,10 @@ elements.departmentSwitch.addEventListener('click', event => {
   const button = event.target.closest('[data-department]');
   if (button) selectDepartment(button.dataset.department);
 });
+elements.metrics.addEventListener('click', event => {
+  const card = event.target.closest('[data-metric-view]');
+  if (card) selectView(card.dataset.metricView);
+});
 
 elements.sidebarDepartment.addEventListener('change', event => selectDepartment(event.target.value));
 elements.timingForm.addEventListener('input', () => {
@@ -2411,14 +2595,227 @@ elements.searchInput.addEventListener('input', event => {
   state.query = event.target.value.trim().toLocaleLowerCase();
   renderEmails();
 });
-elements.heroDateFilter.addEventListener('change', event => {
-  state.dateFilter = isDateKey(event.target.value) ? event.target.value : '';
+const rangeTrigger = document.querySelector('#date-range-trigger');
+const rangePanel = document.querySelector('#date-range-panel');
+const rangeMonths = document.querySelector('#date-calendar-months');
+const rangeStartDisplay = document.querySelector('#date-range-start-display');
+const rangeEndDisplay = document.querySelector('#date-range-end-display');
+const rangeError = document.querySelector('#date-range-error');
+let rangeDraftStart = '';
+let rangeDraftEnd = '';
+let rangeAnchorMonth = null;
+let activeRangePreset = '';
+
+function calendarDate(value) {
+  if (!isDateKey(value)) return null;
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function calendarKey(date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+function shiftCalendar(date, { days = 0, months = 0 } = {}) {
+  const shifted = new Date(date);
+  if (months) {
+    const targetDay = shifted.getUTCDate();
+    shifted.setUTCDate(1);
+    shifted.setUTCMonth(shifted.getUTCMonth() + months);
+    const lastDay = new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, 0)).getUTCDate();
+    shifted.setUTCDate(Math.min(targetDay, lastDay));
+  }
+  if (days) shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted;
+}
+
+function firstCalendarMonth(value) {
+  const date = calendarDate(value) ?? calendarDate(localDateKey(new Date(), sessionTimezone()));
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+}
+
+function rangeDisplayLabel(value, placeholder) {
+  return value
+    ? new Intl.DateTimeFormat(undefined, { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(calendarDate(value))
+    : placeholder;
+}
+
+function selectRangeDay(value) {
+  if (!rangeDraftStart || rangeDraftEnd) {
+    rangeDraftStart = value;
+    rangeDraftEnd = '';
+  } else if (value < rangeDraftStart) {
+    rangeDraftEnd = rangeDraftStart;
+    rangeDraftStart = value;
+  } else {
+    rangeDraftEnd = value;
+  }
+  activeRangePreset = '';
+  rangeError.hidden = true;
+  renderDateRangePicker();
+}
+
+function renderCalendarMonth(monthDate) {
+  const section = node('section', 'date-calendar-month');
+  const heading = node('h3', '', new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(monthDate));
+  const grid = node('div', 'date-calendar-grid');
+  grid.setAttribute('role', 'grid');
+  grid.setAttribute('aria-label', heading.textContent);
+  for (const weekday of ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']) {
+    const label = node('span', 'date-calendar-weekday', weekday);
+    label.setAttribute('aria-hidden', 'true');
+    grid.append(label);
+  }
+  const firstWeekday = (monthDate.getUTCDay() + 6) % 7;
+  for (let index = 0; index < firstWeekday; index += 1) {
+    const spacer = node('span', 'date-calendar-spacer');
+    spacer.setAttribute('aria-hidden', 'true');
+    grid.append(spacer);
+  }
+  const days = new Date(Date.UTC(monthDate.getUTCFullYear(), monthDate.getUTCMonth() + 1, 0)).getUTCDate();
+  const today = localDateKey(new Date(), sessionTimezone());
+  for (let day = 1; day <= days; day += 1) {
+    const date = new Date(Date.UTC(monthDate.getUTCFullYear(), monthDate.getUTCMonth(), day));
+    const value = calendarKey(date);
+    const button = node('button', 'date-calendar-day', String(day));
+    button.type = 'button';
+    button.dataset.rangeDate = value;
+    button.setAttribute('aria-label', new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date));
+    button.setAttribute('aria-pressed', String(value === rangeDraftStart || value === rangeDraftEnd));
+    button.classList.toggle('is-range-edge', value === rangeDraftStart || value === rangeDraftEnd);
+    button.classList.toggle('is-in-range', Boolean(rangeDraftStart && rangeDraftEnd && value > rangeDraftStart && value < rangeDraftEnd));
+    if (value === today) button.setAttribute('aria-current', 'date');
+    grid.append(button);
+  }
+  section.append(heading, grid);
+  return section;
+}
+
+function renderDateRangePicker() {
+  rangeAnchorMonth ??= firstCalendarMonth(rangeDraftStart);
+  rangeMonths.replaceChildren(
+    renderCalendarMonth(rangeAnchorMonth),
+    renderCalendarMonth(shiftCalendar(rangeAnchorMonth, { months: 1 })),
+  );
+  setText(rangeStartDisplay, rangeDisplayLabel(rangeDraftStart, 'Start date'));
+  setText(rangeEndDisplay, rangeDisplayLabel(rangeDraftEnd, 'End date'));
+  elements.heroDateFilter.value = rangeDraftStart;
+  elements.heroDateEnd.value = rangeDraftEnd;
+  rangePanel.querySelectorAll('[data-range-preset]').forEach(button => {
+    const selected = button.dataset.rangePreset === activeRangePreset;
+    button.classList.toggle('is-active', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  });
+}
+
+function applyRangePreset(preset) {
+  const today = calendarDate(localDateKey(new Date(), sessionTimezone()));
+  let start = new Date(today);
+  if (preset === '30d') start = shiftCalendar(today, { days: -29 });
+  if (preset === '2m') start = shiftCalendar(today, { months: -2 });
+  if (preset === '3m') start = shiftCalendar(today, { months: -3 });
+  if (preset === '12m') start = shiftCalendar(today, { months: -12 });
+  if (preset === 'mtd') start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  if (preset === 'qtd') start = new Date(Date.UTC(today.getUTCFullYear(), Math.floor(today.getUTCMonth() / 3) * 3, 1));
+  rangeDraftStart = calendarKey(start);
+  rangeDraftEnd = calendarKey(today);
+  rangeAnchorMonth = firstCalendarMonth(rangeDraftStart);
+  activeRangePreset = preset;
+  rangeError.hidden = true;
+  renderDateRangePicker();
+}
+
+function closeDateRange() {
+  if (typeof rangePanel.hidePopover === 'function' && rangePanel.matches(':popover-open')) {
+    rangePanel.hidePopover();
+  }
+  rangePanel.hidden = true;
+  rangeTrigger.setAttribute('aria-expanded', 'false');
+}
+
+function positionDateRange() {
+  if (rangePanel.hidden) return;
+  const triggerRect = rangeTrigger.getBoundingClientRect();
+  const gutter = window.innerWidth <= 520 ? 16 : 24;
+  const width = Math.min(790, window.innerWidth - gutter * 2);
+  rangePanel.style.width = `${width}px`;
+  const height = Math.min(rangePanel.scrollHeight, window.innerHeight - gutter * 2);
+  const left = Math.min(
+    Math.max(gutter, triggerRect.right - width),
+    window.innerWidth - width - gutter,
+  );
+  const top = Math.min(
+    Math.max(gutter, triggerRect.bottom + 12),
+    Math.max(gutter, window.innerHeight - height - gutter),
+  );
+  rangePanel.style.left = `${left}px`;
+  rangePanel.style.top = `${top}px`;
+}
+
+rangeTrigger.addEventListener('click', () => {
+  const opening = rangePanel.hidden;
+  if (opening) {
+    rangePanel.hidden = false;
+    if (typeof rangePanel.showPopover === 'function') rangePanel.showPopover();
+    rangeTrigger.setAttribute('aria-expanded', 'true');
+    rangeDraftStart = state.dateFilter;
+    rangeDraftEnd = state.dateEnd;
+    rangeAnchorMonth = firstCalendarMonth(rangeDraftStart);
+    activeRangePreset = '';
+    rangeError.hidden = true;
+    renderDateRangePicker();
+    requestAnimationFrame(() => {
+      positionDateRange();
+      rangePanel.querySelector('.date-calendar-day.is-range-edge, .date-calendar-day[aria-current="date"], .date-calendar-day')?.focus();
+    });
+  } else closeDateRange();
+});
+window.addEventListener('resize', positionDateRange);
+document.addEventListener('click', event => {
+  if (!event.target.closest('.date-range-control')) closeDateRange();
+});
+rangePanel.addEventListener('keydown', event => {
+  if (event.key === 'Escape') { closeDateRange(); rangeTrigger.focus(); }
+});
+rangePanel.addEventListener('click', event => {
+  const dateButton = event.target.closest('[data-range-date]');
+  if (dateButton) selectRangeDay(dateButton.dataset.rangeDate);
+  const presetButton = event.target.closest('[data-range-preset]');
+  if (presetButton) applyRangePreset(presetButton.dataset.rangePreset);
+});
+document.querySelector('#date-calendar-prev').addEventListener('click', () => {
+  rangeAnchorMonth = shiftCalendar(rangeAnchorMonth, { months: -1 });
+  renderDateRangePicker();
+});
+document.querySelector('#date-calendar-next').addEventListener('click', () => {
+  rangeAnchorMonth = shiftCalendar(rangeAnchorMonth, { months: 1 });
+  renderDateRangePicker();
+});
+document.querySelector('#date-range-cancel').addEventListener('click', () => {
+  closeDateRange();
+  rangeTrigger.focus();
+});
+document.querySelector('#date-range-apply').addEventListener('click', () => {
+  const from = rangeDraftStart;
+  const to = rangeDraftEnd || rangeDraftStart;
+  if ((from && !isDateKey(from)) || (to && !isDateKey(to)) || (from && to && from > to)) {
+    rangeError.hidden = false;
+    return;
+  }
+  state.dateFilter = from;
+  state.dateEnd = to;
+  closeDateRange();
   render();
+  rangeTrigger.focus();
 });
 elements.heroDateClear.addEventListener('click', () => {
   state.dateFilter = '';
+  state.dateEnd = '';
+  rangeDraftStart = '';
+  rangeDraftEnd = '';
   render();
-  window.requestAnimationFrame(() => elements.heroDateFilter.focus({ preventScroll: true }));
+  closeDateRange();
+  rangeTrigger.focus({ preventScroll: true });
 });
 
 async function toggleConversation(conversationId) {
@@ -2427,6 +2824,9 @@ async function toggleConversation(conversationId) {
     renderEmails();
     return;
   }
+  const email = (state.session.emails ?? [])
+    .find(item => Number(item.conversationId) === Number(conversationId));
+  if (email) void markNotificationsForEmail(email);
   state.expandedConversations.add(conversationId);
   renderEmails();
   if (state.conversationMessages.has(conversationId)) return;
@@ -2470,7 +2870,14 @@ elements.emailList.addEventListener('click', event => {
   else if (intent?.type === 'open') openEmail(intent.emailId);
 });
 
-elements.notificationButton.addEventListener('click', () => selectView('notifications'));
+elements.notificationButton.addEventListener('click', () => {
+  if (state.view !== 'notifications') {
+    selectView('notifications');
+    return;
+  }
+  const fallbackView = state.session?.user.role === 'dep_admin' ? 'overview' : 'assigned';
+  selectView(state.notificationReturnView || fallbackView);
+});
 elements.heroAction.addEventListener('click', () => selectView(elements.heroAction.dataset.view));
 elements.navOpen.addEventListener('click', openSidebar);
 elements.navClose.addEventListener('click', () => closeSidebar(true));
@@ -2497,6 +2904,12 @@ updateSidebarAccessibility();
 document.querySelector('#new-rule-button').addEventListener('click', event => openRuleDialog(null, event.currentTarget));
 document.querySelectorAll('[data-close-dialog]').forEach(button => {
   button.addEventListener('click', () => closeDialog(button.dataset.closeDialog));
+});
+
+elements.loginTaskOpen.addEventListener('click', () => {
+  const view = elements.loginTaskOpen.dataset.view || 'assigned';
+  elements.loginTaskDialog.close();
+  selectView(view);
 });
 
 elements.ruleDialog.addEventListener('close', () => {
@@ -2913,19 +3326,7 @@ elements.completeButton.addEventListener('click', async () => {
 elements.notificationList.addEventListener('click', async event => {
   const open = event.target.closest('.open-notification');
   if (open) {
-    openEmail(open.dataset.emailId);
-    return;
-  }
-  const read = event.target.closest('.read-notification');
-  if (!read) return;
-  setButtonBusy(read, true, '…');
-  try {
-    await mutate(`/api/notifications/${read.dataset.notificationId}/read`);
-    notificationAudio.playRead();
-    showToast('Notification marked as read.');
-  } catch (error) {
-    reportError(error);
-    setButtonBusy(read, false, '…');
+    await openNotificationThread(open.dataset.emailId, open.dataset.conversationId);
   }
 });
 

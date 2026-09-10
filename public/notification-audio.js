@@ -2,13 +2,16 @@ export const SOUND_STORAGE_KEY = 'lexflow-notification-sounds';
 
 const TONES = Object.freeze({
   notification: [
-    { frequency: 659.25, offset: 0, duration: 0.34, volume: 0.045 },
-    { frequency: 987.77, offset: 0.1, duration: 0.42, volume: 0.035 },
+    { frequency: 587.33, glideFrom: 554.37, offset: 0, duration: 0.42, volume: 0.025, type: 'sine' },
+    { frequency: 880, glideFrom: 830.61, offset: 0.09, duration: 0.54, volume: 0.022, type: 'sine' },
+    { frequency: 1760, offset: 0.13, duration: 0.31, volume: 0.006, type: 'triangle', attack: 0.012 },
   ],
   completion: [
-    { frequency: 523.25, offset: 0, duration: 0.28, volume: 0.035 },
-    { frequency: 659.25, offset: 0.075, duration: 0.32, volume: 0.038 },
-    { frequency: 783.99, offset: 0.15, duration: 0.44, volume: 0.032 },
+    { frequency: 392, offset: 0, duration: 0.44, volume: 0.018, type: 'triangle' },
+    { frequency: 523.25, glideFrom: 493.88, offset: 0.035, duration: 0.48, volume: 0.024, type: 'sine' },
+    { frequency: 659.25, offset: 0.11, duration: 0.52, volume: 0.022, type: 'sine' },
+    { frequency: 783.99, offset: 0.19, duration: 0.58, volume: 0.02, type: 'sine' },
+    { frequency: 1046.5, offset: 0.27, duration: 0.5, volume: 0.012, type: 'triangle', attack: 0.018 },
   ],
   read: [
     { frequency: 783.99, offset: 0, duration: 0.22, volume: 0.03 },
@@ -54,10 +57,14 @@ export function createNotificationAudio({ storage, AudioContextClass, eventTarge
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       const start = now + tone.offset;
-      oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(tone.frequency, start);
+      const attack = tone.attack ?? 0.025;
+      oscillator.type = tone.type ?? 'sine';
+      oscillator.frequency.setValueAtTime(tone.glideFrom ?? tone.frequency, start);
+      if (tone.glideFrom) {
+        oscillator.frequency.exponentialRampToValueAtTime(tone.frequency, start + Math.min(0.09, tone.duration / 3));
+      }
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(tone.volume, start + 0.025);
+      gain.gain.exponentialRampToValueAtTime(tone.volume, start + attack);
       gain.gain.exponentialRampToValueAtTime(0.0001, start + tone.duration);
       oscillator.connect(gain);
       gain.connect(context.destination);

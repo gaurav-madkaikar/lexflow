@@ -404,10 +404,17 @@ export function moveMemberToDepartment({
   now = new Date(),
 }) {
   return transaction(db, () => {
-    const member = db.prepare("SELECT id, name, department_id, department FROM users WHERE id = ? AND organization_id = ? AND role = 'member'").get(userId, organizationId);
+    const member = db.prepare(`
+      SELECT id, name, role, department_id, department
+      FROM users WHERE id = ? AND organization_id = ?
+    `).get(userId, organizationId);
     if (!member) {
       throw domainError(404, 'NOT_FOUND', 'Team member not found.');
     }
+    if (member.role === 'admin') {
+      throw domainError(409, 'ORG_ADMIN_CANNOT_BE_MEMBER', 'Organization administrators cannot be added as department members.');
+    }
+    if (member.role !== 'member') throw domainError(404, 'NOT_FOUND', 'Team member not found.');
     const department = db.prepare('SELECT id, name, shared_mailbox FROM departments WHERE id = ? AND organization_id = ?').get(departmentId, organizationId);
     if (!department) {
       throw domainError(404, 'NOT_FOUND', 'Department not found.');

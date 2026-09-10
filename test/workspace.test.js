@@ -129,6 +129,23 @@ test('department placement trusts the OrgAdmin assignment without mailbox verifi
   assert.equal('mailboxAccessMessage' in moved, false);
 });
 
+test('an OrgAdmin cannot be placed into a department as a member', (context) => {
+  const db = createDatabase(':memory:');
+  context.after(() => db.close());
+  seedDemoData(db);
+
+  const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' AND is_platform_admin = 0").get();
+  const department = db.prepare("SELECT id FROM departments WHERE name = 'Legal'").get();
+  assert.throws(
+    () => moveMemberToDepartment({
+      db,
+      userId: Number(admin.id),
+      departmentId: Number(department.id),
+    }),
+    error => error.code === 'ORG_ADMIN_CANNOT_BE_MEMBER',
+  );
+});
+
 test('migration preserves legacy data and is idempotent', () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`

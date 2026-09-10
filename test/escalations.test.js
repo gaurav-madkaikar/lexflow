@@ -51,6 +51,37 @@ test('due escalation sends one safe shared-mailbox message and records its level
   db.close();
 });
 
+test('escalation matrix sends each configured recipient in order at the configured interval', async () => {
+  const { db, departmentId } = fixture();
+  replaceEscalationRecipients({
+    db,
+    organizationId: 1,
+    departmentId,
+    recipients: ['lead@example.test', 'director@example.test'],
+    now: new Date('2026-09-01T00:00:00.000Z'),
+  });
+  const calls = [];
+  const outlook = {
+    async sendEscalation(payload) {
+      calls.push(payload);
+      return { requestId: `request-${calls.length}` };
+    },
+  };
+
+  await evaluateEscalations({ db, organizationId: 1, now: new Date('2026-09-02T00:01:00.000Z'), outlook });
+  await evaluateEscalations({ db, organizationId: 1, now: new Date('2026-09-03T00:02:00.000Z'), outlook });
+
+  assert.deepEqual(calls.map(call => call.recipient), ['lead@example.test', 'director@example.test']);
+  assert.deepEqual(
+    db.prepare('SELECT level, recipient_email, state FROM escalation_deliveries ORDER BY level').all().map(row => ({ ...row })),
+    [
+      { level: 1, recipient_email: 'lead@example.test', state: 'sent' },
+      { level: 2, recipient_email: 'director@example.test', state: 'sent' },
+    ],
+  );
+  db.close();
+});
+
 test('an Exchange bounce stays unassigned and reconciles the escalation delivery', async () => {
   const { db, departmentId } = fixture();
   await evaluateEscalations({

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createAlertRunner, evaluateOverdueAlerts } from '../src/alerts.js';
+import {
+  createAlertRunner,
+  evaluateOverdueAlerts,
+  isIstWorkingTime,
+  istWorkingMillisecondsBetween,
+} from '../src/alerts.js';
 import { loadConfig } from '../src/config.js';
 import { createDatabase, seedDemoData } from '../src/db.js';
 import { assignEmailManually, completeAssignedEmail } from '../src/workflows.js';
@@ -108,6 +113,60 @@ test('unassigned alerts use Outlook received time, repeat hourly, and stop after
     SELECT count(*) AS count FROM alert_deliveries
     WHERE email_id = ? AND kind = 'unassigned_overdue'
   `).get(emailId).count, 0);
+});
+
+test('unassigned alert SLA accrues and repeats only from 9 AM to 7 PM IST', (context) => {
+  const db = createDatabase(':memory:');
+  context.after(() => db.close());
+  seedDemoData(db);
+  updateWorkspaceSettings({ db, timeUnassignedHours: 1, timeAssignedUnmarkedHours: 24 });
+  const legal = db.prepare("SELECT id FROM departments WHERE name = 'Legal'").get();
+  const emailId = insertEmail(db, {
+    providerId: 'working-hours-only',
+    status: 'unassigned',
+    receivedAt: '2026-09-09T13:00:00.000Z', // 6:30 PM IST
+    createdAt: '2026-09-09T13:00:00.000Z',
+    departmentId: Number(legal.id),
+  });
+
+  assert.equal(isIstWorkingTime('2026-09-09T13:29:00.000Z'), true);
+  assert.equal(isIstWorkingTime('2026-09-09T13:30:00.000Z'), false);
+  assert.equal(istWorkingMillisecondsBetween(
+    '2026-09-09T13:00:00.000Z',
+    '2026-09-10T03:59:00.000Z',
+  ), 59 * 60_000);
+  assert.deepEqual(
+    evaluateOverdueAlerts({ db, now: new Date('2026-09-09T14:30:00.000Z') }),
+    { created: 0 },
+  );
+  assert.deepEqual(
+    evaluateOverdueAlerts({ db, now: new Date('2026-09-10T03:59:00.000Z') }),
+    { created: 0 },
+  );
+  assert.deepEqual(
+    evaluateOverdueAlerts({ db, now: new Date('2026-09-10T04:00:00.000Z') }),
+    { created: 1 },
+  );
+  assert.deepEqual(
+    evaluateOverdueAlerts({ db, now: new Date('2026-09-10T13:45:00.000Z') }),
+    { created: 0 },
+  );
+  db.prepare(`
+    UPDATE alert_deliveries SET last_notified_at = '2026-09-10T13:00:00.000Z'
+    WHERE email_id = ? AND kind = 'unassigned_overdue'
+  `).run(emailId);
+  assert.deepEqual(
+    evaluateOverdueAlerts({ db, now: new Date('2026-09-11T03:59:00.000Z') }),
+    { created: 0 },
+  );
+  assert.deepEqual(
+    evaluateOverdueAlerts({ db, now: new Date('2026-09-11T04:00:00.000Z') }),
+    { created: 1 },
+  );
+  assert.equal(db.prepare(`
+    SELECT count(*) AS count FROM notifications
+    WHERE email_id = ? AND kind = 'unassigned_overdue'
+  `).get(emailId).count, 2);
 });
 
 test('assigned alerts reach admins and assignee, reset on reassignment, and stop on completion', (context) => {

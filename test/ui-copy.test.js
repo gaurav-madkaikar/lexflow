@@ -47,6 +47,32 @@ test('notifications expose a current-user bulk read action', () => {
   assert.match(app, /marked as read/);
 });
 
+test('notification rows navigate to and expand their related conversation', () => {
+  assert.match(app, /open\.dataset\.emailId = String\(item\.targetEmailId \|\| item\.emailId\)/);
+  assert.match(app, /if \(item\.conversationId\) open\.dataset\.conversationId = String\(item\.conversationId\)/);
+  assert.match(app, /open\.append\(top, node\('p', '', item\.message\), node\('span', 'notification-open-label', 'Open thread'\)\)/);
+  assert.match(app, /await openNotificationThread\(open\.dataset\.emailId, open\.dataset\.conversationId\)/);
+  assert.match(app, /state\.expandedConversations\.add\(email\.conversationId\)/);
+  assert.match(app, /api\(`\/api\/conversations\/\$\{email\.conversationId\}\/messages`\)/);
+});
+
+test('opening an email or conversation automatically reads its notifications', () => {
+  assert.match(app, /function markNotificationsForEmail\(email\)/);
+  assert.match(app, /api\(`\/api\/notifications\/email\/\$\{email\.id\}\/read`, \{ method: 'POST' \}\)/);
+  assert.match(app, /function openEmail[\s\S]*void markNotificationsForEmail\(email\)/);
+  assert.match(app, /async function toggleConversation[\s\S]*void markNotificationsForEmail\(email\)/);
+  assert.doesNotMatch(app, /node\('button', 'read-notification', 'Mark read'\)/);
+});
+
+test('open email rows show a visible SLA breach state using workspace response timing', () => {
+  assert.match(app, /function emailSlaState\(email, now = Date\.now\(\)\)/);
+  assert.match(app, /timing\?\.timeUnassignedHours/);
+  assert.match(app, /timing\?\.timeAssignedUnmarkedHours/);
+  assert.match(app, /node\('span', 'tag sla-breached', 'SLA breached'\)/);
+  assert.match(styles, /\.email-row\.sla-breached\s*\{/);
+  assert.match(styles, /html\[data-theme="dark"\] \.email-row\.sla-breached/);
+});
+
 test('assigned conversation threads expose one completion action while message dialogs keep single-email completion', () => {
   assert.match(app, /complete\.dataset\.completeThread = String\(email\.id\)/);
   assert.match(app, /node\('button', 'conversation-complete', 'Complete thread'\)/);
@@ -84,7 +110,7 @@ test('account menu exposes theme and sound controls with success-only hooks', ()
   assert.match(app, /createNotificationAudio\(/);
   assert.match(app, /unreadCount > state\.lastUnreadCount[\s\S]*notificationAudio\.playNotification\(\)/);
   assert.match(app, /await mutate\(`\/api\/emails\/\$\{state\.selectedEmailId\}\/complete`\)[\s\S]*notificationAudio\.playCompletion\(\)/);
-  assert.match(app, /await mutate\(`\/api\/notifications\/\$\{read\.dataset\.notificationId\}\/read`\)[\s\S]*notificationAudio\.playRead\(\)/);
+  assert.match(app, /await api\(`\/api\/notifications\/email\/\$\{email\.id\}\/read`, \{ method: 'POST' \}\)[\s\S]*notificationAudio\.playRead\(\)/);
   assert.match(html, /<script src="\/vendor\/chart\.js"><\/script>\s*<script type="module" src="\/app\.js"><\/script>/);
   assert.doesNotMatch(html, /<script[^>]+src="\/vendor\/animejs\.js"/);
 });
@@ -143,6 +169,14 @@ test('workspace-aligned login avoids decorative status copy and keeps the restra
   assert.match(styles, /\.login-main-surface\s*\{[^}]*grid-template-rows:\s*1fr/s);
 });
 
+test('login includes a reduced-motion-safe Wispr-style LexFlow marquee', () => {
+  assert.match(html, /class="login-wispr"[^>]*aria-label="LexFlow animated wordmark"/);
+  assert.equal((html.match(/<span>LexFlow<\/span>/g) ?? []).length, 12);
+  assert.match(styles, /\.login-wispr-track\s*\{[^}]*animation:\s*login-wispr-forward 18s linear infinite/s);
+  assert.match(styles, /@keyframes login-wispr-reverse/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.login-wispr-track\s*\{[^}]*animation:\s*none !important/s);
+});
+
 test('OrgAdmin people controls live on a collapsible Team page', () => {
   assert.match(html, /data-view="departments">[\s\S]*?<span>Team<\/span>/);
   assert.match(html, /<h2 id="departments-panel-title">Team<\/h2>/);
@@ -158,13 +192,18 @@ test('OrgAdmin people controls live on a collapsible Team page', () => {
   assert.match(styles, /\.department-member-controls\s*\{/);
 });
 
+test('OrgAdmin identities cannot be converted into department members', () => {
+  assert.match(app, /if \(member\.role === 'org_admin'\) \{[\s\S]*?role\.disabled = true;/);
+  assert.match(app, /Organization administrators cannot be converted into members\./);
+});
+
 test('asynchronous failures use the global safe reporter instead of silent catches', () => {
   assert.match(app, /function reportError\(error, fallback/);
   assert.match(app, /function reportPollingFailure\(error\)/);
   assert.doesNotMatch(app, /\.catch\(\(\) => \{\}\)/);
   assert.match(app, /window\.addEventListener\('unhandledrejection'/);
   assert.match(app, /window\.addEventListener\('error'/);
-  assert.match(app, /Notification marked as read\./);
+  assert.match(app, /This thread’s notifications could not be marked as read\./);
 });
 
 test('department cards do not claim mailbox access verification', () => {

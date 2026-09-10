@@ -53,6 +53,7 @@ const escalationRunner = createEscalationRunner({
 const app = createApp({
   db,
   syncRunner,
+  escalationRunner,
   mode: config.mode,
   integrations: {
     outlook: outlookIntegration,

@@ -421,6 +421,14 @@ export function updateMember({ db, organizationId, memberId, input, actorId = nu
   const nextRole = input?.role === undefined ? member.role : input.role === 'org_admin' ? 'admin' : input.role === 'member' ? 'member' : null;
   const nextStatus = input?.status === undefined ? member.account_status : input.status;
   if (!nextRole || !['pending', 'active', 'disabled'].includes(nextStatus)) throw error(400, 'INVALID_INPUT', 'Invalid member update.');
+  if (member.role === 'admin' && nextRole !== 'admin') {
+    throw error(
+      409,
+      'ORG_ADMIN_ROLE_LOCKED',
+      'Organization administrators cannot be converted into members.',
+      'role',
+    );
+  }
   if (member.role === 'admin' && (nextRole !== 'admin' || nextStatus !== 'active')) {
     const activeAdmins = db.prepare(`SELECT count(*) AS count FROM users WHERE organization_id = ? AND role = 'admin' AND account_status = 'active'`).get(organizationId).count;
     if (Number(activeAdmins) <= 1) throw error(409, 'LAST_ADMIN', 'The last active organization administrator cannot be disabled or demoted.');

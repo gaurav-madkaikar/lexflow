@@ -732,6 +732,7 @@ test('only OrgAdmins manage departments, team placement, heads, and workspace li
   assert.equal('departments' in memberBootstrap.body, false);
   assert.equal('settings' in memberBootstrap.body, false);
   assert.equal('team' in memberBootstrap.body, false);
+  assert.deepEqual(memberBootstrap.body.responseTiming, settings.body.settings);
 });
 
 test('OrgAdmin is email-blind while DepAdmin authority follows the current department head', async (context) => {
@@ -850,11 +851,13 @@ test('bootstrap reports role-scoped pending task counts only to Members and DepA
 
   assert.equal('pendingTasks' in orgAdmin.body, false);
   assert.deepEqual(depAdmin.body.pendingTasks, {
+    newAssigned: 1,
     assignedToMe: 1,
     unassignedDepartment: 1,
     unreadNotifications: 1,
   });
   assert.deepEqual(member.body.pendingTasks, {
+    newAssigned: 1,
     assignedToMe: 1,
     unassignedDepartment: 0,
     unreadNotifications: 1,
@@ -877,6 +880,10 @@ test('a user can mark all of their organization notifications as read', async (c
       (?, ?, 'assignment', 'Another user update.', ?, 1)
   `).run(mayaId, email.id, now, mayaId, email.id, now, noahId, email.id, now);
 
+  const bootstrap = await harness.get('/api/bootstrap', mayaCookie);
+  assert.ok(bootstrap.body.notifications.every(item => item.targetEmailId === email.id));
+  assert.ok(bootstrap.body.notifications.every(item => 'conversationId' in item));
+
   const result = await harness.post('/api/notifications/read-all', {}, mayaCookie);
   assert.equal(result.status, 200);
   assert.deepEqual(result.body, { read: true, count: 2 });
@@ -885,6 +892,31 @@ test('a user can mark all of their organization notifications as read', async (c
 
   const repeated = await harness.post('/api/notifications/read-all', {}, mayaCookie);
   assert.deepEqual(repeated.body, { read: true, count: 0 });
+});
+
+test('opening an email marks every notification for its conversation as read', async (context) => {
+  const harness = await createApiHarness(context);
+  const mayaCookie = await harness.login('maya@lexflow.local');
+  const noahCookie = await harness.login('noah@lexflow.local');
+  const mayaId = harness.userId('maya@lexflow.local');
+  const email = harness.emailAssignedTo('maya@lexflow.local');
+  const now = '2026-08-30T12:00:00.000Z';
+
+  harness.db.prepare('DELETE FROM notifications').run();
+  harness.db.prepare(`
+    INSERT INTO notifications (user_id, email_id, kind, message, created_at, organization_id)
+    VALUES (?, ?, 'assignment', 'Assigned.', ?, 1),
+      (?, ?, 'assigned_overdue', 'SLA breached.', ?, 1)
+  `).run(mayaId, email.id, now, mayaId, email.id, now);
+
+  const result = await harness.post(`/api/notifications/email/${email.id}/read`, {}, mayaCookie);
+  assert.deepEqual(result.body, { read: true, count: 2 });
+  assert.equal(harness.db.prepare(`
+    SELECT count(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NOT NULL
+  `).get(mayaId).count, 2);
+
+  const forbidden = await harness.post(`/api/notifications/email/${email.id}/read`, {}, noahCookie);
+  assert.equal(forbidden.status, 404);
 });
 
 test('email open links are limited to the current DepAdmin department or Member assignment', async (context) => {

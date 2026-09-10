@@ -88,6 +88,17 @@
       </aside>
 
       <main class="login-main-surface">
+        <div class="login-wispr" role="img" aria-label="LexFlow animated wordmark" data-login-reveal>
+          <div class="login-wispr-track" aria-hidden="true">
+            <span>LexFlow</span><span>LexFlow</span><span>LexFlow</span><span>LexFlow</span>
+          </div>
+          <div class="login-wispr-track is-filled" aria-hidden="true">
+            <span>LexFlow</span><span>LexFlow</span><span>LexFlow</span><span>LexFlow</span>
+          </div>
+          <div class="login-wispr-track is-reverse" aria-hidden="true">
+            <span>LexFlow</span><span>LexFlow</span><span>LexFlow</span><span>LexFlow</span>
+          </div>
+        </div>
         <section class="login-card card" aria-label="Sign in" data-login-reveal>
           <p class="eyebrow">Secure access</p>
           <h1 id="login-title">Welcome back</h1>
@@ -168,11 +179,6 @@
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-activity"></use></svg>
               <span>Activity</span>
             </button>
-            <button class="nav-item" type="button" data-view="notifications">
-              <svg class="nav-icon" aria-hidden="true"><use href="#icon-bell"></use></svg>
-              <span>Notifications</span>
-              <span class="nav-badge" data-badge="notifications">0</span>
-            </button>
           </div>
         </div>
 
@@ -215,11 +221,6 @@
             <button class="nav-item" type="button" data-view="metrics">
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-metrics"></use></svg>
               <span>Metrics</span>
-            </button>
-            <button class="nav-item" type="button" data-view="notifications">
-              <svg class="nav-icon" aria-hidden="true"><use href="#icon-bell"></use></svg>
-              <span>Notifications</span>
-              <span class="nav-badge" data-badge="notifications">0</span>
             </button>
           </div>
         </div>
@@ -282,7 +283,7 @@
             <svg class="icon" aria-hidden="true"><use href="#icon-sync"></use></svg>
             <span class="button-label action-label" data-button-label>Sync now</span>
           </button>
-          <button class="icon-button notification-button" id="notification-button" type="button" aria-label="View notifications">
+          <button class="icon-button notification-button" id="notification-button" type="button" aria-label="View notifications" aria-controls="notifications-panel" aria-pressed="false">
             <svg class="icon" aria-hidden="true"><use href="#icon-bell"></use></svg>
             <span class="notification-count" id="notification-count" aria-hidden="true">0</span>
           </button>
@@ -402,7 +403,7 @@
           </section>
         </section>
 
-        <section class="dashboard-hero" id="dashboard-hero" aria-labelledby="hero-title">
+        <section class="dashboard-hero" id="dashboard-hero" aria-label="Mailbox date and filters">
           <div class="hero-actions">
             <time class="hero-date" id="hero-date">
               <strong id="hero-day"></strong>
@@ -415,16 +416,46 @@
               <span id="hero-action-label">Review inbox</span>
               <svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg>
             </button>
-            <span class="hero-calendar-control">
-              <label class="hero-calendar" for="hero-date-filter" title="Filter emails by received date">
+            <div class="date-range-control">
+              <button class="date-range-trigger" id="date-range-trigger" type="button" aria-expanded="false" aria-controls="date-range-panel" aria-haspopup="dialog">
                 <svg class="icon" aria-hidden="true"><use href="#icon-calendar"></use></svg>
-                <span class="visually-hidden">Filter emails by received date</span>
-                <input id="hero-date-filter" type="date" aria-describedby="hero-date-filter-status">
-              </label>
-              <button class="hero-date-clear" id="hero-date-clear" type="button" aria-label="Clear date filter" hidden>
-                <svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>
+                <span id="date-range-label">All dates</span><span aria-hidden="true">⌄</span>
               </button>
-            </span>
+            <div class="hero-calendar-control date-range-panel" id="date-range-panel" role="dialog" aria-label="Choose received date range" popover="manual" hidden>
+              <aside class="date-range-presets" aria-label="Common date ranges">
+                <div class="date-range-heading"><strong>Date range</strong><span>Received date</span></div>
+                <button type="button" data-range-preset="30d">Last 30 days</button>
+                <button type="button" data-range-preset="2m">Last 2 months</button>
+                <button type="button" data-range-preset="3m">Last 3 months</button>
+                <button type="button" data-range-preset="12m">Last 12 months</button>
+                <button type="button" data-range-preset="mtd">Month to date</button>
+                <button type="button" data-range-preset="qtd">Quarter to date</button>
+              </aside>
+              <div class="date-calendar-area">
+                <div class="date-calendar-toolbar">
+                  <button type="button" id="date-calendar-prev" aria-label="Show previous month">‹</button>
+                  <span>Select a start and end date</span>
+                  <button type="button" id="date-calendar-next" aria-label="Show next month">›</button>
+                </div>
+                <div class="date-calendar-months" id="date-calendar-months" aria-live="polite"></div>
+                <p id="date-range-error" role="alert" hidden>Choose a valid date range.</p>
+                <footer class="date-range-footer">
+                  <div class="date-range-values" aria-label="Selected date range">
+                    <span id="date-range-start-display">Start date</span>
+                    <span aria-hidden="true">→</span>
+                    <span id="date-range-end-display">End date</span>
+                  </div>
+                  <div class="date-range-actions">
+                    <button class="hero-date-clear" id="hero-date-clear" type="button" aria-label="Clear date filter" hidden>Clear</button>
+                    <button class="date-range-cancel" id="date-range-cancel" type="button">Cancel</button>
+                    <button class="button" id="date-range-apply" type="button">Apply dates</button>
+                  </div>
+                </footer>
+                <input class="visually-hidden" id="hero-date-filter" type="date" tabindex="-1" aria-describedby="hero-date-filter-status">
+                <input class="visually-hidden" id="hero-date-end" type="date" tabindex="-1" aria-describedby="hero-date-filter-status">
+              </div>
+            </div>
+            </div>
             <span class="visually-hidden" id="hero-date-filter-status" role="status" aria-live="polite" aria-atomic="true">Showing emails from all received dates.</span>
           </div>
 
@@ -781,6 +812,37 @@
       <a class="button" id="outlook-link" href="#" target="_blank" rel="noopener noreferrer" hidden>Open email</a>
       <button class="button primary" id="assign-button" type="submit" form="email-assignment-form" hidden><span class="button-label" data-button-label>Assign</span></button>
       <button class="button primary" id="complete-button" type="button"><span class="button-label" data-button-label>Mark complete</span></button>
+    </div>
+  </dialog>
+
+  <dialog class="dialog login-task-dialog" id="login-task-dialog" aria-labelledby="login-task-title" aria-describedby="login-task-copy">
+    <div class="dialog-head login-task-head">
+      <div>
+        <p class="eyebrow">Welcome back</p>
+        <h2 id="login-task-title">Your work at a glance</h2>
+      </div>
+      <button class="icon-button dialog-close" type="button" data-close-dialog="login-task-dialog" aria-label="Close task summary">
+        <svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>
+      </button>
+    </div>
+    <div class="login-task-body">
+      <p id="login-task-copy">Here is what changed while you were away.</p>
+      <div class="login-task-metrics" aria-label="Task summary">
+        <div class="login-task-metric is-new" data-task-summary-reveal>
+          <span>New assignments</span>
+          <strong id="login-task-new-count">0</strong>
+          <small>Unread assignments since your last review</small>
+        </div>
+        <div class="login-task-metric" data-task-summary-reveal>
+          <span>Open tasks</span>
+          <strong id="login-task-pending-count">0</strong>
+          <small id="login-task-pending-label">Waiting for your action</small>
+        </div>
+      </div>
+    </div>
+    <div class="dialog-actions login-task-actions">
+      <button class="button" type="button" data-close-dialog="login-task-dialog">Not now</button>
+      <button class="button primary" id="login-task-open" type="button">Open pending tasks</button>
     </div>
   </dialog>
 
