@@ -1,0 +1,38 @@
+/* LexFlow v1.0 - proposed brand tokens. Dark on-accent text is intentional. */
+:root {
+  --lf-canvas: #FBFBFA;
+  --lf-surface: #FFFFFF;
+  --lf-soft: #F2F2EF;
+  --lf-text: #11110F;
+  --lf-muted: #65655F;
+  --lf-border: #DFDFDA;
+  --lf-accent: #C94B31;
+  --lf-accentHover: #B84028;
+  --lf-accentSoft: #F9E6E0;
+  --lf-success: #23744A;
+  --lf-warning: #8A5700;
+  --lf-danger: #A72727;
+  --lf-onAccent: #FFFFFF;
+}
+[data-theme="dark"] {
+  --lf-canvas: #080C13;
+  --lf-surface: #111720;
+  --lf-soft: #171E29;
+  --lf-text: #F4F7FB;
+  --lf-muted: #A8B2C1;
+  --lf-border: #2A303B;
+  --lf-accent: #FF6542;
+  --lf-accentHover: #FF7A5C;
+  --lf-accentSoft: #352019;
+  --lf-success: #58D785;
+  --lf-warning: #F0BD5A;
+  --lf-danger: #FF8178;
+  --lf-onAccent: #080C13;
+}
+:root { --lf-font: "Avenir Next", "Helvetica Neue", Inter, Arial, sans-serif; --lf-radius-card:26px; --lf-radius-control:14px; --lf-radius-pill:999px; --lf-space:8px; --lf-motion:220ms; }
+.lf-card { background:var(--lf-surface); color:var(--lf-text); border:1px solid var(--lf-border); border-radius:var(--lf-radius-card); padding:24px; }
+.lf-button { min-height:44px; padding:12px 24px; border:0; border-radius:999px; background:var(--lf-accent); color:var(--lf-onAccent); font:600 14px var(--lf-font); cursor:pointer; }
+.lf-button:hover { background:var(--lf-accentHover); }
+.lf-button:focus-visible { outline:3px solid var(--lf-accent); outline-offset:3px; }
+.lf-unread { background:var(--lf-accentSoft); }
+@media(prefers-reduced-motion:reduce) { :root { --lf-motion:0ms; } }

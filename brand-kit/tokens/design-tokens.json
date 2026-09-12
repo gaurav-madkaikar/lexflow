@@ -1,0 +1,69 @@
+{
+  "brand": "LexFlow",
+  "version": "1.0",
+  "status": "Proposed brand system based on current app",
+  "themes": {
+    "light": {
+      "canvas": "#FBFBFA",
+      "surface": "#FFFFFF",
+      "soft": "#F2F2EF",
+      "text": "#11110F",
+      "muted": "#65655F",
+      "border": "#DFDFDA",
+      "accent": "#C94B31",
+      "accentHover": "#B84028",
+      "accentSoft": "#F9E6E0",
+      "success": "#23744A",
+      "warning": "#8A5700",
+      "danger": "#A72727",
+      "onAccent": "#FFFFFF"
+    },
+    "dark": {
+      "canvas": "#080C13",
+      "surface": "#111720",
+      "soft": "#171E29",
+      "text": "#F4F7FB",
+      "muted": "#A8B2C1",
+      "border": "#2A303B",
+      "accent": "#FF6542",
+      "accentHover": "#FF7A5C",
+      "accentSoft": "#352019",
+      "success": "#58D785",
+      "warning": "#F0BD5A",
+      "danger": "#FF8178",
+      "onAccent": "#080C13"
+    }
+  },
+  "spacing": [
+    4,
+    8,
+    12,
+    16,
+    24,
+    32,
+    48,
+    64,
+    96
+  ],
+  "radius": {
+    "small": 14,
+    "card": 26,
+    "shell": 40,
+    "pill": 999
+  },
+  "type": {
+    "family": "\"Avenir Next\", \"Helvetica Neue\", Inter, Arial, sans-serif",
+    "body": 16,
+    "label": 12,
+    "section": 28,
+    "page": 40,
+    "display": 64
+  },
+  "motion": {
+    "fast": 140,
+    "standard": 220,
+    "entrance": 420,
+    "stagger": 45,
+    "easing": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+  }
+}
