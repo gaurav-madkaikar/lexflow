@@ -42,8 +42,10 @@
     <symbol id="icon-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/></symbol>
     <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></symbol>
     <symbol id="icon-metrics" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/><path d="m3 7 6-4 6 6 6-5"/></symbol>
+    <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></symbol>
     <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M20 15.1A8.5 8.5 0 0 1 8.9 4a8.5 8.5 0 1 0 11.1 11.1Z"/></symbol>
     <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="icon-vacation" viewBox="0 0 24 24"><path d="M4 19h16M7 19c1.1-3.8 2.8-6.7 5-8.8M12 10.2c1.9-1.7 4.2-2.5 7-2.2-1.1 2.4-3.3 3.7-6.7 3.8M12.1 10.2C10.6 7.8 8.7 6.4 6.3 6c.1 2.7 1.8 4.5 5.2 5.4M12 10V4"/></symbol>
   </svg>
 
   <a class="skip-link" id="skip-link" href="#main-content" hidden>Skip to main content</a>
@@ -162,6 +164,10 @@
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-metrics"></use></svg>
               <span>Metrics</span>
             </button>
+            <button class="nav-item" type="button" data-view="vacation">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-vacation"></use></svg>
+              <span>Vacation</span>
+            </button>
           </div>
 
           <p class="nav-label">Management</p>
@@ -221,6 +227,10 @@
             <button class="nav-item" type="button" data-view="metrics">
               <svg class="nav-icon" aria-hidden="true"><use href="#icon-metrics"></use></svg>
               <span>Metrics</span>
+            </button>
+            <button class="nav-item" type="button" data-view="vacation">
+              <svg class="nav-icon" aria-hidden="true"><use href="#icon-vacation"></use></svg>
+              <span>Vacation</span>
             </button>
           </div>
         </div>
@@ -523,6 +533,10 @@
                   <h2 id="activity-title">Recent activity</h2>
                   <p>Latest workflow events</p>
                 </div>
+                <button class="small-button" id="audit-download-button" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#icon-download"></use></svg>
+                  <span data-button-label>Download Excel</span>
+                </button>
               </div>
               <div class="activity-list" id="activity-list"></div>
             </section>
@@ -555,6 +569,42 @@
                 <button class="small-button" id="mark-all-notifications-read" type="button" hidden>Mark all as read</button>
               </div>
               <div class="notification-list" id="notification-list"></div>
+            </section>
+
+            <section class="card panel vacation-panel" id="vacation-panel" aria-labelledby="vacation-title" hidden>
+              <div class="vacation-hero">
+                <div>
+                  <p class="card-kicker">Availability</p>
+                  <h2 id="vacation-title">Vacation Mode</h2>
+                  <p id="vacation-status-copy">Keep your team informed and protect new work while you are away.</p>
+                </div>
+                <label class="vacation-switch" for="vacation-toggle">
+                  <span class="visually-hidden">Vacation Mode</span>
+                  <input id="vacation-toggle" name="enabled" type="checkbox" role="switch">
+                  <span class="vacation-switch-track" aria-hidden="true"><span></span></span>
+                  <strong id="vacation-toggle-label">Off</strong>
+                </label>
+              </div>
+              <form class="vacation-form" id="vacation-form" novalidate>
+                <div class="vacation-date-grid" id="vacation-date-grid">
+                  <label class="field"><span>First day away</span><input name="startDate" type="date" required></label>
+                  <span class="vacation-date-arrow" aria-hidden="true">→</span>
+                  <label class="field"><span>Last day away</span><input name="endDate" type="date" required></label>
+                </div>
+                <p class="vacation-timezone" id="vacation-timezone">Dates follow your workspace timezone.</p>
+                <p class="form-error" id="vacation-error" role="alert" hidden></p>
+                <div class="vacation-actions">
+                  <button class="button primary" id="vacation-save" type="submit"><span class="button-label" data-button-label>Activate Vacation Mode</span></button>
+                </div>
+              </form>
+              <div class="vacation-explainer">
+                <span class="vacation-explainer-mark" aria-hidden="true"><svg class="icon"><use href="#icon-rules"></use></svg></span>
+                <div><strong>A clear handover, a simpler return</strong><p>While you are away, new assignments to you are paused. Your administrator can reassign existing tickets to available teammates. Those handovers appear in your priority-sorted briefing when you return.</p></div>
+              </div>
+              <section class="vacation-history" aria-labelledby="vacation-history-title">
+                <div class="vacation-history-head"><h3 id="vacation-history-title">Return briefings</h3><span id="vacation-history-count">0 briefings</span></div>
+                <div id="vacation-history-list"></div>
+              </section>
             </section>
 
             <section class="card panel" id="platform-panel" aria-labelledby="platform-title" hidden>
@@ -843,6 +893,30 @@
     <div class="dialog-actions login-task-actions">
       <button class="button" type="button" data-close-dialog="login-task-dialog">Not now</button>
       <button class="button primary" id="login-task-open" type="button">Open pending tasks</button>
+    </div>
+  </dialog>
+
+  <dialog class="dialog vacation-briefing-dialog" id="vacation-briefing-dialog" aria-labelledby="vacation-briefing-title" aria-describedby="vacation-briefing-copy">
+    <div class="dialog-head vacation-briefing-head">
+      <div>
+        <p class="eyebrow">Welcome back</p>
+        <h2 id="vacation-briefing-title">Here’s what moved while you were away</h2>
+      </div>
+      <button class="icon-button dialog-close" type="button" data-close-dialog="vacation-briefing-dialog" aria-label="Close return briefing">
+        <svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg>
+      </button>
+    </div>
+    <div class="vacation-briefing-body">
+      <p id="vacation-briefing-copy">Reassigned tickets are ordered by priority so you can catch up quickly.</p>
+      <div class="vacation-briefing-summary" data-vacation-reveal>
+        <strong id="vacation-briefing-count">0</strong>
+        <span>tickets covered by your team</span>
+        <small id="vacation-briefing-period"></small>
+      </div>
+      <div class="vacation-briefing-list" id="vacation-briefing-list"></div>
+    </div>
+    <div class="dialog-actions vacation-briefing-actions">
+      <button class="button primary" id="vacation-briefing-done" type="button">Got it</button>
     </div>
   </dialog>
 

@@ -35,12 +35,12 @@ function roleCopy(role, departmentName = '') {
     dep_admin: {
       kicker: departmentName ? `${departmentName} reporting` : 'Department reporting',
       title: 'Workflow performance',
-      summary: 'Assignment outcomes, employee workload, and automation-rule effectiveness for your department.',
+      summary: 'Assignment outcomes, employee workload, and rule effectiveness. Handling, resolution and SLA time count only 9 AM–7 PM IST, every day.',
     },
     member: {
       kicker: 'Personal reporting',
       title: 'My metrics',
-      summary: 'Your assignments, completions, and handling-time trend.',
+      summary: 'Your assignments, completions, and handling-time trend. Time and SLA metrics count only 9 AM–7 PM IST, every day.',
     },
   }[role] ?? { kicker: 'Reporting', title: 'Metrics', summary: 'Operational reporting.' };
 }

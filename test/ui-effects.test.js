@@ -67,3 +67,30 @@ test('pointer spotlight ignores touch and updates fine pointer coordinates', () 
   assert.equal(values.get('--spotlight-x'), '30px');
   assert.equal(values.get('--spotlight-y'), '40px');
 });
+
+test('Vacation entrance has one shell owner and explicit visible end states', () => {
+  const harness = effectsHarness();
+  const effects = createUiEffects(harness.options);
+  const panel = { style: {} };
+  const sections = [{ style: {} }, { style: {} }];
+  effects.vacationPanel(panel, sections, 'off');
+  effects.workspace([panel], 'vacation');
+  const shellAnimations = harness.animations.filter(item => item.targets.includes(panel));
+  assert.equal(shellAnimations.length, 1);
+  for (const { options } of harness.animations) {
+    assert.deepEqual(options.opacity, { from: 0, to: 1 });
+    assert.equal(options.translateY.to, 0);
+  }
+});
+
+test('Vacation reduced motion keeps sections visible', () => {
+  const harness = effectsHarness({ reduced: true });
+  const effects = createUiEffects(harness.options);
+  const panel = { style: { opacity: '0' } };
+  const sections = [{ style: { opacity: '0' } }];
+  effects.vacationPanel(panel, sections, 'off');
+  effects.workspace([panel], 'vacation');
+  assert.equal(harness.animations.length, 0);
+  assert.equal(panel.style.opacity, '');
+  assert.equal(sections[0].style.opacity, '');
+});

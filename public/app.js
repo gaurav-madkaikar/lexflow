@@ -53,6 +53,8 @@ const state = {
   escalationRecipients: null,
   notificationReturnView: null,
   notificationReadInFlight: new Set(),
+  vacationDirty: false,
+  reviewingVacationBriefingId: null,
 };
 
 const elements = {
@@ -126,10 +128,21 @@ const elements = {
   rulesOverviewAction: document.querySelector('[data-overview-view="rules"]'),
   activityPanel: document.querySelector('#activity-panel'),
   activityList: document.querySelector('#activity-list'),
+  auditDownloadButton: document.querySelector('#audit-download-button'),
   notificationsPanel: document.querySelector('#notifications-panel'),
   notificationsCaption: document.querySelector('#notifications-caption'),
   notificationList: document.querySelector('#notification-list'),
   markAllNotificationsRead: document.querySelector('#mark-all-notifications-read'),
+  vacationPanel: document.querySelector('#vacation-panel'),
+  vacationForm: document.querySelector('#vacation-form'),
+  vacationToggle: document.querySelector('#vacation-toggle'),
+  vacationToggleLabel: document.querySelector('#vacation-toggle-label'),
+  vacationStatusCopy: document.querySelector('#vacation-status-copy'),
+  vacationTimezone: document.querySelector('#vacation-timezone'),
+  vacationError: document.querySelector('#vacation-error'),
+  vacationSave: document.querySelector('#vacation-save'),
+  vacationHistoryCount: document.querySelector('#vacation-history-count'),
+  vacationHistoryList: document.querySelector('#vacation-history-list'),
   platformPanel: document.querySelector('#platform-panel'),
   departmentsPanel: document.querySelector('#departments-panel'),
   departmentManagementForm: document.querySelector('#department-management-form'),
@@ -197,6 +210,12 @@ const elements = {
   loginTaskPendingCount: document.querySelector('#login-task-pending-count'),
   loginTaskPendingLabel: document.querySelector('#login-task-pending-label'),
   loginTaskOpen: document.querySelector('#login-task-open'),
+  vacationBriefingDialog: document.querySelector('#vacation-briefing-dialog'),
+  vacationBriefingCopy: document.querySelector('#vacation-briefing-copy'),
+  vacationBriefingCount: document.querySelector('#vacation-briefing-count'),
+  vacationBriefingPeriod: document.querySelector('#vacation-briefing-period'),
+  vacationBriefingList: document.querySelector('#vacation-briefing-list'),
+  vacationBriefingDone: document.querySelector('#vacation-briefing-done'),
   toastRegion: document.querySelector('#toast-region')
 };
 
@@ -522,6 +541,7 @@ function showLogin() {
   if (elements.emailDialog.open) elements.emailDialog.close();
   if (elements.ruleDialog.open) elements.ruleDialog.close();
   if (elements.loginTaskDialog.open) elements.loginTaskDialog.close();
+  if (elements.vacationBriefingDialog.open) elements.vacationBriefingDialog.close();
   state.selectedEmailId = null;
   state.dateFilter = '';
   state.dateEnd = '';
@@ -538,6 +558,8 @@ function showLogin() {
   state.expandedTeamGroups = new Set();
   state.pollFailureActive = false;
   state.notificationReturnView = null;
+  state.vacationDirty = false;
+  state.reviewingVacationBriefingId = null;
   metricsView.deactivate();
   for (const element of [
     elements.departmentManagementList,
@@ -614,13 +636,58 @@ function showLoginTaskSummary() {
   );
 }
 
+function showVacationReturnBriefing(briefing = state.session?.vacation?.unreviewedBriefing) {
+  if (!briefing || !briefing.items?.length || elements.vacationBriefingDialog.open) return false;
+  state.openVacationBriefing = briefing;
+  setText(elements.vacationBriefingCount, briefing.itemCount);
+  setText(
+    elements.vacationBriefingPeriod,
+    `${selectedDateLabel(briefing.startDate, 'short')} – ${selectedDateLabel(briefing.endDate, 'short')}`,
+  );
+  setText(
+    elements.vacationBriefingCopy,
+    `${countLabel(briefing.itemCount, 'ticket')} ${briefing.itemCount === 1 ? 'was' : 'were'} reassigned and covered while you were away.`,
+  );
+  elements.vacationBriefingList.replaceChildren(...briefing.items.map(item => {
+    const row = node('article', 'vacation-briefing-item');
+    row.dataset.vacationReveal = '';
+    row.append(
+      node('span', `vacation-priority ${item.priorityLabel.toLocaleLowerCase()}`, item.priorityLabel),
+      (() => {
+        const copy = node('div');
+        copy.append(
+          node('strong', '', item.subject || '(No subject)'),
+          node('small', '', `Reassigned to ${item.reassignedTo}`),
+          ...(item.ruleName ? [node('small', '', `Rule “${item.ruleName}” was intended for you; coverage was assigned while you were away.`)] : []),
+          node('small', '', item.workStatus === 'completed' ? 'Completed by the team'
+            : item.workStatus === 'assigned' ? `Still open · ${item.currentOwner || item.reassignedTo}`
+            : item.workStatus === 'unassigned' ? 'Awaiting assignment' : 'Current ticket status unavailable'),
+        );
+        return copy;
+      })(),
+      (() => {
+        const time = node('time', '', formatDate(item.reassignedAt, false));
+        time.dateTime = item.reassignedAt;
+        return time;
+      })(),
+    );
+    return row;
+  }));
+  elements.vacationBriefingDialog.showModal();
+  uiEffects.vacationBriefing(
+    elements.vacationBriefingDialog,
+    elements.vacationBriefingDialog.querySelectorAll('[data-vacation-reveal]'),
+  );
+  return true;
+}
+
 function normalizeView() {
   const role = state.session?.user.role;
   const viewsByRole = {
     platform_admin: ['platform', 'metrics'],
     org_admin: ['settings', 'departments', 'metrics'],
-    dep_admin: ['overview', 'inbox', 'assigned', 'completed', 'deleted', 'rules', 'escalations', 'activity', 'notifications', 'metrics'],
-    member: ['assigned', 'completed', 'deleted', 'notifications', 'metrics'],
+    dep_admin: ['overview', 'inbox', 'assigned', 'completed', 'deleted', 'rules', 'escalations', 'activity', 'notifications', 'metrics', 'vacation'],
+    member: ['assigned', 'completed', 'deleted', 'notifications', 'metrics', 'vacation'],
   };
   const allowed = viewsByRole[role] ?? viewsByRole.member;
   if (!allowed.includes(state.view)) state.view = allowed[0];
@@ -941,7 +1008,7 @@ function renderEmailRow(email, { grouped = false, compact = false } = {}) {
     row.setAttribute('aria-label', `${email.subject || 'Email'}, SLA breached`);
   }
   if (email.sourceState !== 'active') {
-    tags.append(node('span', 'tag source-removed', email.sourceState === 'deleted' ? 'Deleted' : 'Removed from Inbox'));
+    tags.append(node('span', 'tag source-removed', 'Removed from Outlook'));
   }
   if (Number(email.messageCount) > 1) {
     tags.append(node('span', 'tag thread-count', `${email.messageCount} messages`));
@@ -1071,7 +1138,7 @@ function renderEmails() {
         : 'Open assignments ready for your review'
     ],
     completed: ['Completed work', 'Closed assignment history'],
-    deleted: ['Deleted messages', 'Removed from Outlook and retained for 24 hours'],
+    deleted: ['Deleted messages', 'Deleted, recalled, archived, or otherwise removed from the Outlook Inbox'],
   };
   const [title, caption] = labels[state.view] ?? labels.assigned;
   setText(elements.queueTitle, title);
@@ -1220,9 +1287,42 @@ function renderActivityItem(item) {
 
 function renderActivity() {
   const activity = state.session.activity ?? [];
+  elements.auditDownloadButton.disabled = activity.length === 0;
+  elements.auditDownloadButton.title = activity.length === 0 ? 'No audit activity to export yet.' : '';
   elements.activityList.replaceChildren(...(activity.length
     ? activity.map(renderActivityItem)
     : [emptyState('No activity yet', 'Assignments and completions will appear here.')]));
+}
+
+async function downloadAuditReport() {
+  const button = elements.auditDownloadButton;
+  setButtonBusy(button, true, 'Preparing…');
+  try {
+    const response = await fetch('/api/activity/export.xlsx');
+    if (!response.ok) {
+      let message = 'The audit report could not be downloaded.';
+      try {
+        const payload = await response.json();
+        message = payload?.error?.message || message;
+      } catch {}
+      throw new Error(message);
+    }
+    const disposition = response.headers.get('content-disposition') || '';
+    const filename = disposition.match(/filename="([^"]+)"/i)?.[1] || 'lexflow-audit-report.xlsx';
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    showToast('Audit report downloaded.');
+  } catch (error) {
+    reportError(error, 'The audit report could not be downloaded.');
+  } finally {
+    setButtonBusy(button, false, 'Preparing…');
+  }
 }
 
 function renderNotification(item) {
@@ -1367,6 +1467,66 @@ function renderNotifications() {
   elements.notificationList.replaceChildren(...(notifications.length
     ? notifications.map(renderNotification)
     : [emptyState('You are all caught up', 'Assignments, completions, and overdue work will appear here.')]));
+}
+
+function renderVacation() {
+  if (!['member', 'dep_admin'].includes(state.session.user.role)) return;
+  const vacation = state.session.vacation ?? {
+    status: 'off', enabled: false, period: null, history: [], timezone: sessionTimezone(),
+  };
+  const form = elements.vacationForm;
+  const start = form.elements.namedItem('startDate');
+  const end = form.elements.namedItem('endDate');
+  if (!state.vacationDirty) {
+    const today = localDateKey(new Date(), sessionTimezone());
+    const defaultEnd = calendarKey(shiftCalendar(calendarDate(today), { days: 7 }));
+    start.value = vacation.period?.startDate ?? today;
+    end.value = vacation.period?.endDate ?? defaultEnd;
+    elements.vacationToggle.checked = Boolean(vacation.enabled);
+  }
+  const enabled = elements.vacationToggle.checked;
+  const labels = {
+    active: 'Vacation Mode is active. New assignments to you are paused. Your administrator can arrange coverage.',
+    upcoming: `Vacation Mode is scheduled from ${selectedDateLabel(vacation.period?.startDate)} to ${selectedDateLabel(vacation.period?.endDate)}.`,
+    off: 'Set your dates, then switch Vacation Mode on before you step away.',
+  };
+  setText(elements.vacationStatusCopy, labels[vacation.status] ?? labels.off);
+  setText(elements.vacationToggleLabel, enabled ? (vacation.enabled ? 'On' : 'Not saved') : 'Off');
+  setText(elements.vacationTimezone, `Both dates are inclusive, in ${vacation.timezone || sessionTimezone()}. Availability resumes the following day, or when you switch off.`);
+  setButtonLabel(elements.vacationSave, vacation.enabled ? 'Update dates' : 'Activate Vacation Mode');
+  elements.vacationSave.hidden = false;
+  start.disabled = false;
+  end.disabled = false;
+  const history = vacation.history ?? [];
+  setText(elements.vacationHistoryCount, countLabel(history.length, 'briefing'));
+  elements.vacationHistoryList.replaceChildren(...(history.length ? history.map(item => {
+    const row = node('article', 'vacation-history-item');
+    const copy = node('div');
+    copy.append(
+      node('strong', '', `${selectedDateLabel(item.startDate, 'short')} – ${selectedDateLabel(item.endDate, 'short')}`),
+      node('small', '', item.reviewedAt ? 'Reviewed' : 'Ready to review'),
+    );
+    row.append(copy, node('span', '', countLabel(item.itemCount, 'ticket')));
+    const open = node('button', 'small-button', 'View summary');
+    open.type = 'button';
+    open.addEventListener('click', async () => {
+      open.disabled = true;
+      try {
+        const result = await api(`/api/vacation/briefings/${item.id}`);
+        showVacationReturnBriefing(result.briefing);
+      } catch (error) { reportError(error, 'Could not open the return briefing.'); }
+      finally { open.disabled = false; }
+    });
+    row.append(open);
+    return row;
+  }) : [emptyState('No return briefings yet', 'Reassigned work will be summarized here after a vacation.', '✓')]));
+  if (state.view === 'vacation') {
+    uiEffects.vacationPanel(
+      elements.vacationPanel,
+      elements.vacationPanel.querySelectorAll('.vacation-hero, .vacation-form, .vacation-explainer, .vacation-history'),
+      `${vacation.status}:${vacation.period?.id ?? 'none'}`,
+    );
+  }
 }
 
 function renderSettingsAdministrator(member) {
@@ -1834,6 +1994,8 @@ function renderPanels() {
   elements.departmentsPanel.hidden = !isOrgAdmin || state.view !== 'departments';
   elements.notificationsPanel.hidden = !['dep_admin', 'member'].includes(state.session.user.role)
     || state.view !== 'notifications';
+  elements.vacationPanel.hidden = !['dep_admin', 'member'].includes(state.session.user.role)
+    || state.view !== 'vacation';
   elements.platformPanel.hidden = !isPlatform || state.view !== 'platform';
   elements.metricsPage.hidden = !isMetrics;
   elements.dashboardLayout.hidden = isMetrics;
@@ -1858,6 +2020,7 @@ function renderHeader() {
     notifications: 'Notifications',
     platform: 'Organizations',
     metrics: 'Metrics',
+    vacation: 'Vacation Mode',
   };
   setText(elements.pageTitle, titles[state.view]);
   const mailbox = mailboxSummary();
@@ -1960,6 +2123,7 @@ function render() {
   if (isOrgAdmin) renderSettings();
   if (isPlatform) renderPlatform();
   renderNotifications();
+  renderVacation();
   renderPanels();
   uiEffects.workspace(
     elements.mainContent.querySelectorAll('.card:not([hidden])'),
@@ -1969,7 +2133,7 @@ function render() {
   else metricsView.deactivate();
   if (!state.entryNoticeShown) {
     state.entryNoticeShown = true;
-    showLoginTaskSummary();
+    if (!showVacationReturnBriefing()) showLoginTaskSummary();
   }
 }
 
@@ -2125,7 +2289,7 @@ function openEmail(emailId, opener = document.activeElement) {
   state.selectedEmailId = email.id;
   setText(elements.emailDialogTitle, email.subject, '(No subject)');
   const workflowStatus = email.status === 'completed' ? 'Completed email' : email.status === 'unassigned' ? 'Unassigned email' : 'Assigned email';
-  const sourceStatus = email.sourceState === 'deleted' ? ' · Deleted' : email.sourceState === 'removed' ? ' · Removed from Inbox' : '';
+  const sourceStatus = email.sourceState !== 'active' ? ' · Removed from Outlook' : '';
   setText(elements.emailDialogStatus, `${workflowStatus}${sourceStatus}`);
   const sender = [email.sender?.name, email.sender?.address].filter(Boolean).join(' · ');
   setText(elements.emailDetailSender, sender, 'Unknown sender');
@@ -2154,9 +2318,11 @@ function openEmail(emailId, opener = document.activeElement) {
   if (canAssign) {
     const members = state.session.team ?? [];
     const options = members.map(member => {
-      const option = node('option', '', `${member.name} · ${member.department}`);
+      const away = member.vacation?.isAway;
+      const option = node('option', '', `${member.name} · ${member.department}${away ? ' · Away' : ''}`);
       option.value = String(member.id);
       option.selected = member.id === email.assignee?.id;
+      option.disabled = away && member.id !== email.assignee?.id;
       return option;
     });
     elements.emailAssigneeSelect.replaceChildren(...options);
@@ -2165,9 +2331,9 @@ function openEmail(emailId, opener = document.activeElement) {
     const reassigning = email.status === 'assigned';
     setText(elements.emailAssignmentLabel, reassigning ? 'Reassign to' : 'Assign to');
     setButtonLabel(elements.assignButton, reassigning ? 'Reassign' : 'Assign');
-    elements.assignButton.disabled = options.length === 0;
-    if (!options.length) {
-      setText(elements.assignmentError, 'Add a team member before assigning email.');
+    elements.assignButton.disabled = !options.some(option => !option.disabled);
+    if (!options.some(option => !option.disabled)) {
+      setText(elements.assignmentError, 'No available team member can receive this email right now.');
       elements.assignmentError.hidden = false;
     }
   } else {
@@ -2244,16 +2410,19 @@ function openRuleDialog(rule = null, opener = document.activeElement) {
   setText(elements.ruleDialogTitle, editing ? `Edit ${rule.name}` : 'Create automation rule');
   setText(elements.ruleFormHelp, editing
     ? 'Change at least one field. A name, teammate, priority, and one matching condition must remain.'
-    : 'Set a rule name, teammate, priority, and at least one matching condition.');
+    : 'Set a rule name, teammate, priority, and at least one matching condition. Away members remain selectable; matching work goes to the next available department member in alphabetical order, wrapping around.');
   setButtonLabel(elements.ruleForm.querySelector('[type="submit"]'), editing ? 'Save changes' : 'Create rule');
 
   const members = (state.session.team ?? []).filter(user => (
     ['member', 'dep_admin'].includes(user.role)
   ));
   const options = members.map(member => {
-    const option = node('option', '', `${member.name} · ${member.department}`);
+    const away = member.vacation?.isAway;
+    const option = node('option', '', `${member.name} · ${member.department}${away ? ' · Away' : ''}`);
     option.value = String(member.id);
     option.selected = member.id === rule?.assignee?.id;
+    // Rules retain their intended owner even when that person is away.
+    option.disabled = false;
     return option;
   });
   elements.ruleAssignee.replaceChildren(...options);
@@ -2491,6 +2660,8 @@ elements.soundToggle.addEventListener('click', () => {
   notificationAudio.toggle();
   syncSoundControl();
 });
+
+elements.auditDownloadButton.addEventListener('click', downloadAuditReport);
 
 document.addEventListener('click', event => {
   if (!event.target.closest('.account-menu')) closeAccountMenu();
@@ -2910,6 +3081,113 @@ elements.loginTaskOpen.addEventListener('click', () => {
   const view = elements.loginTaskOpen.dataset.view || 'assigned';
   elements.loginTaskDialog.close();
   selectView(view);
+});
+
+function syncCurrentUserVacation(vacation) {
+  state.session.vacation = vacation;
+  const self = (state.session.team ?? []).find(member => Number(member.id) === Number(state.session.user.id));
+  if (self) self.vacation = {
+    status: vacation.status,
+    enabled: vacation.enabled,
+    isAway: vacation.isAway,
+    startDate: vacation.period?.startDate ?? null,
+    endDate: vacation.period?.endDate ?? null,
+  };
+}
+
+elements.vacationToggle.addEventListener('change', async () => {
+  state.vacationDirty = true;
+  elements.vacationError.hidden = true;
+  if (elements.vacationToggle.checked) {
+    renderVacation();
+    elements.vacationForm.elements.namedItem('startDate').focus();
+    return;
+  }
+  if (!state.session?.vacation?.enabled) {
+    state.vacationDirty = false;
+    renderVacation();
+    return;
+  }
+  elements.vacationToggle.disabled = true;
+  elements.vacationSave.disabled = true;
+  try {
+    const payload = await api('/api/vacation', { method: 'PUT', body: { enabled: false } });
+    syncCurrentUserVacation(payload.vacation);
+    state.vacationDirty = false;
+    renderVacation();
+    showToast('Vacation Mode is off. Your return briefing will appear on your next sign-in.');
+  } catch (error) {
+    elements.vacationToggle.checked = true;
+    showFormError(elements.vacationForm, elements.vacationError, error);
+  } finally {
+    elements.vacationToggle.disabled = false;
+    elements.vacationSave.disabled = false;
+  }
+});
+
+elements.vacationForm.addEventListener('input', () => {
+  state.vacationDirty = true;
+});
+
+elements.vacationForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  clearFieldErrors(elements.vacationForm);
+  elements.vacationError.hidden = true;
+  if (!elements.vacationForm.reportValidity()) return;
+  const form = new FormData(elements.vacationForm);
+  setButtonBusy(elements.vacationSave, true, 'Activating…');
+  elements.vacationToggle.disabled = true;
+  try {
+    const payload = await api('/api/vacation', {
+      method: 'PUT',
+      body: {
+        enabled: true,
+        startDate: String(form.get('startDate') ?? ''),
+        endDate: String(form.get('endDate') ?? ''),
+      },
+    });
+    syncCurrentUserVacation(payload.vacation);
+    state.vacationDirty = false;
+    renderVacation();
+    showToast(payload.vacation.isAway
+      ? 'Vacation Mode is active. New assignments to you are paused.'
+      : 'Vacation Mode is scheduled.');
+  } catch (error) {
+    showFormError(elements.vacationForm, elements.vacationError, error);
+  } finally {
+    setButtonBusy(elements.vacationSave, false, 'Activating…');
+    elements.vacationToggle.disabled = false;
+  }
+});
+
+async function reviewVacationBriefing() {
+  const briefing = state.openVacationBriefing;
+  if (briefing?.reviewedAt) return true;
+  if (!briefing || state.reviewingVacationBriefingId === briefing.id) return false;
+  state.reviewingVacationBriefingId = briefing.id;
+  try {
+    const result = await api(`/api/vacation/briefings/${briefing.id}/reviewed`, { method: 'POST' });
+    if (state.session.vacation.unreviewedBriefing?.id === briefing.id) {
+      state.session.vacation.unreviewedBriefing = null;
+    }
+    briefing.reviewedAt = result.reviewedAt;
+    const history = state.session.vacation.history?.find(item => item.id === briefing.id);
+    if (history) history.reviewedAt = result.reviewedAt;
+    renderVacation();
+    return true;
+  } catch (error) {
+    reportError(error, 'The return briefing could not be marked as reviewed.');
+    return false;
+  } finally {
+    state.reviewingVacationBriefingId = null;
+  }
+}
+
+elements.vacationBriefingDone.addEventListener('click', async () => {
+  setButtonBusy(elements.vacationBriefingDone, true, 'Saving…');
+  const reviewed = await reviewVacationBriefing();
+  setButtonBusy(elements.vacationBriefingDone, false, 'Saving…');
+  if (reviewed) elements.vacationBriefingDialog.close();
 });
 
 elements.ruleDialog.addEventListener('close', () => {

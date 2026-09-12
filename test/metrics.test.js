@@ -15,6 +15,35 @@ function card(payload, id) {
   return payload.cards.find(item => item.id === id);
 }
 
+test('member and department durations exclude overnight hours and SLA expires at the working-time boundary', context => {
+  const db = createDatabase(':memory:');
+  context.after(() => db.close());
+  seedDemoData(db);
+  const user = db.prepare("SELECT * FROM users WHERE email = 'maya@lexflow.local'").get();
+  db.prepare('UPDATE workspace_settings SET time_assigned_unmarked_hours = 2 WHERE organization_id = 1').run();
+  const email = db.prepare(`INSERT INTO emails
+    (provider_id,subject,sender_name,sender_address,preview,received_at,status,created_at,organization_id,department_id)
+    VALUES ('working-hours-metric','Test','Test','test@example.test','Test',
+      '2026-09-11T12:30:00Z','unassigned','2026-09-11T12:30:00Z',1,?) RETURNING id`).get(user.department_id);
+  const event = {organizationId:1,departmentId:user.department_id,emailId:email.id,
+    assigneeId:user.id,departmentNameSnapshot:'Legal',assigneeNameSnapshot:user.name,
+    receivedAt:'2026-09-11T12:30:00.000Z'};
+  recordTaskEvent(db,{...event,eventType:'assigned',assignmentSource:'manual',occurredAt:'2026-09-11T13:00:00.000Z'});
+  const period = normalizeMetricsQuery({query:{preset:'custom',from:'2026-09-11',to:'2026-09-13'},timezone:'UTC',now:new Date('2026-09-13T12:00:00Z')});
+  const memberAt = time => getMemberMetrics({db,organizationId:1,userId:user.id,period,now:new Date(time)});
+  assert.equal(card(memberAt('2026-09-12T03:29:00Z'),'nonCompletions').secondary.overdue,0);
+  assert.equal(card(memberAt('2026-09-12T04:59:00Z'),'nonCompletions').secondary.overdue,0);
+  assert.equal(card(memberAt('2026-09-12T05:00:00Z'),'nonCompletions').secondary.overdue,1);
+  recordTaskEvent(db,{...event,eventType:'completed',actorId:user.id,occurredAt:'2026-09-12T04:30:00.000Z'});
+  const member = memberAt('2026-09-12T06:00:00Z');
+  assert.equal(card(member,'handling').value,1.5*3600000);
+  const department = getDepartmentMetrics({db,organizationId:1,departmentId:user.department_id,period,now:new Date('2026-09-12T06:00:00Z')});
+  assert.equal(card(department,'handling').value,1.5*3600000);
+  assert.equal(card(department,'resolution').value,2*3600000);
+  const trend = member.plots.find(plot=>plot.id==='handlingTrend');
+  assert.ok(trend.series.find(series=>series.id==='handling').data.includes(1.5*3600000));
+});
+
 test('metric ranges honor IANA zones, DST, and automatic bucket boundaries', () => {
   const dst = normalizeMetricsQuery({
     query: { preset: 'custom', from: '2026-03-08', to: '2026-03-08' },

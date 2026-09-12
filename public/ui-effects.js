@@ -30,8 +30,8 @@ export function createUiEffects({ animate, stagger, reducedMotion, requestFrame 
     if (!items) return false;
     try {
       requestFrame(() => runAnimation(items, {
-        opacity: { from: 0 },
-        translateY: { from: options.translateY ?? 10 },
+        opacity: { from: 0, to: 1 },
+        translateY: { from: options.translateY ?? 10, to: 0 },
         delay: stagger(options.stagger ?? 45),
         duration: options.duration ?? 420,
         ease: 'out(4)',
@@ -69,6 +69,44 @@ export function createUiEffects({ animate, stagger, reducedMotion, requestFrame 
           translateY: { from: 12 },
           delay: stagger(90),
           duration: 480,
+          ease: 'out(4)',
+        });
+      });
+      return true;
+    },
+    vacationPanel(panel, sections, signature) {
+      // Workspace owns the panel entrance. Animating the same shell twice can
+      // capture the other animation's zero opacity as the final value.
+      const items = canRun(sections, 'vacation-panel-sections', signature);
+      if (!items) return false;
+      requestFrame(() => {
+        runAnimation(items, {
+          opacity: { from: 0, to: 1 },
+          translateY: { from: 12, to: 0 },
+          delay: stagger(65),
+          duration: 500,
+          ease: 'out(4)',
+        });
+      });
+      return true;
+    },
+    vacationBriefing(dialog, items) {
+      const shell = canRun([dialog], 'vacation-briefing-shell');
+      const rows = canRun(items, 'vacation-briefing-items');
+      if (!shell) return false;
+      requestFrame(() => {
+        runAnimation(shell, {
+          opacity: { from: 0, to: 1 },
+          scale: { from: 0.965, to: 1 },
+          translateY: { from: 18, to: 0 },
+          duration: 480,
+          ease: 'out(4)',
+        });
+        if (rows) runAnimation(rows, {
+          opacity: { from: 0, to: 1 },
+          translateX: { from: 16, to: 0 },
+          delay: stagger(75),
+          duration: 520,
           ease: 'out(4)',
         });
       });

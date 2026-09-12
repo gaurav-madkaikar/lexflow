@@ -13,6 +13,7 @@ import {
   recordTaskEvent,
   startGraphRun,
 } from './reporting-events.js';
+import { isUserOnVacation, recordVacationReassignment } from './vacation.js';
 
 function runTransaction(db, operation) {
   db.exec('BEGIN IMMEDIATE');
@@ -180,13 +181,31 @@ function recordAssignment(db, {
 }
 
 function assignEmailByRule(db, email, rule, assignedAt, organizationId = 1, reopened = false) {
-  const assignee = db.prepare(`
+  let assignee = db.prepare(`
     SELECT * FROM users
     WHERE id = ? AND organization_id = ? AND department_id = ?
       AND role = 'member' AND account_status = 'active'
   `).get(rule.assignee_id, organizationId, email.department_id);
   if (!assignee) return false;
-  return recordAssignment(db, {
+  const intended = assignee;
+  if (isUserOnVacation({
+    db,
+    userId: assignee.id,
+    organizationId,
+    now: assignedAt,
+  })) {
+    const members = db.prepare(`SELECT * FROM users
+      WHERE organization_id = ? AND department_id = ? AND role = 'member'
+        AND account_status = 'active' ORDER BY name COLLATE NOCASE, id
+    `).all(organizationId, email.department_id);
+    const index = members.findIndex(member => Number(member.id) === Number(intended.id));
+    const consecutive = [...members.slice(index + 1), ...members.slice(0, index)];
+    assignee = consecutive.find(member => !isUserOnVacation({
+      db, userId: member.id, organizationId, now: assignedAt,
+    }));
+    if (!assignee) return false;
+  }
+  const assigned = recordAssignment(db, {
     email,
     assignee,
     assignedAt,
@@ -197,6 +216,13 @@ function assignEmailByRule(db, email, rule, assignedAt, organizationId = 1, reop
     rule,
     priority: Number(rule.priority),
   });
+  if (assigned && assignee.id !== intended.id) {
+    recordVacationReassignment({ db, userId: intended.id, organizationId,
+      emailId: email.id, conversationId: email.conversation_id ?? null,
+      subject: email.subject, newAssignee: assignee, priority: Number(rule.priority),
+      ruleName: rule.name, now: assignedAt });
+  }
+  return assigned;
 }
 
 function sanitizeError(error) {
@@ -391,7 +417,7 @@ export async function syncMailbox({ db, source }) {
   }
   const stateKey = scopedStateKey(cursorKey, organizationId);
   const cursor = db.prepare('SELECT value FROM sync_state WHERE key = ? AND organization_id = ?').get(stateKey, organizationId)?.value ?? null;
-  const { messages, removed = [], nextCursor } = await source.fetchChanges(cursor);
+  const { messages, removed = [], nextCursor, fullSnapshot = false } = await source.fetchChanges(cursor);
 
   return runTransaction(db, () => {
     if (source.isCurrentConnection?.() === false) {
@@ -429,22 +455,56 @@ export async function syncMailbox({ db, source }) {
     const findEmail = db.prepare('SELECT * FROM emails WHERE provider_id = ? AND organization_id = ?');
     const markRemoved = db.prepare(`
       UPDATE emails
-      SET source_state = ?, source_removed_at = ?, source_removed_reason = ?,
+      SET source_state = 'deleted', source_removed_at = ?, source_removed_reason = ?,
           has_attachments = 0
       WHERE provider_id = ? AND organization_id = ? AND source_state = 'active'
+    `);
+    const refreshConversationLatest = db.prepare(`
+      UPDATE conversations
+      SET latest_email_id = COALESCE((
+            SELECT active.id FROM emails active
+            WHERE active.conversation_id = conversations.id
+              AND active.organization_id = conversations.organization_id
+              AND active.source_state = 'active'
+            ORDER BY active.received_at DESC, active.id DESC
+            LIMIT 1
+          ), latest_email_id),
+          updated_at = ?
+      WHERE id = ? AND organization_id = ?
     `);
     const now = new Date().toISOString();
     let imported = 0;
     let assigned = 0;
 
+    const removalsByProviderId = new Map();
     for (const removal of removed ?? []) {
+      const providerId = String(removal?.providerId ?? '').trim();
+      if (providerId) removalsByProviderId.set(providerId, removal);
+    }
+    if (fullSnapshot && (source.provider || 'outlook') === 'outlook' && sourceMailbox) {
+      const snapshotIds = new Set(messages.map(message => String(message?.providerId ?? '').trim()).filter(Boolean));
+      const activeRows = db.prepare(`
+        SELECT provider_id FROM emails
+        WHERE organization_id = ? AND department_id = ? AND provider = 'outlook'
+          AND lower(trim(mailbox_address)) = ? AND source_state = 'active'
+      `).all(organizationId, departmentId, sourceMailbox);
+      for (const row of activeRows) {
+        if (!snapshotIds.has(row.provider_id) && !removalsByProviderId.has(row.provider_id)) {
+          removalsByProviderId.set(row.provider_id, {
+            providerId: row.provider_id,
+            reason: 'removed_from_inbox',
+          });
+        }
+      }
+    }
+
+    for (const removal of removalsByProviderId.values()) {
       const providerId = String(removal?.providerId ?? '').trim();
       if (!providerId) continue;
       const existing = findEmail.get(providerId, organizationId);
       if (!existing) continue;
       const reason = String(removal.reason ?? 'deleted').trim().toLocaleLowerCase();
-      const sourceState = reason === 'deleted' ? 'deleted' : 'removed';
-      if (markRemoved.run(sourceState, now, reason, providerId, organizationId).changes !== 1) continue;
+      if (markRemoved.run(now, reason, providerId, organizationId).changes !== 1) continue;
       db.prepare(`
         DELETE FROM notifications WHERE email_id = ? AND organization_id = ?
       `).run(existing.id, organizationId);
@@ -462,6 +522,10 @@ export async function syncMailbox({ db, source }) {
           WHERE conversation_id = ? AND organization_id = ?
             AND completed_at IS NULL AND superseded_at IS NULL
         `).run(now, existing.conversation_id, organizationId);
+      }
+      if (existing.conversation_id != null) {
+        refreshConversationLatest.run(now, existing.conversation_id, organizationId);
+        recomputeConversationAttachmentState(db, existing.conversation_id);
       }
     }
 
@@ -545,7 +609,7 @@ export async function syncMailbox({ db, source }) {
         WHERE id = ? AND organization_id = ? AND department_id = ?
           AND role = 'member' AND account_status = 'active'
       `).get(attached.conversation.assignee_id, organizationId, departmentId);
-      if (previous && recordAssignment(db, {
+      if (previous && !isUserOnVacation({ db, userId: Number(previous.id), organizationId, now }) && recordAssignment(db, {
         email, assignee: previous, assignedAt: now, organizationId,
         assignmentSource: 'manual', conversationSource: 'reopen_previous', reopened: true,
         priority: Number(db.prepare(`
@@ -896,6 +960,13 @@ export function assignEmailManually({
     if (![10, 20, 30, 40].includes(Number(priority))) {
       throw workflowError(400, 'INVALID_INPUT', 'Choose a valid priority.');
     }
+    if (isUserOnVacation({ db, userId: assignee.id, organizationId, now })) {
+      throw workflowError(
+        409,
+        'ASSIGNEE_ON_VACATION',
+        `${assignee.name} is in Vacation Mode. Choose an available team member.`,
+      );
+    }
     const assignmentStatus = conversation?.status ?? email.status;
     const currentAssigneeId = conversation?.assignee_id ?? email.assignee_id;
     if (assignmentStatus === 'completed') {
@@ -930,6 +1001,19 @@ export function assignEmailManually({
     });
     if (!changed) {
       throw workflowError(409, 'CONFLICT', 'Email assignment changed. Refresh and try again.');
+    }
+    if (currentAssigneeId && Number(currentAssigneeId) !== Number(assignee.id)) {
+      recordVacationReassignment({
+        db,
+        userId: Number(currentAssigneeId),
+        organizationId,
+        emailId: Number(email.id),
+        conversationId: email.conversation_id == null ? null : Number(email.conversation_id),
+        subject: conversation?.subject || email.subject,
+        newAssignee: assignee,
+        priority: Number(priority),
+        now,
+      });
     }
     return {
       changed: true,

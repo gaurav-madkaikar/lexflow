@@ -122,6 +122,7 @@ export class GraphMailSource {
   }
 
   async fetchChanges(cursor) {
+    const fullSnapshot = !cursor;
     const token = await this.accessToken();
     let url = cursor || `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(this.mailbox)}/mailFolders/inbox/messages/delta?$select=id,conversationId,internetMessageId,subject,from,receivedDateTime,bodyPreview,webLink,hasAttachments`;
     let nextCursor = cursor;
@@ -161,7 +162,7 @@ export class GraphMailSource {
     if (!receivedDeltaLink) {
       throw new Error('Outlook sync completed without a new delta cursor');
     }
-    return { messages, removed, nextCursor };
+    return { messages, removed, nextCursor, fullSnapshot };
   }
 }
 

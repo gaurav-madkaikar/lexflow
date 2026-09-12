@@ -9,6 +9,12 @@ const charts = readFileSync(new URL('../public/metrics-charts.js', import.meta.u
 const styles = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
+test('unread notifications use a persistent theme-aware highlight without a dot', () => {
+  assert.match(styles, /\.notification-item\.unread\s*\{[^}]*background: var\(--color-coral-soft\)/);
+  assert.doesNotMatch(styles, /\.notification-item\.unread::before/);
+  assert.match(app, /notification-item\$\{item\.readAt \? '' : ' unread'\}/);
+});
+
 test('OrgAdmin settings use a Microsoft Graph health panel', () => {
   assert.match(html, /Microsoft Graph integration/);
   assert.doesNotMatch(html, />Email connections</);
@@ -126,8 +132,8 @@ test('Entra login echoes the workspace shell without changing authentication hoo
   assert.match(html, /id="login-error"[^>]*role="alert"/);
   assert.match(html, /Continue with Microsoft/);
   assert.doesNotMatch(html, /login-atmosphere|login-aurora|login-pointer-glow/);
-  assert.doesNotMatch(html, /type="password"|demo credentials|icon-vacation/i);
-  assert.doesNotMatch(app, /\/api\/login|vacation|cfo/i);
+  assert.doesNotMatch(html, /type="password"|demo credentials/i);
+  assert.doesNotMatch(app, /\/api\/login|cfo/i);
   assert.match(app, /loginForm\.addEventListener\('submit'/);
   assert.match(app, /\/api\/auth\/outlook\/start/);
 
@@ -217,17 +223,23 @@ test('DepAdmin overview provides bounded inbox and rule previews', () => {
   assert.match(html, /id="rules-overview-footer"/);
   assert.match(html, /data-overview-view="inbox"/);
   assert.match(html, /data-overview-view="rules"/);
-  assert.match(app, /dep_admin: \['overview', 'inbox', 'assigned', 'completed', 'deleted', 'rules', 'escalations', 'activity', 'notifications', 'metrics'\]/);
+  assert.match(app, /dep_admin: \['overview', 'inbox', 'assigned', 'completed', 'deleted', 'rules', 'escalations', 'activity', 'notifications', 'metrics', 'vacation'\]/);
   assert.match(app, /document\.querySelectorAll\('\[data-overview-view\]'\)/);
   assert.doesNotMatch(app, /(?:platform_admin|org_admin|member): \[[^\]]*'overview'/);
   assert.equal(OVERVIEW_PREVIEW_LIMIT, 5);
 });
 
+test('activity audit report has a real Excel download action', () => {
+  assert.match(html, /id="audit-download-button"[\s\S]*?<span[^>]*>Download Excel<\/span>/);
+  assert.match(app, /fetch\('\/api\/activity\/export\.xlsx'\)/);
+  assert.match(app, /Audit report downloaded\./);
+});
+
 test('removed Outlook messages have a retained Deleted view and status badge', () => {
   assert.match(html, /data-view="deleted"/);
   assert.match(app, /sourceState !== 'active'/);
-  assert.match(app, /Removed from Inbox/);
-  assert.match(app, /Deleted messages/);
+  assert.match(app, /Deleted, recalled, archived, or otherwise removed from the Outlook Inbox/);
+  assert.match(app, /Removed from Outlook/);
 });
 
 test('DepAdmin receives the manual sync control', () => {

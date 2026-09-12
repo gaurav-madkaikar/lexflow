@@ -1,4 +1,5 @@
 import { DateTime } from 'luxon';
+import { istWorkingMillisecondsBetween } from './alerts.js';
 
 import { normalizeTimezone } from './reporting-events.js';
 
@@ -492,8 +493,8 @@ function taskOutcome(task, endpoint, slaHours, completionUserId = null) {
   const completion = completionBefore(task.events, endpoint, completionUserId);
   if (completion) return { status: 'completed', completion };
   const latest = latestAssignment(task.events, endpoint) ?? task.assigned;
-  const deadline = Date.parse(latest.occurred_at) + slaHours * 60 * 60 * 1_000;
-  return { status: deadline <= Date.parse(endpoint) ? 'overdue' : 'open', completion: null };
+  const workingTime = istWorkingMillisecondsBetween(latest.occurred_at, endpoint);
+  return { status: workingTime >= slaHours * 60 * 60 * 1_000 ? 'overdue' : 'open', completion: null };
 }
 
 function departmentEmployees(db, organizationId, departmentId) {
@@ -592,7 +593,7 @@ function rulePerformance(db, organizationId, departmentId, period, endpoint, gro
       const completion = completionBefore(linked.events, endpoint);
       if (completion) {
         row.completed += 1;
-        row.resolutionTimes.push(elapsed(linked.event.received_at, completion.occurred_at));
+        row.resolutionTimes.push(istWorkingMillisecondsBetween(linked.event.received_at, completion.occurred_at));
       }
     }
   }
@@ -609,7 +610,7 @@ function rulePerformance(db, organizationId, departmentId, period, endpoint, gro
       const completion = completionBefore(events, endpoint);
       if (completion) {
         manual.completed += 1;
-        manual.resolutionTimes.push(elapsed(event.received_at, completion.occurred_at));
+        manual.resolutionTimes.push(istWorkingMillisecondsBetween(event.received_at, completion.occurred_at));
       }
     }
   }
@@ -621,7 +622,7 @@ function rulePerformance(db, organizationId, departmentId, period, endpoint, gro
     completed: reopenedCycles.filter(cycle => cycle.completed_at != null).length,
     resolutionTimes: reopenedCycles
       .filter(cycle => cycle.completed_at != null)
-      .map(cycle => elapsed(cycle.started_at, cycle.completed_at)),
+      .map(cycle => istWorkingMillisecondsBetween(cycle.started_at, cycle.completed_at)),
     source: 'reopen_previous',
   });
   const historical = {
@@ -636,7 +637,7 @@ function rulePerformance(db, organizationId, departmentId, period, endpoint, gro
       const completion = completionBefore(events, endpoint);
       if (completion) {
         historical.completed += 1;
-        historical.resolutionTimes.push(elapsed(event.received_at, completion.occurred_at));
+        historical.resolutionTimes.push(istWorkingMillisecondsBetween(event.received_at, completion.occurred_at));
       }
     }
   }
@@ -682,11 +683,11 @@ export function getDepartmentMetrics({
     && (employeeId == null || Number(event.assignee_id) === Number(employeeId))).length;
   const open = outcomes.filter(item => item.status === 'open').length;
   const overdue = outcomes.filter(item => item.status === 'overdue').length;
-  const resolutionTimes = completedCohort.map(item => elapsed(item.assigned.received_at, item.completion.occurred_at));
+  const resolutionTimes = completedCohort.map(item => istWorkingMillisecondsBetween(item.assigned.received_at, item.completion.occurred_at));
   const handlingTimes = completedCohort.map(item => {
     const latest = latestAssignment(item.events.filter(event => event.occurred_at <= item.completion.occurred_at), item.completion.occurred_at)
       ?? item.assigned;
-    return elapsed(latest.occurred_at, item.completion.occurred_at);
+    return istWorkingMillisecondsBetween(latest.occurred_at, item.completion.occurred_at);
   });
   const payload = basePayload(
     'department',
@@ -813,7 +814,7 @@ export function getMemberMetrics({ db, organizationId, userId, period, now = new
   const completedCohort = outcomes.filter(item => item.status === 'completed');
   const open = outcomes.filter(item => item.status === 'open').length;
   const overdue = outcomes.filter(item => item.status === 'overdue').length;
-  const handling = completedCohort.map(item => elapsed(item.assigned.occurred_at, item.completion.occurred_at));
+  const handling = completedCohort.map(item => istWorkingMillisecondsBetween(item.assigned.occurred_at, item.completion.occurred_at));
   const payload = basePayload(
     'member',
     period,
@@ -842,7 +843,7 @@ export function getMemberMetrics({ db, organizationId, userId, period, now = new
   for (const item of completedCohort) {
     const key = bucketKey(item.completion.occurred_at, period);
     if (handlingSeries.has(key)) {
-      handlingSeries.get(key).push(elapsed(item.assigned.occurred_at, item.completion.occurred_at));
+      handlingSeries.get(key).push(istWorkingMillisecondsBetween(item.assigned.occurred_at, item.completion.occurred_at));
     }
   }
   const tasksExactFrom = payload.completeness.tasks.exactFrom;

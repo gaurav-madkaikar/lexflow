@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import test from 'node:test';
 
+import ExcelJS from 'exceljs';
+
 import { createApp } from '../src/app.js';
 import { createSession, sessionCookie } from '../src/auth.js';
 import { createDatabase, seedDemoData } from '../src/db.js';
@@ -126,11 +128,12 @@ async function createApiHarness(
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const text = await response.text();
     const contentType = response.headers.get('content-type') ?? '';
+    const binary = contentType.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const raw = binary ? Buffer.from(await response.arrayBuffer()) : await response.text();
     return {
       status: response.status,
-      body: text ? (contentType.includes('application/json') ? JSON.parse(text) : text) : null,
+      body: binary ? raw : raw ? (contentType.includes('application/json') ? JSON.parse(raw) : raw) : null,
       headers: Object.fromEntries(response.headers.entries()),
       cookie: response.headers.get('set-cookie')?.split(';', 1)[0] ?? null,
       location: response.headers.get('location'),
@@ -214,7 +217,7 @@ test('re-importing is idempotent and mail-source cursors stay isolated', async (
   assert.equal(one(db, 'SELECT count(*) AS count FROM notifications').count, 1);
 });
 
-test('Outlook removals are retained as tombstones and scrubbed after 24 hours', async (context) => {
+test('Outlook removals are normalized into Deleted-pane tombstones and scrubbed after 24 hours', async (context) => {
   const db = createDatabase(':memory:');
   context.after(() => db.close());
   seedDemoData(db);
@@ -225,7 +228,7 @@ test('Outlook removals are retained as tombstones and scrubbed after 24 hours', 
     async fetchChanges() {
       return {
         messages: [],
-        removed: [{ providerId: ndaMessage.providerId, reason: 'deleted' }],
+        removed: [{ providerId: ndaMessage.providerId, reason: 'changed' }],
         nextCursor: 'removal-cursor-2',
       };
     },
@@ -235,7 +238,7 @@ test('Outlook removals are retained as tombstones and scrubbed after 24 hours', 
   const removed = one(db, 'SELECT * FROM emails WHERE provider_id = ?', ndaMessage.providerId);
   assert.deepEqual(result, { imported: 0, assigned: 0 });
   assert.equal(removed.source_state, 'deleted');
-  assert.equal(removed.source_removed_reason, 'deleted');
+  assert.equal(removed.source_removed_reason, 'changed');
   assert.ok(removed.source_removed_at);
   assert.equal(cleanupRemovedEmails({
     db,
@@ -246,6 +249,52 @@ test('Outlook removals are retained as tombstones and scrubbed after 24 hours', 
   assert.equal(scrubbed.preview, '');
   assert.equal(scrubbed.outlook_url, null);
   assert.equal(scrubbed.source_state, 'deleted');
+});
+
+test('a fresh Outlook Inbox snapshot moves missing messages to Deleted and keeps an active conversation representative', async (context) => {
+  const db = createDatabase(':memory:');
+  context.after(() => db.close());
+  seedDemoData(db);
+  const conversationId = 'graph-conversation-snapshot';
+  const older = {
+    ...ndaMessage,
+    providerId: 'outlook:legal@lexflow.local:snapshot-older',
+    conversationId,
+    receivedAt: '2026-08-14T08:00:00.000Z',
+  };
+  const newer = {
+    ...ndaMessage,
+    providerId: 'outlook:legal@lexflow.local:snapshot-newer',
+    conversationId,
+    subject: 'RE: Urgent NDA amendment for ACME',
+    receivedAt: '2026-08-14T09:00:00.000Z',
+  };
+  const initial = {
+    ...sourceFor(db, 'Legal', [older, newer], 'mail_cursor:outlook-snapshot'),
+    provider: 'outlook',
+  };
+  await syncMailbox({ db, source: initial });
+
+  const refreshed = {
+    ...initial,
+    async fetchChanges() {
+      return {
+        messages: [older],
+        removed: [],
+        nextCursor: 'outlook-snapshot-2',
+        fullSnapshot: true,
+      };
+    },
+  };
+  await syncMailbox({ db, source: refreshed });
+
+  const active = one(db, 'SELECT id, source_state FROM emails WHERE provider_id = ?', older.providerId);
+  const removed = one(db, 'SELECT source_state, source_removed_reason FROM emails WHERE provider_id = ?', newer.providerId);
+  const conversation = one(db, 'SELECT latest_email_id FROM conversations WHERE native_conversation_id = ?', conversationId);
+  assert.equal(active.source_state, 'active');
+  assert.equal(removed.source_state, 'deleted');
+  assert.equal(removed.source_removed_reason, 'removed_from_inbox');
+  assert.equal(Number(conversation.latest_email_id), Number(active.id));
 });
 
 test('a member cannot read or complete another member email', async (context) => {
@@ -817,6 +866,47 @@ test('OrgAdmin is email-blind while DepAdmin authority follows the current depar
   assert.equal(restored.status, 200);
 });
 
+test('department audit report downloads as a role-scoped Excel workbook', async (context) => {
+  const harness = await createApiHarness(context);
+  const depAdminCookie = await harness.login('maya@lexflow.local');
+  const otherDepartmentCookie = await harness.login('priya@lexflow.local');
+  const orgAdminCookie = await harness.login('admin@lexflow.local');
+  const memberCookie = await harness.login('noah@lexflow.local');
+
+  const legal = one(harness.db, "SELECT id FROM departments WHERE name = 'Legal'");
+  const finance = one(harness.db, "SELECT id FROM departments WHERE name = 'Finance'");
+  harness.db.prepare(`
+    INSERT INTO activity
+      (actor_id, email_id, kind, message, created_at, organization_id, department_id)
+    VALUES (?, NULL, 'assigned', ?, ?, 1, ?)
+  `).run(harness.userId('maya@lexflow.local'), 'Legal audit marker', '2026-09-12T08:00:00.000Z', legal.id);
+  harness.db.prepare(`
+    INSERT INTO activity
+      (actor_id, email_id, kind, message, created_at, organization_id, department_id)
+    VALUES (?, NULL, 'assigned', ?, ?, 1, ?)
+  `).run(harness.userId('priya@lexflow.local'), 'Finance secret marker', '2026-09-12T08:01:00.000Z', finance.id);
+
+  const result = await harness.get('/api/activity/export.xlsx', depAdminCookie);
+  assert.equal(result.status, 200);
+  assert.match(result.headers['content-type'], /application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet/);
+  assert.match(result.headers['content-disposition'], /attachment; filename="lexflow-legal-audit-\d{4}-\d{2}-\d{2}\.xlsx"/);
+  assert.equal(result.headers['cache-control'], 'no-store');
+  assert.equal(result.body.subarray(0, 2).toString(), 'PK');
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(result.body);
+  const details = workbook.getWorksheet('Audit log').getColumn(8).values.join('\n');
+  assert.match(details, /Legal audit marker/);
+  assert.doesNotMatch(details, /Finance secret marker/);
+
+  const financeResult = await harness.get('/api/activity/export.xlsx', otherDepartmentCookie);
+  assert.equal(financeResult.status, 200);
+  const forbiddenOrgAdmin = await harness.get('/api/activity/export.xlsx', orgAdminCookie);
+  const forbiddenMember = await harness.get('/api/activity/export.xlsx', memberCookie);
+  assert.equal(forbiddenOrgAdmin.status, 403);
+  assert.equal(forbiddenMember.status, 403);
+});
+
 test('bootstrap reports role-scoped pending task counts only to Members and DepAdmins', async (context) => {
   const harness = await createApiHarness(context, { includeUnassigned: true });
   const orgAdminCookie = await harness.login('admin@lexflow.local');
@@ -862,6 +952,65 @@ test('bootstrap reports role-scoped pending task counts only to Members and DepA
     unassignedDepartment: 0,
     unreadNotifications: 1,
   });
+});
+
+test('Vacation Mode is member-scoped and returns a briefing after covered reassignment', async context => {
+  let current = new Date('2026-09-12T06:00:00.000Z');
+  const harness = await createApiHarness(context, { clock: () => new Date(current) });
+  const mayaCookie = await harness.login('maya@lexflow.local');
+  const noahCookie = await harness.login('noah@lexflow.local');
+  const adminCookie = await harness.login('admin@lexflow.local');
+
+  const forbidden = await harness.request('PUT', '/api/vacation', {
+    enabled: true, startDate: '2026-09-12', endDate: '2026-09-18',
+  }, adminCookie);
+  assert.equal(forbidden.status, 403);
+
+  const enabled = await harness.request('PUT', '/api/vacation', {
+    enabled: true, startDate: '2026-09-12', endDate: '2026-09-18',
+  }, mayaCookie);
+  assert.equal(enabled.status, 200);
+  assert.equal(enabled.body.vacation.isAway, true);
+
+  const memberCannotAssign = await harness.post('/api/emails/1/assign', {
+    assigneeId: harness.userId('maya@lexflow.local'), priority: 20,
+  }, noahCookie);
+  assert.equal(memberCannotAssign.status, 403);
+
+  const assigned = harness.db.prepare(`
+    SELECT emails.id
+    FROM emails JOIN users ON users.id = emails.assignee_id
+    WHERE users.email = 'maya@lexflow.local' AND emails.status = 'assigned'
+    LIMIT 1
+  `).get();
+  assert.ok(assigned);
+  const reassigned = await harness.post(`/api/emails/${assigned.id}/assign`, {
+    assigneeId: harness.userId('noah@lexflow.local'), priority: 10,
+  }, mayaCookie);
+  assert.equal(reassigned.status, 200);
+
+  current = new Date('2026-09-12T08:00:00.000Z');
+  const disabled = await harness.request('PUT', '/api/vacation', { enabled: false }, mayaCookie);
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.body.vacation.unreviewedBriefing.itemCount, 1);
+  assert.equal(disabled.body.vacation.unreviewedBriefing.items[0].priorityLabel, 'Critical');
+  assert.equal(disabled.body.vacation.unreviewedBriefing.items[0].reassignedTo, 'Noah Singh');
+
+  const reviewed = await harness.post(
+    `/api/vacation/briefings/${disabled.body.vacation.unreviewedBriefing.id}/reviewed`,
+    {},
+    mayaCookie,
+  );
+  assert.equal(reviewed.status, 200);
+  const bootstrap = await harness.get('/api/bootstrap', mayaCookie);
+  assert.equal(bootstrap.body.vacation.unreviewedBriefing, null);
+  const historyUrl = `/api/vacation/briefings/${disabled.body.vacation.unreviewedBriefing.id}`;
+  const history = await harness.get(historyUrl, mayaCookie);
+  assert.equal(history.status, 200);
+  assert.equal(history.body.briefing.items.length, 1);
+  assert.ok(history.body.briefing.reviewedAt);
+  assert.equal((await harness.get(historyUrl, noahCookie)).status, 404);
+  assert.equal((await harness.get(historyUrl, adminCookie)).status, 403);
 });
 
 test('a user can mark all of their organization notifications as read', async (context) => {

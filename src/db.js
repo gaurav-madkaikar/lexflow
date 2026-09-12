@@ -344,6 +344,40 @@ CREATE TABLE IF NOT EXISTS metrics_completeness (
   exact_from TEXT NOT NULL,
   backfilled_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS vacation_periods (
+  id INTEGER PRIMARY KEY,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  activated_at TEXT NOT NULL,
+  deactivated_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (start_date <= end_date)
+);
+CREATE TABLE IF NOT EXISTS vacation_reassignments (
+  id INTEGER PRIMARY KEY,
+  vacation_id INTEGER NOT NULL REFERENCES vacation_periods(id) ON DELETE CASCADE,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email_id INTEGER REFERENCES emails(id) ON DELETE SET NULL,
+  conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+  new_assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  subject_snapshot TEXT NOT NULL,
+  new_assignee_name_snapshot TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 30 CHECK (priority IN (10, 20, 30, 40)),
+  reassigned_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vacation_briefings (
+  id INTEGER PRIMARY KEY,
+  vacation_id INTEGER NOT NULL UNIQUE REFERENCES vacation_periods(id) ON DELETE CASCADE,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  reviewed_at TEXT
+);
 `;
 
 function tableHasColumn(db, table, column) {
@@ -577,6 +611,7 @@ export function migrate(db) {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec(schema);
+    addColumn(db, 'vacation_reassignments', 'rule_name_snapshot', 'TEXT');
     if (!tableHasColumn(db, 'emails', 'provider')) {
       db.exec("ALTER TABLE emails ADD COLUMN provider TEXT NOT NULL DEFAULT 'outlook'");
     }
@@ -837,6 +872,15 @@ export function migrate(db) {
       ON rule_assignment_events (organization_id, department_id, occurred_at);
       CREATE INDEX IF NOT EXISTS graph_runs_scope_time
       ON graph_sync_runs (organization_id, started_at, outcome);
+      CREATE UNIQUE INDEX IF NOT EXISTS vacation_periods_one_enabled_per_user
+      ON vacation_periods (organization_id, user_id)
+      WHERE enabled = 1;
+      CREATE INDEX IF NOT EXISTS vacation_periods_user_dates
+      ON vacation_periods (organization_id, user_id, start_date, end_date);
+      CREATE INDEX IF NOT EXISTS vacation_reassignments_briefing_order
+      ON vacation_reassignments (vacation_id, priority, reassigned_at DESC);
+      CREATE INDEX IF NOT EXISTS vacation_briefings_user_review
+      ON vacation_briefings (organization_id, user_id, reviewed_at, created_at DESC);
 
       CREATE TRIGGER IF NOT EXISTS rules_department_required_insert
       BEFORE INSERT ON rules
@@ -968,6 +1012,7 @@ export function resetKnownDemoData(db) {
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const table of [
+      'vacation_briefings', 'vacation_reassignments', 'vacation_periods',
       'alert_deliveries', 'notifications', 'activity', 'emails', 'rules', 'sync_state',
       'gmail_oauth_states', 'gmail_connection', 'outlook_consent_states', 'outlook_connections',
       'workspace_settings', 'departments',

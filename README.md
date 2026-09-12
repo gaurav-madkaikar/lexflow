@@ -87,11 +87,19 @@ OrgAdmins are responsible for ensuring members have the appropriate Full Access 
 - The last active OrgAdmin cannot be disabled or demoted.
 - Microsoft Graph synchronization runs automatically. DepAdmins do not configure Graph credentials, and LexFlow does not add per-user credentials to `.env`.
 
+Messages that leave a connected shared mailbox Inbox because they were deleted, recalled, archived, or moved to another Outlook folder are placed in LexFlow's **Deleted** pane on the next Graph synchronization. A fresh Inbox synchronization also reconciles previously active LexFlow messages that are no longer present, so a reset delta cursor cannot leave stale work in an active queue. Microsoft Graph does not reliably distinguish every move or recall from a deletion in its folder-level delta response, so LexFlow presents these states consistently as removed from Outlook while preserving the provider removal reason for audit.
+
 ## Conversation tasks
 
 LexFlow groups Outlook messages by the native Microsoft Graph `conversationId` within the organization, department, and shared mailbox. Inbox, assigned, completed, alert, and overview counts therefore represent conversation tasks rather than individual replies. A thread can be expanded in place to inspect its messages chronologically, and each message retains its own Open in Outlook action.
 
 A new provider message appended to a completed conversation reopens the task. LexFlow first restores the previous assignee when that member is still active in the department, then evaluates the department's current automation rules, and otherwise leaves the conversation unassigned for the DepAdmin. Updates or replayed delta pages for an existing provider message do not reopen work. Migration/backfill constructs conversation history without emitting reopen notifications; back up the SQLite database before deploying a schema upgrade.
+
+## Vacation Mode
+
+Members and DepAdmins can schedule Vacation Mode with a first day away and return date. While the period is active, automation rules skip that user and manual assignment controls prevent new work from being assigned to them. Existing work is not moved automatically; when a DepAdmin reassigns it for coverage, LexFlow records the ticket, covering teammate, time, and priority.
+
+When Vacation Mode is switched off—or its return date has passed—LexFlow creates one return briefing from the covered tickets. The next sign-in presents the briefing in Critical, High, Medium, then Low priority order. Acknowledging it marks the briefing reviewed, and past briefing counts remain available in the Vacation workspace. All dates use the organization reporting timezone, and the interface disables Anime.js motion when reduced motion is requested.
 
 ## Metrics
 
@@ -103,6 +111,8 @@ Every role has a tenant-safe **Metrics** module:
 - Members see only their own assignments, completions, and handling-time trend.
 
 Metrics use append-only reporting events and conversation assignment cycles. Existing organization and task records are backfilled only where their stored timestamps provide reliable evidence; the UI labels older ranges as partial rather than inventing missing history. Assignment-source totals include explicit Manual assignment, Reopened to previous assignee, and Historical / unknown source categories where applicable, so the breakdown reconciles with the assignment summary without guessing old rule attribution. Date boundaries, daily/weekly/monthly buckets, and SLA status use the organization's configured IANA timezone. Chart.js is bundled and served locally, and every plot includes an exact data-table alternative.
+
+Department administrators can download their complete Activity audit trail as a formatted Excel workbook. The export includes a summary and filterable event log, remains restricted to the administrator's current department, and is never exposed to organization administrators or members.
 
 ## Verification
 

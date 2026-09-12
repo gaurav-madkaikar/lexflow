@@ -3,6 +3,12 @@ import { fileURLToPath } from 'node:url';
 
 import express from 'express';
 
+import {
+  AUDIT_REPORT_MIME_TYPE,
+  auditReportFilename,
+  createAuditReportWorkbook,
+} from './audit-report.js';
+
 import { isRulePriority, RULE_PRIORITY_ERROR } from '../public/rule-priorities.js';
 
 import {
@@ -55,6 +61,13 @@ import {
   updateDepartment,
   updateWorkspaceSettings,
 } from './workspace.js';
+import {
+  getVacationPayload,
+  getVacationBriefing,
+  markVacationBriefingReviewed,
+  setVacationMode,
+  vacationStatusForUser,
+} from './vacation.js';
 
 const publicDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 const chartBundle = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/chart.js/dist/chart.umd.js');
@@ -412,6 +425,27 @@ function listActivity(db, organizationId, departmentId) {
   }));
 }
 
+function listAuditActivity(db, organizationId, departmentId) {
+  return db.prepare(`
+    SELECT activity.id, activity.email_id, activity.kind, activity.message, activity.created_at,
+      users.name AS actor_name, users.email AS actor_email, emails.subject
+    FROM activity
+    LEFT JOIN users ON users.id = activity.actor_id
+    LEFT JOIN emails ON emails.id = activity.email_id
+    WHERE activity.organization_id = ? AND activity.department_id = ?
+    ORDER BY activity.created_at DESC, activity.id DESC
+  `).all(organizationId, departmentId).map(row => ({
+    id: Number(row.id),
+    emailId: row.email_id === null ? null : Number(row.email_id),
+    kind: row.kind,
+    message: row.message,
+    createdAt: row.created_at,
+    subject: row.subject,
+    actorName: row.actor_name,
+    actorEmail: row.actor_email,
+  }));
+}
+
 function listEscalationDeliveries(db, organizationId, departmentId) {
   return db.prepare(`
     SELECT deliveries.id, deliveries.level, deliveries.recipient_email, deliveries.state,
@@ -635,6 +669,16 @@ async function runSync(syncRunner, organizationId) {
   return syncRunner.run(organizationId);
 }
 
+function requireVacationUser(request, response, next) {
+  if (!['member', 'dep_admin'].includes(request.user.effectiveRole)) {
+    response.status(403).json({
+      error: { code: 'FORBIDDEN', message: 'Vacation Mode is available to workspace members.' },
+    });
+    return;
+  }
+  next();
+}
+
 export function createApp({
   db,
   syncRunner,
@@ -742,14 +786,28 @@ export function createApp({
       payload.notifications = notifications;
       payload.unreadCount = notifications.filter(item => !item.readAt).length;
       payload.pendingTasks = pendingTaskSummary(db, request.user, payload.unreadCount);
+      payload.vacation = getVacationPayload({
+        db,
+        userId: Number(request.user.id),
+        organizationId: Number(request.user.organization_id),
+        now: clock(),
+      });
       payload.team = db.prepare(`
         SELECT * FROM users
         WHERE organization_id = ? AND department_id = ? AND role = 'member'
           AND account_status = 'active'
         ORDER BY name COLLATE NOCASE, id
-      `).all(request.user.organization_id, departmentId).map(row => safeUser({
-        ...row,
-        effectiveRole: Number(row.id) === Number(request.user.id) ? 'dep_admin' : 'member',
+      `).all(request.user.organization_id, departmentId).map(row => ({
+        ...safeUser({
+          ...row,
+          effectiveRole: Number(row.id) === Number(request.user.id) ? 'dep_admin' : 'member',
+        }),
+        vacation: vacationStatusForUser({
+          db,
+          userId: Number(row.id),
+          organizationId: Number(request.user.organization_id),
+          now: clock(),
+        }),
       }));
     } else if (request.user.effectiveRole === 'member') {
       const notifications = listNotifications(db, request.user.id, request.user.organization_id);
@@ -758,6 +816,12 @@ export function createApp({
       payload.notifications = notifications;
       payload.unreadCount = notifications.filter(item => !item.readAt).length;
       payload.pendingTasks = pendingTaskSummary(db, request.user, payload.unreadCount);
+      payload.vacation = getVacationPayload({
+        db,
+        userId: Number(request.user.id),
+        organizationId: Number(request.user.organization_id),
+        now: clock(),
+      });
     }
 
     if (request.user.effectiveRole === 'platform_admin') {
@@ -765,6 +829,84 @@ export function createApp({
     }
 
     response.json(payload);
+  });
+
+  app.get('/api/vacation', requireVacationUser, (request, response) => {
+    response.json({ vacation: getVacationPayload({
+      db,
+      userId: Number(request.user.id),
+      organizationId: Number(request.user.organization_id),
+      now: clock(),
+    }) });
+  });
+
+  app.put('/api/vacation', requireVacationUser, (request, response, next) => {
+    try {
+      if (typeof request.body?.enabled !== 'boolean') {
+        return validationError(response, 'Choose whether Vacation Mode is on or off.', 'enabled');
+      }
+      response.json({ vacation: setVacationMode({
+        db,
+        userId: Number(request.user.id),
+        organizationId: Number(request.user.organization_id),
+        enabled: request.body.enabled,
+        startDate: request.body.startDate,
+        endDate: request.body.endDate,
+        now: clock(),
+      }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/vacation/briefings/:id', requireVacationUser, (request, response, next) => {
+    try {
+      const briefingId = resourceId(request.params.id);
+      if (!briefingId) return notFound(response, 'Return briefing not found.');
+      response.json({ briefing: getVacationBriefing({ db, briefingId,
+        userId: Number(request.user.id), organizationId: Number(request.user.organization_id) }) });
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/vacation/briefings/:id/reviewed', requireVacationUser, (request, response, next) => {
+    try {
+      const briefingId = resourceId(request.params.id);
+      if (!briefingId) return notFound(response, 'Return briefing not found.');
+      response.json(markVacationBriefingReviewed({
+        db,
+        briefingId,
+        userId: Number(request.user.id),
+        organizationId: Number(request.user.organization_id),
+        now: clock(),
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/activity/export.xlsx', requireDepAdmin, async (request, response, next) => {
+    try {
+      const departmentId = request.user.headed_department_id;
+      const department = listDepartments(db, request.user.organization_id)
+        .find(item => item.id === Number(departmentId));
+      if (!department) return notFound(response, 'Department not found.');
+      const generatedAt = clock();
+      const workbook = await createAuditReportWorkbook({
+        organizationName: request.user.organization_name,
+        departmentName: department.name,
+        timezone: request.user.organization_timezone,
+        activity: listAuditActivity(db, request.user.organization_id, departmentId),
+        generatedAt,
+      });
+      response.setHeader('Content-Type', AUDIT_REPORT_MIME_TYPE);
+      response.setHeader('Content-Disposition', `attachment; filename="${auditReportFilename(department.name, generatedAt)}"`);
+      response.setHeader('Content-Length', String(workbook.length));
+      response.setHeader('Cache-Control', 'no-store');
+      response.setHeader('X-Content-Type-Options', 'nosniff');
+      response.end(workbook);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/metrics/platform', requirePlatformAdmin, (request, response, next) => {
