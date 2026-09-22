@@ -61,8 +61,8 @@ const app = createApp({
   },
   entraConfig: config.entra,
 });
-const server = app.listen(config.port, '127.0.0.1', () => {
-  console.log(`LexFlow listening at http://127.0.0.1:${config.port} (${config.mode} mode)`);
+const server = app.listen(config.port, config.host, () => {
+  console.log(`LexFlow listening on ${config.host}:${config.port} (${config.mode} mode)`);
 });
 
 let syncTimer;

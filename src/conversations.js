@@ -106,11 +106,21 @@ export function attachEmailToConversation(db, emailId) {
   if (!created) {
     db.prepare(`
       UPDATE emails
-      SET status = ?, assignee_id = ?, assigned_at = CASE WHEN ? = 'assigned' THEN assigned_at ELSE assigned_at END,
+      SET status = ?, assignee_id = ?, assigned_at = CASE WHEN ? = 'assigned' THEN COALESCE(
+            (SELECT cycles.started_at FROM assignment_cycles cycles
+             WHERE cycles.conversation_id = ?
+               AND cycles.completed_at IS NULL AND cycles.superseded_at IS NULL
+             ORDER BY cycles.started_at DESC, cycles.id DESC LIMIT 1),
+            (SELECT MIN(messages.assigned_at) FROM emails messages
+             WHERE messages.conversation_id = ? AND messages.assigned_at IS NOT NULL),
+            assigned_at,
+            created_at
+          ) ELSE assigned_at END,
           completed_at = CASE WHEN ? = 'completed' THEN ? ELSE NULL END
       WHERE id = ?
     `).run(
       conversation.status, conversation.assignee_id, conversation.status,
+      conversation.id, conversation.id,
       conversation.status, conversation.completed_at, email.id,
     );
   }

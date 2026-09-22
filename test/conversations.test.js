@@ -6,6 +6,7 @@ import {
   normalizeFallbackSubject,
   recomputeConversationAttachmentState,
   reconcileConversationWorkflowState,
+  updateConversationAssignment,
 } from '../src/conversations.js';
 import { createDatabase } from '../src/db.js';
 import { recordTaskEvent } from '../src/reporting-events.js';
@@ -65,6 +66,52 @@ test('conversation attachment state is the OR of all linked messages', () => {
   assert.equal(db.prepare('SELECT has_attachments FROM conversations WHERE id = ?').get(conversationId).has_attachments, 1);
   db.prepare('UPDATE emails SET has_attachments = 0 WHERE id = ?').run(first);
   assert.equal(recomputeConversationAttachmentState(db, conversationId), 0);
+  db.close();
+});
+
+test('a reply joining an assigned conversation inherits its assignment timestamp', () => {
+  const db = createDatabase(':memory:');
+  const createdAt = '2026-08-31T08:00:00.000Z';
+  const assignedAt = '2026-08-31T08:30:00.000Z';
+  const departmentId = Number(db.prepare(`
+    INSERT INTO departments (name, shared_mailbox, created_at, organization_id)
+    VALUES ('Legal', 'legal@example.test', ?, 1)
+  `).run(createdAt).lastInsertRowid);
+  const userId = Number(db.prepare(`
+    INSERT INTO users
+      (email, name, initials, department, role, organization_id, auth_provider,
+       account_status, department_id)
+    VALUES ('owner@example.test', 'Owner', 'OW', 'Legal', 'member', 1,
+      'entra', 'active', ?)
+  `).run(departmentId).lastInsertRowid);
+  const insert = db.prepare(`
+    INSERT INTO emails
+      (provider_id, provider, mailbox_address, provider_conversation_id, subject,
+       sender_name, sender_address, preview, received_at, status, created_at,
+       organization_id, department_id)
+    VALUES (?, 'outlook', 'legal@example.test', 'assigned-thread', ?,
+      'Sender', 'sender@example.test', '', ?, 'unassigned', ?, 1, ?)
+  `);
+  const firstId = Number(insert.run('assigned-first', 'Request', createdAt, createdAt, departmentId).lastInsertRowid);
+  const conversationId = attachEmailToConversation(db, firstId).conversation.id;
+  assert.equal(updateConversationAssignment(db, {
+    conversationId,
+    assigneeId: userId,
+    source: 'manual',
+    startedAt: assignedAt,
+  }), true);
+
+  const replyId = Number(insert.run(
+    'assigned-reply', 'Re: Request', '2026-08-31T09:00:00.000Z',
+    '2026-08-31T09:00:00.000Z', departmentId,
+  ).lastInsertRowid);
+  attachEmailToConversation(db, replyId);
+  const reply = db.prepare('SELECT status, assignee_id, assigned_at FROM emails WHERE id = ?').get(replyId);
+  assert.deepEqual({ ...reply }, {
+    status: 'assigned',
+    assignee_id: userId,
+    assigned_at: assignedAt,
+  });
   db.close();
 });
 

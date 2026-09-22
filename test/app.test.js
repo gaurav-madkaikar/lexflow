@@ -1043,6 +1043,33 @@ test('a user can mark all of their organization notifications as read', async (c
   assert.deepEqual(repeated.body, { read: true, count: 0 });
 });
 
+test('bootstrap bounds notification history while preserving the exact unread count', async (context) => {
+  const harness = await createApiHarness(context);
+  const mayaCookie = await harness.login('maya@lexflow.local');
+  const userId = harness.userId('maya@lexflow.local');
+  const email = harness.emailAssignedTo('maya@lexflow.local');
+  harness.db.prepare('DELETE FROM notifications').run();
+  const insert = harness.db.prepare(`
+    INSERT INTO notifications
+      (user_id, email_id, kind, message, created_at, organization_id)
+    VALUES (?, ?, 'assignment', ?, ?, 1)
+  `);
+  for (let index = 0; index < 275; index += 1) {
+    insert.run(
+      userId,
+      email.id,
+      `Update ${index}`,
+      new Date(Date.UTC(2026, 8, 1, 0, 0, index)).toISOString(),
+    );
+  }
+
+  const bootstrap = await harness.get('/api/bootstrap', mayaCookie);
+  assert.equal(bootstrap.status, 200);
+  assert.equal(bootstrap.body.notifications.length, 250);
+  assert.equal(bootstrap.body.unreadCount, 275);
+  assert.equal(bootstrap.body.notifications[0].message, 'Update 274');
+});
+
 test('opening an email marks every notification for its conversation as read', async (context) => {
   const harness = await createApiHarness(context);
   const mayaCookie = await harness.login('maya@lexflow.local');

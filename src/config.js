@@ -45,6 +45,17 @@ function encryptionKey(raw) {
   return decoded;
 }
 
+function listenHost(env) {
+  const fallback = String(env.NODE_ENV ?? '').trim() === 'production'
+    ? '0.0.0.0'
+    : '127.0.0.1';
+  const host = String(env.HOST ?? '').trim() || fallback;
+  if (host.length > 253 || /[\s/\\?#]/.test(host)) {
+    throw new TypeError('HOST must be a valid hostname or IP address');
+  }
+  return host;
+}
+
 export function loadConfig(env = process.env) {
   const port = integerSetting(env, 'PORT', 3000);
   if (port < 1 || port > 65_535) {
@@ -83,6 +94,7 @@ export function loadConfig(env = process.env) {
 
   return {
     port,
+    host: listenHost(env),
     databasePath: String(env.DATABASE_PATH ?? '').trim() || 'data/lexflow.db',
     syncIntervalSeconds,
     mode,

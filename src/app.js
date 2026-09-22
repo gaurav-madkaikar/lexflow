@@ -276,6 +276,8 @@ function outlookImmutableId(email) {
   return providerId.slice(prefix.length).trim() || null;
 }
 
+const MAX_NOTIFICATION_HISTORY = 250;
+
 function listNotifications(db, userId, organizationId) {
   return db.prepare(`
     SELECT notifications.id, notifications.email_id, notifications.kind,
@@ -290,7 +292,8 @@ function listNotifications(db, userId, organizationId) {
     LEFT JOIN emails AS latest ON latest.id = conversations.latest_email_id
     WHERE notifications.user_id = ? AND notifications.organization_id = ?
     ORDER BY notifications.created_at DESC, notifications.id DESC
-  `).all(userId, organizationId).map(row => ({
+    LIMIT ?
+  `).all(userId, organizationId, MAX_NOTIFICATION_HISTORY).map(row => ({
     id: Number(row.id),
     emailId: Number(row.email_id),
     targetEmailId: Number(row.target_email_id),
@@ -301,6 +304,14 @@ function listNotifications(db, userId, organizationId) {
     readAt: row.read_at,
     createdAt: row.created_at
   }));
+}
+
+function unreadNotificationCount(db, userId, organizationId) {
+  return Number(db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM notifications
+    WHERE user_id = ? AND organization_id = ? AND read_at IS NULL
+  `).get(userId, organizationId)?.count ?? 0);
 }
 
 function pendingTaskSummary(db, user, unreadNotifications) {
@@ -784,7 +795,7 @@ export function createApp({
       };
       payload.activity = listActivity(db, request.user.organization_id, departmentId);
       payload.notifications = notifications;
-      payload.unreadCount = notifications.filter(item => !item.readAt).length;
+      payload.unreadCount = unreadNotificationCount(db, request.user.id, request.user.organization_id);
       payload.pendingTasks = pendingTaskSummary(db, request.user, payload.unreadCount);
       payload.vacation = getVacationPayload({
         db,
@@ -814,7 +825,7 @@ export function createApp({
       payload.responseTiming = getWorkspaceSettings(db, request.user.organization_id);
       payload.emails = listEmails(db, request.user);
       payload.notifications = notifications;
-      payload.unreadCount = notifications.filter(item => !item.readAt).length;
+      payload.unreadCount = unreadNotificationCount(db, request.user.id, request.user.organization_id);
       payload.pendingTasks = pendingTaskSummary(db, request.user, payload.unreadCount);
       payload.vacation = getVacationPayload({
         db,
@@ -1682,7 +1693,7 @@ export function createApp({
       UPDATE notifications
       SET read_at = COALESCE(read_at, ?)
       WHERE id = ? AND user_id = ? AND organization_id = ?
-    `).run(new Date().toISOString(), id, request.user.id, request.user.organization_id);
+    `).run(clock().toISOString(), id, request.user.id, request.user.organization_id);
     if (!result.changes) {
       response.status(404).json({ error: { code: 'NOT_FOUND', message: 'Notification not found.' } });
       return;

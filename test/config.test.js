@@ -20,6 +20,7 @@ test('mail integrations are disabled by default', () => {
   const config = loadConfig({});
 
   assert.equal(config.mode, 'demo');
+  assert.equal(config.host, '127.0.0.1');
   assert.equal(config.liveMailConfigured, false);
   assert.equal(config.gmail.configured, false);
   assert.equal(config.gmail.tokenEncryptionKey, null);
@@ -27,6 +28,13 @@ test('mail integrations are disabled by default', () => {
     config.gmail.redirectUri,
     'http://127.0.0.1:3000/api/integrations/gmail/callback',
   );
+});
+
+test('production listens on platform ingress while HOST remains configurable and validated', () => {
+  assert.equal(loadConfig({ NODE_ENV: 'production' }).host, '0.0.0.0');
+  assert.equal(loadConfig({ HOST: '::' }).host, '::');
+  assert.equal(loadConfig({ HOST: 'lexflow.internal' }).host, 'lexflow.internal');
+  assert.throws(() => loadConfig({ HOST: 'https://example.test' }), /valid hostname or IP address/);
 });
 
 test('complete Gmail settings enable OAuth with an exact redirect origin', () => {

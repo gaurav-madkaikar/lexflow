@@ -88,12 +88,13 @@ CREATE TABLE IF NOT EXISTS sync_state (
   organization_id INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS gmail_connection (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
+  id INTEGER PRIMARY KEY,
   account_email TEXT NOT NULL COLLATE NOCASE,
   encrypted_refresh_token TEXT NOT NULL,
   connected_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  organization_id INTEGER NOT NULL DEFAULT 1
+  organization_id INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+  UNIQUE (organization_id)
 );
 CREATE TABLE IF NOT EXISTS gmail_oauth_states (
   state_digest TEXT PRIMARY KEY,
@@ -571,6 +572,35 @@ function migrateAlertDeliveries(db) {
   `);
 }
 
+function migrateGmailConnections(db) {
+  const definition = String(db.prepare(`
+    SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'gmail_connection'
+  `).get()?.sql ?? '').toLocaleLowerCase();
+  if (/check\s*\(\s*id\s*=\s*1\s*\)/.test(definition)) {
+    db.exec(`
+      CREATE TABLE gmail_connection_next (
+        id INTEGER PRIMARY KEY,
+        account_email TEXT NOT NULL COLLATE NOCASE,
+        encrypted_refresh_token TEXT NOT NULL,
+        connected_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        organization_id INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+        UNIQUE (organization_id)
+      );
+      INSERT INTO gmail_connection_next
+        (id, account_email, encrypted_refresh_token, connected_at, updated_at, organization_id)
+      SELECT id, account_email, encrypted_refresh_token, connected_at, updated_at, organization_id
+      FROM gmail_connection;
+      DROP TABLE gmail_connection;
+      ALTER TABLE gmail_connection_next RENAME TO gmail_connection;
+    `);
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS gmail_connection_organization_unique
+    ON gmail_connection (organization_id)
+  `);
+}
+
 function syncStateHasKeyPrimaryKey(db) {
   return db.prepare('PRAGMA index_list(sync_state)').all().some(index => {
     if (!index.unique) return false;
@@ -678,6 +708,7 @@ export function migrate(db) {
     for (const table of ['rules', 'emails', 'notifications', 'activity', 'sync_state', 'gmail_connection', 'gmail_oauth_states', 'departments', 'workspace_settings', 'alert_deliveries']) {
       addColumn(db, table, 'organization_id', 'INTEGER NOT NULL DEFAULT 1');
     }
+    migrateGmailConnections(db);
     addColumn(db, 'auth_transactions', 'nonce', "TEXT NOT NULL DEFAULT ''");
     rebuildSingletonWorkspaceSettings(db);
     rebuildDepartments(db);

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="112" viewBox="0 0 520 112" role="img" aria-label="Minus22">
+  <title>Minus22</title>
+  <rect x="4" y="4" width="104" height="104" rx="30" fill="#FFFFFF"/>
+  <path d="M29 75V37h10l17 22 17-22h10v38H71V56L56 75 41 56v19z" fill="#11110F"/>
+  <path d="M29 87h54" stroke="#FF6542" stroke-width="6" stroke-linecap="round"/>
+  <text x="132" y="74" fill="#FFFFFF" font-family="Avenir Next, Helvetica Neue, Inter, Arial, sans-serif" font-weight="700" font-size="58" letter-spacing="-2.2">Minus22</text>
+</svg>

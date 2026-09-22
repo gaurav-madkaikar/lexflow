@@ -472,8 +472,7 @@ export function createGmailIntegration({
   const settings = gmail ?? config?.gmail ?? config ?? { configured: false };
   const configured = Boolean(settings.configured);
   const encryptionKey = configured ? normalizedEncryptionKey(settings.tokenEncryptionKey) : null;
-  let cachedSource = null;
-  let cachedSourceVersion = null;
+  const cachedSources = new Map();
   let connectionGeneration = 0;
   let connectionMutationTail = Promise.resolve();
   let disconnecting = false;
@@ -563,8 +562,7 @@ export function createGmailIntegration({
 
   function invalidateCachedSource() {
     connectionGeneration += 1;
-    cachedSource = null;
-    cachedSourceVersion = null;
+    cachedSources.clear();
   }
 
   function status(organizationId = null) {
@@ -572,7 +570,9 @@ export function createGmailIntegration({
     const connection = db.prepare(`
       SELECT account_email, connected_at, updated_at, organization_id
       FROM gmail_connection
-      WHERE id = 1 ${scopedOrganizationId == null ? '' : 'AND organization_id = ?'}
+      ${scopedOrganizationId == null ? '' : 'WHERE organization_id = ?'}
+      ORDER BY organization_id, id
+      LIMIT 1
     `).get(...(scopedOrganizationId == null ? [] : [scopedOrganizationId]));
     const statusOrganizationId = scopedOrganizationId ?? connection?.organization_id ?? 1;
     const syncValues = Object.fromEntries(
@@ -680,8 +680,8 @@ export function createGmailIntegration({
     const existing = db.prepare(`
       SELECT account_email, encrypted_refresh_token
       FROM gmail_connection
-      WHERE id = 1
-    `).get();
+      WHERE organization_id = ?
+    `).get(savedOrganizationId ?? 1);
     let encryptedRefreshToken;
     if (typeof tokens.refresh_token === 'string' && tokens.refresh_token) {
       encryptedRefreshToken = encryptRefreshToken(tokens.refresh_token, encryptionKey);
@@ -699,14 +699,13 @@ export function createGmailIntegration({
     runTransaction(db, () => {
       db.prepare(`
         INSERT INTO gmail_connection
-          (id, account_email, encrypted_refresh_token, connected_at, updated_at, organization_id)
-        VALUES (1, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
+          (account_email, encrypted_refresh_token, connected_at, updated_at, organization_id)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(organization_id) DO UPDATE SET
           account_email = excluded.account_email,
           encrypted_refresh_token = excluded.encrypted_refresh_token,
           connected_at = excluded.connected_at,
-          updated_at = excluded.updated_at,
-          organization_id = excluded.organization_id
+          updated_at = excluded.updated_at
       `).run(accountEmail, encryptedRefreshToken, timestamp, timestamp, savedOrganizationId ?? 1);
       clearSyncState(savedOrganizationId ?? 1);
     });
@@ -724,9 +723,11 @@ export function createGmailIntegration({
     try {
       const connection = configured
         ? db.prepare(`
-            SELECT encrypted_refresh_token, organization_id
+            SELECT id, encrypted_refresh_token, organization_id
             FROM gmail_connection
-            WHERE id = 1 ${organizationId == null ? '' : 'AND organization_id = ?'}
+            ${organizationId == null ? '' : 'WHERE organization_id = ?'}
+            ORDER BY organization_id, id
+            LIMIT 1
           `).get(...(organizationId == null ? [] : [organizationId]))
         : null;
       let refreshToken = null;
@@ -739,11 +740,12 @@ export function createGmailIntegration({
       }
       if (refreshToken) await revokeRefreshToken(refreshToken);
       runTransaction(db, () => {
-        db.prepare(`DELETE FROM gmail_connection WHERE id = 1 ${organizationId == null ? '' : 'AND organization_id = ?'}`)
-          .run(...(organizationId == null ? [] : [organizationId]));
-        db.prepare(`DELETE FROM gmail_oauth_states ${organizationId == null ? '' : 'WHERE organization_id = ?'}`)
-          .run(...(organizationId == null ? [] : [organizationId]));
-        clearSyncState(connection?.organization_id ?? 1);
+        if (connection) db.prepare('DELETE FROM gmail_connection WHERE id = ?').run(connection.id);
+        const targetOrganizationId = connection?.organization_id ?? organizationId;
+        if (targetOrganizationId != null) {
+          db.prepare('DELETE FROM gmail_oauth_states WHERE organization_id = ?').run(targetOrganizationId);
+          clearSyncState(targetOrganizationId);
+        }
       });
       return status(connection?.organization_id ?? organizationId ?? 1);
     } finally {
@@ -757,46 +759,53 @@ export function createGmailIntegration({
 
   function sources() {
     if (!configured || disconnecting) return [];
-    const connection = db.prepare(`
+    const connections = db.prepare(`
       SELECT account_email, encrypted_refresh_token, updated_at, organization_id
       FROM gmail_connection
-      WHERE id = 1
-    `).get();
-    if (!connection) return [];
-    const version = `${connection.account_email}\n${connection.updated_at}`;
-    if (cachedSource && cachedSourceVersion === version) return [cachedSource];
+      ORDER BY organization_id, id
+    `).all();
+    const activeOrganizations = new Set(connections.map(connection => Number(connection.organization_id)));
+    for (const organizationId of cachedSources.keys()) {
+      if (!activeOrganizations.has(organizationId)) cachedSources.delete(organizationId);
+    }
+    return connections.map(connection => {
+      const organizationId = Number(connection.organization_id);
+      const version = `${connection.account_email}\n${connection.updated_at}`;
+      const cached = cachedSources.get(organizationId);
+      if (cached?.version === version) return cached.source;
 
-    const refreshToken = decryptRefreshToken(connection.encrypted_refresh_token, encryptionKey);
-    const sourceGeneration = connectionGeneration;
-    const isCurrentConnection = () => {
-      if (sourceGeneration !== connectionGeneration) return false;
-      const current = db.prepare(`
-        SELECT account_email, encrypted_refresh_token, updated_at, organization_id
-        FROM gmail_connection
-        WHERE id = 1
-      `).get();
-      return Boolean(
-        current
-        && current.account_email.toLocaleLowerCase() === connection.account_email.toLocaleLowerCase()
-        && current.encrypted_refresh_token === connection.encrypted_refresh_token
-        && current.updated_at === connection.updated_at
-        && current.organization_id === connection.organization_id
-      );
-    };
-    cachedSource = new GmailMailSource({
-      accountEmail: connection.account_email,
-      organizationId: connection.organization_id,
-      clientId: settings.clientId,
-      clientSecret: settings.clientSecret,
-      refreshToken,
-      fetchImpl,
-      requestTimeoutMs,
-      clock,
-      delay,
-      isCurrentConnection,
+      const refreshToken = decryptRefreshToken(connection.encrypted_refresh_token, encryptionKey);
+      const sourceGeneration = connectionGeneration;
+      const isCurrentConnection = () => {
+        if (sourceGeneration !== connectionGeneration) return false;
+        const current = db.prepare(`
+          SELECT account_email, encrypted_refresh_token, updated_at, organization_id
+          FROM gmail_connection
+          WHERE organization_id = ?
+        `).get(organizationId);
+        return Boolean(
+          current
+          && current.account_email.toLocaleLowerCase() === connection.account_email.toLocaleLowerCase()
+          && current.encrypted_refresh_token === connection.encrypted_refresh_token
+          && current.updated_at === connection.updated_at
+          && Number(current.organization_id) === organizationId
+        );
+      };
+      const source = new GmailMailSource({
+        accountEmail: connection.account_email,
+        organizationId,
+        clientId: settings.clientId,
+        clientSecret: settings.clientSecret,
+        refreshToken,
+        fetchImpl,
+        requestTimeoutMs,
+        clock,
+        delay,
+        isCurrentConnection,
+      });
+      cachedSources.set(organizationId, { version, source });
+      return source;
     });
-    cachedSourceVersion = version;
-    return [cachedSource];
   }
 
   return {

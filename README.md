@@ -52,10 +52,13 @@ Copy `.env.example` and set the Entra values:
 
 ```dotenv
 APP_BASE_URL=https://lexflow.example.com
+HOST=0.0.0.0
 ENTRA_CLIENT_ID=your-entra-application-client-id
 ENTRA_CLIENT_SECRET=your-entra-client-secret
 ENTRA_AUTHORITY=https://login.microsoftonline.com/organizations
 ```
+
+Local development binds to `127.0.0.1` by default. Production mode binds to `0.0.0.0` so container and platform ingress can reach the service; set `HOST` explicitly when the hosting platform requires another interface.
 
 Microsoft 365 shared-mailbox access uses the same multitenant Entra application as sign-in. Add this Web redirect URI to the app registration:
 
